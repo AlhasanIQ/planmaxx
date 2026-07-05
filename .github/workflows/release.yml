@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test Before Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build web UI
+        run: ./scripts/build-web.sh
+
+      - name: Web tests
+        working-directory: web
+        run: |
+          bun test
+          bunx tsc --noEmit
+
+      - name: Go tests
+        run: go test ./...
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Smoke test
+        run: ./scripts/e2e-smoke.sh
+
+      - name: Validate installer
+        run: bash -n install.sh
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build web UI
+        run: ./scripts/build-web.sh
+
+      - name: Build archive
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Tag must follow semver format (vX.Y.Z), got: $TAG" >&2
+            exit 1
+          fi
+
+          version_no_v="${TAG#v}"
+          out_name="planmaxx_${version_no_v}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          bin_name="planmaxx"
+          if [[ "${{ matrix.goos }}" == "windows" ]]; then
+            bin_name="planmaxx.exe"
+          fi
+
+          mkdir -p dist package
+          export GOFLAGS='-trimpath -mod=readonly -buildvcs=true'
+          ldflags="-s -w -buildid= -X github.com/AlhasanIQ/planmaxx/internal/version.Version=${version_no_v} -X github.com/AlhasanIQ/planmaxx/internal/version.Commit=${GITHUB_SHA} -X github.com/AlhasanIQ/planmaxx/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -ldflags="$ldflags" -o "package/${bin_name}" ./cmd/planmaxx
+          cp README.md LICENSE package/
+          tar \
+            --sort=name \
+            --mtime='UTC 1970-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C package -czf "dist/${out_name}.tar.gz" .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum planmaxx_*.tar.gz > checksums.txt
+          cp ../install.sh ./install.sh
+
+      - name: Publish with gh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-].*)?$ ]]; then
+            echo "Tag must follow semver format (vX.Y.Z), got: $TAG" >&2
+            exit 1
+          fi
+          gh --version
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag
+          fi

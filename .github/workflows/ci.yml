@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build web UI
+        run: ./scripts/build-web.sh
+
+      - name: Web tests
+        working-directory: web
+        run: |
+          bun test
+          bunx tsc --noEmit
+
+      - name: Go tests
+        run: go test ./...
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Smoke test
+        run: ./scripts/e2e-smoke.sh
+
+      - name: Validate installer
+        run: bash -n install.sh
+
+      - name: Cross-compile release targets
+        run: |
+          set -euo pipefail
+          export GOFLAGS='-trimpath -mod=readonly -buildvcs=true'
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            out="/tmp/planmaxx-${GOOS}-${GOARCH}"
+            if [ "$GOOS" = "windows" ]; then
+              out="${out}.exe"
+            fi
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -ldflags='-s -w -buildid=' -o "$out" ./cmd/planmaxx
+          done

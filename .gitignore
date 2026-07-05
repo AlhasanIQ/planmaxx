@@ -1,0 +1,17 @@
+.worktrees/
+artifacts/
+web/node_modules/
+web/dist/
+.DS_Store
+.env
+.env.*
+*.planmaxx-review.json
+
+# Local agent/process notes. Keep these private and recreate locally if needed.
+AGENTS.md
+CLAUDE.md
+docs/superpowers/
+
+# Generated review UI bundle. `go build` requires these files to exist, so
+# run ./scripts/build-web.sh before building or testing on a fresh clone.
+internal/review/static/
