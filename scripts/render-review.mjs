@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -11,17 +11,26 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
 const webRequire = createRequire(path.join(root, "web", "package.json"));
 const artifactDir = path.join(root, "artifacts", "renders");
+const readmeScreenshotDir = path.join(root, "docs", "screenshots");
 
 async function main() {
   const playwright = loadPlaywright();
 
   await mkdir(artifactDir, { recursive: true });
+  await mkdir(readmeScreenshotDir, { recursive: true });
   const tempDir = await mkdtemp(path.join(tmpdir(), "planmaxx-render-"));
   const planPath = path.join(tempDir, "billing-export-rollout.md");
+  const fakeBinDir = path.join(tempDir, "bin");
   await writeFile(planPath, realisticPlan(), "utf8");
+  await writeFakeCodex(fakeBinDir);
 
   const child = spawn("go", ["run", "./cmd/planmaxx", "review", "--no-browser", planPath], {
     cwd: root,
+    env: {
+      ...process.env,
+      CODEX_THREAD_ID: "planmaxx-render-thread",
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -114,6 +123,10 @@ async function seedReview(url) {
   await requestJSON(url, `/api/threads/${encodeURIComponent(auditThread.id)}/reply`, {
     body: "Support also needs row count in the handoff so escalation reports can be traced.",
   });
+  await requestJSON(url, "/api/side-questions", {
+    threadID: auditThread.id,
+    question: "What should we double-check before making this export available to support?",
+  });
 
   const rolloutThread = await requestJSON(url, "/api/threads", {
     anchor: { startLine: 15, endLine: 16 },
@@ -123,6 +136,63 @@ async function seedReview(url) {
     x: 760,
     y: 332,
   });
+  await requestJSON(url, `/api/threads/${encodeURIComponent(rolloutThread.id)}/kind`, {
+    kind: "note",
+  });
+}
+
+async function writeFakeCodex(binDir) {
+  await mkdir(binDir, { recursive: true });
+  const binPath = path.join(binDir, "codex");
+  await writeFile(binPath, fakeCodexScript(), "utf8");
+  await chmod(binPath, 0o755);
+}
+
+function fakeCodexScript() {
+  return `#!/usr/bin/env node
+const readline = require("node:readline");
+
+const answer = "Codex says audit fields should be emitted after the export stream finishes, so requester, account ID, and row count stay tied to the same export attempt.";
+let forkCounter = 0;
+let turnCounter = 0;
+
+function send(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  const id = request.id;
+  const params = request.params || {};
+
+  if (request.method === "initialize") {
+    send({ id, result: { userAgent: "Codex Test", codexHome: "/tmp/codex", platformFamily: "unix", platformOs: "macos" } });
+    return;
+  }
+  if (request.method === "thread/read") {
+    send({ id, result: { thread: { id: params.threadId, ephemeral: false, cwd: process.cwd(), status: { type: "idle" } }, cwd: process.cwd() } });
+    return;
+  }
+  if (request.method === "thread/fork") {
+    const forkId = "planmaxx-render-fork-" + (++forkCounter);
+    send({ id, result: { thread: { id: forkId, forkedFromId: params.threadId, ephemeral: true, cwd: params.cwd || process.cwd(), status: { type: "idle" } }, cwd: params.cwd || process.cwd() } });
+    return;
+  }
+  if (request.method === "turn/start") {
+    const turnId = "planmaxx-render-turn-" + (++turnCounter);
+    send({ id, result: { turn: { id: turnId, status: "inProgress" } } });
+    setTimeout(() => {
+      send({ method: "item/completed", params: { threadId: params.threadId, turnId, item: { type: "agentMessage", text: answer } } });
+      send({ method: "turn/completed", params: { threadId: params.threadId, turn: { id: turnId, status: "completed" } } });
+    }, 5);
+    return;
+  }
+  send({ id, error: { code: -32601, message: "method not found" } });
+});
+`;
 }
 
 async function renderScreenshots(chromium, url) {
@@ -137,10 +207,22 @@ async function renderScreenshots(chromium, url) {
   }
 
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 760 } });
     await page.goto(url, { waitUntil: "networkidle" });
     await page.waitForSelector(".thread", { timeout: 5_000 });
     await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: path.join(readmeScreenshotDir, "review-desktop.png"),
+      fullPage: false,
+    });
+    await page.locator(".handoff-panel").screenshot({
+      path: path.join(readmeScreenshotDir, "handoff-preview.png"),
+    });
+    await page.setViewportSize({ width: 1440, height: 1080 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.locator('[data-thread-id="thread-1"]').screenshot({
+      path: path.join(readmeScreenshotDir, "thread-card.png"),
+    });
     await page.screenshot({
       path: path.join(artifactDir, "planmaxx-review-desktop.png"),
       fullPage: true,

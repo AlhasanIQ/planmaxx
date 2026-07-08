@@ -31,6 +31,21 @@ until you approve, reject, or cancel the review.
 On approval or rejection, the command prints the reviewed plan and review digest
 to stdout. That output is meant to be pasted or returned directly to Codex.
 
+## Screenshots
+
+![PlanMaxx desktop review workspace](docs/screenshots/review-desktop.png)
+
+The review workspace keeps the plan, anchored comments, revision history, and
+handoff preview visible in one local browser session.
+
+<p>
+  <img src="docs/screenshots/handoff-preview.png" alt="PlanMaxx handoff preview" width="360">
+  <img src="docs/screenshots/thread-card.png" alt="PlanMaxx annotated thread card with btw answer" width="320">
+</p>
+
+The smaller crops show the live handoff preview and a thread with an ephemeral
+`/btw` answer that can be promoted into the next Codex handoff.
+
 ## What It Does
 
 - Renders long plans in a readable local review UI.
