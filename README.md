@@ -1,8 +1,13 @@
 # PlanMaxx
 
-PlanMaxx is a local review app for Codex plans. It opens a browser review
-session, lets you comment on and revise the plan, then returns a clean handoff
-for the next Codex turn.
+PlanMaxx enhances how you review, iterate on, and understand your coding
+agent's plans in a single self-contained executable. It gives you a beautiful,
+readable visualizer, side questions and conversations that do not pollute the
+main context while still inheriting the full context available before the plan,
+and multi-turn iteration for refining a plan before you hand it back.
+
+PlanMaxx can be used with Claude Code and other markdown-based plan workflows,
+but it is currently optimized for Codex.
 
 ## Install
 
@@ -13,13 +18,51 @@ required for users.
 bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/AlhasanIQ/planmaxx/main/install.sh | bash'
 ```
 
-By default the installer puts `planmaxx` in `~/.local/bin`.
+By default the installer puts `planmaxx` in `$HOME/.local/bin` on Linux and
+macOS. On Windows bash environments, it installs `planmaxx.exe` in the same
+location. Use `--install-dir` or `PLANMAXX_INSTALL_DIR` to choose another
+directory.
 
 ```bash
 planmaxx version
 ```
 
+### Automatic Codex Skill
+
+PlanMaxx can also install an optional user-level Codex skill. In that mode,
+Codex can discover PlanMaxx from the skill frontmatter and use it automatically
+when an agent-written plan is ready for user review.
+
+Install the binary only for manual use:
+
+```bash
+bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/AlhasanIQ/planmaxx/main/install.sh | bash'
+```
+
+Install the binary and opt into automatic Codex plan review:
+
+```bash
+bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/AlhasanIQ/planmaxx/main/install.sh | bash -s -- --install-codex-skill'
+```
+
+You can also add or remove the skill later:
+
+```bash
+planmaxx skill install --target codex
+planmaxx skill remove --target codex
+```
+
+The skill is installed under your Codex user directory by default. Use
+`--repo /path/to/repo` with either command for repo-scoped installation.
+
 ## Quick Start
+
+When working with an agent, ask it to use PlanMaxx for plan review, or just
+tell the agent to "use planmaxx". The agent should write its plan to a markdown
+file, run the review, wait for your decision, and continue only from the
+PlanMaxx handoff.
+
+If you already have a markdown plan file, run:
 
 ```bash
 planmaxx review path/to/plan.md
@@ -29,7 +72,8 @@ PlanMaxx starts a local server on `127.0.0.1`, opens your browser, and blocks
 until you approve, reject, or cancel the review.
 
 On approval or rejection, the command prints the reviewed plan and review digest
-to stdout. That output is meant to be pasted or returned directly to Codex.
+to stdout. Return that output to your agent if it is not already running the
+command itself.
 
 ## Screenshots
 
@@ -43,8 +87,9 @@ handoff preview visible in one local browser session.
   <img src="docs/screenshots/thread-card.png" alt="PlanMaxx annotated thread card with btw answer" width="320">
 </p>
 
-The smaller crops show the live handoff preview and a thread with an ephemeral
-`/btw` answer that can be promoted into the next Codex handoff.
+The live handoff preview shows what will be sent back to Codex, while thread
+cards can include ephemeral `/btw` answers that can be promoted into the next
+handoff.
 
 ## What It Does
 

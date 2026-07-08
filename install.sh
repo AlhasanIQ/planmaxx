@@ -5,6 +5,7 @@ REPO="${PLANMAXX_REPO:-AlhasanIQ/planmaxx}"
 VERSION="${PLANMAXX_VERSION:-latest}"
 INSTALL_DIR="${PLANMAXX_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL_OVERRIDE="${PLANMAXX_BASE_URL:-}"
+INSTALL_CODEX_SKILL="${PLANMAXX_INSTALL_CODEX_SKILL:-0}"
 
 log() {
   printf '[planmaxx installer] %s\n' "$*"
@@ -26,12 +27,14 @@ Options:
   --version <tag|latest>  Version tag to install (default: latest)
   --install-dir <path>    Binary install directory (default: ~/.local/bin)
   --repo <owner/repo>     GitHub repo (default: AlhasanIQ/planmaxx)
+  --install-codex-skill   Also install the optional user-level Codex skill
   --help                  Show this help
 
 Environment overrides:
   PLANMAXX_REPO
   PLANMAXX_VERSION
   PLANMAXX_INSTALL_DIR
+  PLANMAXX_INSTALL_CODEX_SKILL=1
   PLANMAXX_BASE_URL        Override release asset base URL for mirrors or tests
 EOF
 }
@@ -171,6 +174,10 @@ while [[ $# -gt 0 ]]; do
       REPO="$2"
       shift 2
       ;;
+    --install-codex-skill)
+      INSTALL_CODEX_SKILL="1"
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -215,3 +222,16 @@ case ":${PATH}:" in
 esac
 
 "$BIN_PATH" version
+
+case "$INSTALL_CODEX_SKILL" in
+  1|true|TRUE|yes|YES)
+    log "Installing optional user-level Codex skill..."
+    "$BIN_PATH" skill install --target codex
+    ;;
+  0|false|FALSE|no|NO|"")
+    log "Optional Codex skill not installed. To enable automatic plan review later, run: ${BIN_PATH} skill install --target codex"
+    ;;
+  *)
+    die "invalid PLANMAXX_INSTALL_CODEX_SKILL value: ${INSTALL_CODEX_SKILL} (expected 1/0, true/false, yes/no)"
+    ;;
+esac
