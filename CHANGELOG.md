@@ -41,6 +41,9 @@
 - Preserve native text selection when opening the convenience comment composer;
   an untouched new composer now disappears on click-away without saving a
   comment.
+- Refined active comment cards into a compact feedback workflow and restyled
+  resolved or stale threads as a distinct archival section with no active
+  iteration controls.
 
 ## v0.1.0
 

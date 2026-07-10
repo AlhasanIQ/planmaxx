@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   AlertTriangle,
+  Archive,
   ArrowRight,
   CheckCircle2,
   EyeOff,
@@ -59,12 +60,10 @@ export function ThreadCard(props: ThreadCardProps) {
   const isOpen = status === "open";
   const isDecisionIntent = kind === "decision";
   const isProcessing = Boolean(agentAction) || disabled;
-  const replyLabel = !isOpen ? "Add note" : isDecisionIntent ? "Add to next turn" : "Add private note";
-  const replyTitle = !isOpen
-    ? `This thread is ${status} and stays out of the handoff`
-    : isDecisionIntent
-      ? "This note is included in the next handoff because this thread is marked Decision"
-      : "This note stays private unless this thread is switched to Decision";
+  const replyLabel = isDecisionIntent ? "Add to next turn" : "Add private note";
+  const replyTitle = isDecisionIntent
+    ? "This note is included in the next handoff because this thread is marked Decision"
+    : "This note stays private unless this thread is switched to Decision";
 
   return (
     <section
@@ -74,37 +73,51 @@ export function ThreadCard(props: ThreadCardProps) {
       onMouseEnter={() => onHover(thread.id)}
       onMouseLeave={() => onHover(null)}
     >
-      <header className="flex items-center gap-1.5">
-        <h3 className="flex-1 truncate text-[13px] font-semibold">
-          <span className="text-foreground-muted">
-            {anchorLabel(thread.anchor)}
+      <header className="thread-card-header">
+        <div className="thread-card-heading">
+          <span className={`thread-card-eyebrow${isOpen ? "" : " is-historical"}`}>
+            {isOpen ? "Active feedback" : <><Archive size={11} /> Archived feedback</>}
           </span>
-        </h3>
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm"
-          onClick={() => onEdit(thread.id)}
-          disabled={isProcessing}
-          aria-label="Edit comment"
-          title="Edit comment and selected text"
-        >
-          <Pencil size={13} />
-        </button>
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm btn-danger"
-          onClick={() => onDelete(thread.id)}
-          disabled={isProcessing}
-          aria-label="Delete thread"
-          title="Delete"
-        >
-          <Trash2 size={13} />
-        </button>
+          <h3>{anchorLabel(thread.anchor)}</h3>
+        </div>
+        <div className="thread-card-tools">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => onEdit(thread.id)}
+            disabled={isProcessing}
+            aria-label={isOpen ? "Edit comment" : "Inspect or re-anchor archived comment"}
+            title={isOpen ? "Edit comment and selected text" : "Inspect or re-anchor archived comment"}
+          >
+            <Pencil size={13} />
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm btn-danger"
+            onClick={() => onDelete(thread.id)}
+            disabled={isProcessing}
+            aria-label="Delete thread"
+            title="Delete"
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
       </header>
 
-      <div className="mt-2 flex items-center gap-1.5">
-        <KindToggle kind={kind} onChange={(k) => onSetKind(thread.id, k)} disabled={isProcessing || !isOpen} />
-        {!isOpen ? <ThreadStatusPill status={status} /> : null}
+      <div className={`thread-card-meta${isOpen ? "" : " is-historical"}`}>
+        {isOpen ? (
+          <>
+            <KindToggle kind={kind} onChange={(k) => onSetKind(thread.id, k)} disabled={isProcessing} />
+            <span className="thread-intent-copy">
+              {isDecisionIntent ? "Included in the next iteration" : "Private to this review"}
+            </span>
+          </>
+        ) : (
+          <>
+            <ThreadStatusPill status={status} />
+            <span className="thread-intent-copy">Not included in the next iteration</span>
+          </>
+        )}
       </div>
 
       {!isOpen ? (
@@ -115,10 +128,10 @@ export function ThreadCard(props: ThreadCardProps) {
         </p>
       ) : null}
 
-      <ul className="mt-2.5 space-y-2.5">
+      <ul className="thread-message-list">
         {thread.messages.map((m) => (
-          <li key={m.id} className="text-[13px] leading-relaxed">
-            <div className="mb-0.5 flex items-center gap-2">
+          <li key={m.id} className="thread-message">
+            <div className="thread-message-meta">
               <span className="chip">{m.author}</span>
               <span className="text-[11px] text-foreground-muted">{relativeTime(m.createdAt)}</span>
             </div>
@@ -128,14 +141,14 @@ export function ThreadCard(props: ThreadCardProps) {
       </ul>
 
       {sideAnswers.length > 0 ? (
-        <ul className="mt-3 space-y-2 border-t border-border pt-2">
+        <ul className="thread-side-answer-list">
           {sideAnswers.map((ans) => (
             <li
               key={ans.id}
-              className={`rounded-md border px-2.5 py-2 text-[13px] ${
+              className={`thread-side-answer ${
                 ans.promoted
-                  ? "border-accent/40 bg-[color-mix(in_srgb,var(--color-accent)_8%,transparent)]"
-                  : "border-border bg-surface-muted/40"
+                  ? "is-promoted"
+                  : ""
               }`}
             >
               <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -193,7 +206,7 @@ export function ThreadCard(props: ThreadCardProps) {
         </div>
       ) : null}
 
-      {isOpen ? <div className="mt-3 flex items-center gap-1.5">
+      {isOpen ? <div className="thread-card-actions">
         <button
           type="button"
           className="btn btn-sm flex-1"
