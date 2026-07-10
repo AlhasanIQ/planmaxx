@@ -16,6 +16,9 @@
   with duplicate-run guards and automatic cleanup after success or failure.
 - Clear obsolete character selections when an iterate proposal resolves a
   comment, and keep the accepted revision comparison available to show or hide.
+- Render GitHub-Flavored Markdown tables in review plans with preserved
+  line-level comment anchors, alignment, inline formatting, and narrow-view
+  scrolling.
 
 ## v0.1.0
 

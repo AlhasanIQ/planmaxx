@@ -285,6 +285,37 @@
 .line-row.is-blank .line-content::before {
   content: "\00a0";
 }
+.line-row.is-table-header .line-content,
+.line-row.is-table-divider .line-content,
+.line-row.is-table-row .line-content {
+  overflow-x: auto;
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+.plan-table-row {
+  display: grid;
+  width: 100%;
+  border-left: 1px solid var(--color-border);
+}
+.plan-table-cell,
+.plan-table-divider-cell {
+  min-width: 0;
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  padding: 5px 8px;
+}
+.plan-table-row.is-header .plan-table-cell {
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+  font-weight: 600;
+}
+.plan-table-row.is-divider .plan-table-divider-cell {
+  height: 3px;
+  padding: 0;
+  background: var(--color-border-strong);
+}
+.plan-table-cell.is-center { text-align: center; }
+.plan-table-cell.is-right { text-align: right; }
 .pin-cell {
   display: flex;
   align-items: center;

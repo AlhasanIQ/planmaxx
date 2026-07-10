@@ -230,6 +230,10 @@ export const Plan = memo(function Plan({
               <div
                 data-line={isProposedLine ? undefined : lineNumber}
                 className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
+                  line.kind === "table-header" ? " is-table-header" : ""
+                }${line.kind === "table-divider" ? " is-table-divider" : ""}${
+                  line.kind === "table-row" ? " is-table-row" : ""
+                }${
                   inDraft ? " is-anchored" : ""
                 }${inHoverAnchor ? " is-hover-anchor" : ""}${
                   row.diffKind === "remove" ? " is-proposal-remove" : ""
@@ -604,9 +608,14 @@ function inlineNodeToReact(node: ChildNode, key: string): React.ReactNode {
 }
 
 function spanStyle(style: string | null): React.CSSProperties | undefined {
-  const match = /^padding-left:\s*(\d+)px$/i.exec(style ?? "");
-  if (!match) return undefined;
-  return { paddingLeft: `${match[1]}px` };
+  const padding = /^padding-left:\s*(\d+)px$/i.exec(style ?? "");
+  if (padding) return { paddingLeft: `${padding[1]}px` };
+  const columns = /^grid-template-columns:repeat\((\d+),\s*minmax\(9rem,\s*1fr\)\);min-width:(\d+)px$/i.exec(style ?? "");
+  if (columns) return {
+    gridTemplateColumns: `repeat(${columns[1]}, minmax(9rem, 1fr))`,
+    minWidth: `${columns[2]}px`,
+  };
+  return undefined;
 }
 
 function DraftBoundaryHandles({
