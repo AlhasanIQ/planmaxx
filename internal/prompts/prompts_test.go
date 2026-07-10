@@ -78,7 +78,7 @@ func TestReviewDigestRendersTemplate(t *testing.T) {
 
 	for _, want := range []string{
 		"Create a compact PlanMaxx review digest.",
-		"PlanMaxx protocol documentation (v2)",
+		"PlanMaxx protocol documentation (v1)",
 		"Agent-generated plan:\n# Plan",
 		"Reviewer decisions:\nUse Cobra for CLI.",
 		"Promoted side-question answers:\nCobra gives clean subcommands.",
@@ -100,7 +100,7 @@ func TestSectionIterationRendersTemplate(t *testing.T) {
 
 	for _, want := range []string{
 		"PlanMaxx section iteration",
-		"PlanMaxx protocol documentation (v2)",
+		"PlanMaxx protocol documentation (v1)",
 		"rev-2",
 		"planmaxx_iteration",
 		"target=\"lines\"",
@@ -128,7 +128,7 @@ func TestSideQuestionRendersTemplate(t *testing.T) {
 
 	for _, want := range []string{
 		"PlanMaxx side question",
-		"PlanMaxx protocol documentation (v2)",
+		"PlanMaxx protocol documentation (v1)",
 		"What should move first?",
 		"/repo/plan.md",
 		"/repo/plan.md:2:3-2:5",
@@ -153,7 +153,7 @@ func TestEveryModelFacingPromptIncludesProtocolDocumentation(t *testing.T) {
 		SectionIteration(SectionIterationInput{Protocol: `<planmaxx_iteration version="1" revision="rev-1"/>`}),
 	}
 	for _, prompt := range prompts {
-		if !strings.Contains(prompt, "PlanMaxx protocol documentation (v2)") {
+		if !strings.Contains(prompt, "PlanMaxx protocol documentation (v1)") {
 			t.Fatalf("expected model-facing prompt to include protocol documentation\n%s", prompt)
 		}
 	}

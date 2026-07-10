@@ -109,37 +109,7 @@ func (s Service) Propose(ctx context.Context, req Request) (session.SectionPropo
 		}
 		return session.SectionProposalInput{ThreadID: req.ThreadID, Anchor: req.Anchor, AppliedAnchor: applied, AppliedHunks: appliedHunks, ReplacementAnchor: proposedAnchor, OriginalSection: selected, ProposedSection: primary.Hunk.Content, ProposedPlan: proposedPlan, Summary: parsed.Summary, Instruction: req.ReviewerInstruction, RawResponse: raw, IncludedThreadIDs: append([]string(nil), req.IncludedThreadIDs...)}, nil
 	}
-	appliedAnchor, err := appliedAnchorForResponse(req, targetAnchor, parsed.Target)
-	if err != nil {
-		return session.SectionProposalInput{}, err
-	}
-	proposedPlan, err := ReplaceSection(req.Plan, appliedAnchor, parsed.Replacement)
-	if err != nil {
-		return session.SectionProposalInput{}, err
-	}
-	proposedAnchor := anchorAfterReplacement(appliedAnchor, parsed.Replacement)
-	lifecycleAppliedAnchor := appliedAnchor
-	if req.RootAppliedAnchor.StartLine > 0 {
-		// A refinement is applied against the previous proposed plan, while the
-		// session's thread lifecycle is still rooted in the original plan. Keep
-		// the original declared scope so we never treat generated proposal lines
-		// as if they were source-plan lines on final apply.
-		lifecycleAppliedAnchor = req.RootAppliedAnchor
-	}
-
-	return session.SectionProposalInput{
-		ThreadID:          req.ThreadID,
-		Anchor:            req.Anchor,
-		AppliedAnchor:     lifecycleAppliedAnchor,
-		ReplacementAnchor: proposedAnchor,
-		OriginalSection:   selected,
-		ProposedSection:   parsed.Replacement,
-		ProposedPlan:      proposedPlan,
-		Summary:           parsed.Summary,
-		Instruction:       req.ReviewerInstruction,
-		RawResponse:       raw,
-		IncludedThreadIDs: append([]string(nil), req.IncludedThreadIDs...),
-	}, nil
+	return session.SectionProposalInput{}, errors.New("section iteration response contains no patch hunks")
 }
 
 func primaryResolvedHunk(resolved []patches.Resolved, target session.Anchor) patches.Resolved {
@@ -168,21 +138,6 @@ func anchorsOverlap(left, right session.Anchor) bool {
 		return true
 	}
 	return left.StartChar < right.EndChar && right.StartChar < left.EndChar
-}
-
-func appliedAnchorForResponse(req Request, target session.Anchor, replacement ReplacementTarget) (session.Anchor, error) {
-	switch replacement.Kind {
-	case "selection":
-		return target, nil
-	case "lines":
-		lineCount := len(strings.Split(req.Plan, "\n"))
-		if replacement.StartLine < 1 || replacement.EndLine > lineCount {
-			return session.Anchor{}, fmt.Errorf("line replacement %d-%d is outside the current plan", replacement.StartLine, replacement.EndLine)
-		}
-		return session.Anchor{StartLine: replacement.StartLine, EndLine: replacement.EndLine}, nil
-	default:
-		return session.Anchor{}, fmt.Errorf("unsupported replacement target %q", replacement.Kind)
-	}
 }
 
 func anchorAfterReplacement(anchor session.Anchor, replacement string) session.Anchor {

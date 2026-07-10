@@ -23,7 +23,7 @@ func (f *fakePromptClient) AskPrompt(ctx context.Context, prompt string) (string
 }
 
 func TestServiceReturnsUnavailableWithoutThreadID(t *testing.T) {
-	client := &fakePromptClient{answer: proposalV2("rev-1", "selection", "Old", "Updated", "- New")}
+	client := &fakePromptClient{answer: proposalV1("rev-1", "selection", "Old", "Updated", "- New")}
 	service := NewService("", client)
 
 	_, err := service.Propose(context.Background(), Request{
@@ -76,7 +76,7 @@ func TestServiceRejectsMalformedResponseWithoutProposal(t *testing.T) {
 }
 
 func TestServiceBuildsProposalInputFromAgentResponse(t *testing.T) {
-	client := &fakePromptClient{answer: proposalV2("rev-1", "lines", "- Old step", "Clarified rollout order.", "- New step")}
+	client := &fakePromptClient{answer: proposalV1("rev-1", "lines", "- Old step", "Clarified rollout order.", "- New step")}
 	service := NewService("thread-1", client)
 
 	got, err := service.Propose(context.Background(), Request{
@@ -120,7 +120,7 @@ func TestServiceBuildsProposalInputFromAgentResponse(t *testing.T) {
 }
 
 func TestServiceReturnsReplacementAnchorForCharacterRange(t *testing.T) {
-	client := &fakePromptClient{answer: proposalV2("rev-1", "selection", "rough", "Polished wording.", "polished")}
+	client := &fakePromptClient{answer: proposalV1("rev-1", "selection", "rough", "Polished wording.", "polished")}
 	service := NewService("thread-1", client)
 
 	got, err := service.Propose(context.Background(), Request{
@@ -144,7 +144,7 @@ func TestServiceReturnsReplacementAnchorForCharacterRange(t *testing.T) {
 }
 
 func TestServiceAppliesExplicitFullLineScopeForCharacterSelection(t *testing.T) {
-	client := &fakePromptClient{answer: proposalV2("rev-1", "lines", "- Product name: **From Zero to AI Engineer**", "Updated audience.", "- Product name: **From Zero to AI Engineer**\n- Primary learner: **Software engineers**")}
+	client := &fakePromptClient{answer: proposalV1("rev-1", "lines", "- Product name: **From Zero to AI Engineer**", "Updated audience.", "- Product name: **From Zero to AI Engineer**\n- Primary learner: **Software engineers**")}
 	service := NewService("thread-1", client)
 
 	got, err := service.Propose(context.Background(), Request{
@@ -172,15 +172,8 @@ func TestServiceAppliesExplicitFullLineScopeForCharacterSelection(t *testing.T) 
 	}
 }
 
-func TestServiceAllowsExplicitLegacyLineScopeOutsideSelection(t *testing.T) {
-	got, err := appliedAnchorForResponse(Request{Plan: "one\ntwo\nthree\nfour"}, session.Anchor{StartLine: 3, StartChar: 1, EndLine: 3, EndChar: 3}, ReplacementTarget{Kind: "lines", StartLine: 1, EndLine: 1})
-	if err != nil || got != (session.Anchor{StartLine: 1, EndLine: 1}) {
-		t.Fatalf("expected explicit line scope without window, got %+v, %v", got, err)
-	}
-}
-
 func TestServiceRejectsMismatchedRevision(t *testing.T) {
-	client := &fakePromptClient{answer: proposalV2("rev-other", "selection", "old", "Updated", "new")}
+	client := &fakePromptClient{answer: proposalV1("rev-other", "selection", "old", "Updated", "new")}
 	_, err := NewService("thread-1", client).Propose(context.Background(), Request{
 		RevisionID:          "rev-1",
 		Plan:                "old",
@@ -193,7 +186,7 @@ func TestServiceRejectsMismatchedRevision(t *testing.T) {
 }
 
 func TestServicePreservesOriginalAppliedScopeWhenRefiningPendingProposal(t *testing.T) {
-	client := &fakePromptClient{answer: proposalV2("rev-1", "lines", "- Generated one\n- Generated two", "Refined", "- Final")}
+	client := &fakePromptClient{answer: proposalV1("rev-1", "lines", "- Generated one\n- Generated two", "Refined", "- Final")}
 	got, err := NewService("thread-1", client).Propose(context.Background(), Request{
 		RevisionID:          "rev-1",
 		Plan:                "# Plan\n\n- Generated one\n- Generated two\n- Keep",
@@ -213,8 +206,8 @@ func TestServicePreservesOriginalAppliedScopeWhenRefiningPendingProposal(t *test
 	}
 }
 
-func TestServiceAppliesV2DistantHunksWithoutTrustingHints(t *testing.T) {
-	raw := `<planmaxx_proposal version="2" revision="rev-1"><summary>Rename.</summary><replacement target="lines" start_hint="99" end_hint="99"><before>before</before><expected>old one</expected><after>keep</after><content>new one</content></replacement><replacement target="lines" start_hint="1" end_hint="1"><before>keep</before><expected>old two</expected><after>after</after><content>new two</content></replacement></planmaxx_proposal>`
+func TestServiceAppliesDistantHunksWithoutTrustingHints(t *testing.T) {
+	raw := `<planmaxx_proposal version="1" revision="rev-1"><summary>Rename.</summary><replacement target="lines" start_hint="99" end_hint="99"><before>before</before><expected>old one</expected><after>keep</after><content>new one</content></replacement><replacement target="lines" start_hint="1" end_hint="1"><before>keep</before><expected>old two</expected><after>after</after><content>new two</content></replacement></planmaxx_proposal>`
 	client := &fakePromptClient{answer: raw}
 	got, err := NewService("thread-1", client).Propose(context.Background(), Request{RevisionID: "rev-1", Plan: "before\nold one\nkeep\nold two\nafter", Anchor: session.Anchor{StartLine: 2, EndLine: 2}, ReviewerInstruction: "Rename"})
 	if err != nil {
@@ -225,9 +218,9 @@ func TestServiceAppliesV2DistantHunksWithoutTrustingHints(t *testing.T) {
 	}
 }
 
-func TestServiceAppliesV2CharacterHunkWithoutLineSplice(t *testing.T) {
+func TestServiceAppliesCharacterHunkWithoutLineSplice(t *testing.T) {
 	plan := "- Product name: **From Zero to AI Engineer**"
-	raw := `<planmaxx_proposal version="2" revision="base-commit"><summary>Rename precisely.</summary><replacement target="selection" start_hint="wrong" end_hint="wrong"><before>**From </before><expected>Zero</expected><after> to AI</after><content>AI</content></replacement></planmaxx_proposal>`
+	raw := `<planmaxx_proposal version="1" revision="base-commit"><summary>Rename precisely.</summary><replacement target="selection" start_hint="wrong" end_hint="wrong"><before>**From </before><expected>Zero</expected><after> to AI</after><content>AI</content></replacement></planmaxx_proposal>`
 	got, err := NewService("thread-1", &fakePromptClient{answer: raw}).Propose(context.Background(), Request{
 		RevisionID: "base-commit", Plan: plan,
 		Anchor:          session.Anchor{StartLine: 1, StartChar: 23, EndLine: 1, EndChar: 27},

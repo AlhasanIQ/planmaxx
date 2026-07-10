@@ -52,14 +52,14 @@ review plan.
 ## Agent patch protocol
 
 Every model-facing prompt includes `internal/prompts/templates/protocol.gotmpl`.
-Section iteration uses protocol v2: a response is revision-bound and contains
+Section iteration uses protocol v1: a response is revision-bound and contains
 one or more non-overlapping XML hunks with `before`, `expected`, `after`, and
 `content`. PlanMaxx locates a unique exact content match in the base revision;
 line/character hints are advisory and there is no proximity window. This lets
 a small character selection safely drive an exact local edit or a coordinated
 rename anywhere in the plan. Normal escaped XML is required by the prompt;
-CDATA is accepted only for compatibility and is not needed. Protocol v1 is not
-accepted for section iteration.
+CDATA is accepted as ordinary XML text syntax but is unnecessary; the prompt
+asks models to use escaped XML text instead.
 
 ## Server lifetime and concurrency
 

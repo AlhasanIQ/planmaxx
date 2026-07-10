@@ -81,7 +81,7 @@ func (c blockingSectionPromptClient) AskPrompt(ctx context.Context, prompt strin
 }
 
 func sectionProposalResponse(revision, target, expected, summary, replacement string) string {
-	return fmt.Sprintf(`<planmaxx_proposal version="2" revision=%q><summary>%s</summary><replacement target=%q><expected>%s</expected><content>%s</content></replacement></planmaxx_proposal>`, revision, summary, target, expected, replacement)
+	return fmt.Sprintf(`<planmaxx_proposal version="1" revision=%q><summary>%s</summary><replacement target=%q><expected>%s</expected><content>%s</content></replacement></planmaxx_proposal>`, revision, summary, target, expected, replacement)
 }
 
 func TestStateRouteReturnsSession(t *testing.T) {

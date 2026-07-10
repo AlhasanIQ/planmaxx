@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Added revision-bound XML patch protocol v2 with exact content anchors,
+- Added revision-bound XML patch protocol v1 with exact content anchors,
   multi-hunk atomic application, and safe character-range edits.
 - Added Git-backed immutable plan revisions, append-only restore, compact
   autosaves, and crash recovery journaling.

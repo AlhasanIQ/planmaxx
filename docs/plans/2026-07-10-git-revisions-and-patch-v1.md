@@ -21,11 +21,11 @@ semantics.
 - Store Git commit IDs in review metadata instead of full revision bodies. Add
   a migration path for existing autosaves that still embed historical content.
 - Keep the current Go diff renderer, loading its two inputs from Git commits.
-- Make section iteration protocol v2. A proposal is bound to one base commit
+- Make section iteration protocol v1. A proposal is bound to one base commit
   ID/revision and contains one or more non-overlapping hunks. Position hints
   are advisory only.
 
-## Protocol v2
+## Protocol v1
 
 For the reviewer’s exact selection, the model uses `target="selection"` and
 must echo the expected selected text. It never supplies character offsets.
@@ -62,7 +62,7 @@ creates one proposed plan.
    proposals, normal turns, revision history, and diff endpoints through the
    revision store. Retain source baseline behavior and pending-proposal
    obsolescence rules.
-4. Implement protocol v2 in the dedicated protocol prompt, annotated model
+4. Implement protocol v1 in the dedicated protocol prompt, annotated model
    view, strict XML parser, and section-iteration service. Remove the allowed
    line window and positional character/line authority.
 5. Replace single-anchor proposal application with a list of validated applied
@@ -71,7 +71,7 @@ creates one proposed plan.
    deterministically after atomic application.
 6. Update the UI/types only where revision IDs or multi-hunk proposal details
    must be surfaced. Keep the existing proposed-plan diff approval flow.
-7. Document storage, migration, recovery, and protocol v2 in README and
+7. Document storage, migration, recovery, and protocol v1 in README and
    `docs/storage.md`; update PRODUCT/ROADMAP because durable shared Git
    history becomes product scope.
 
@@ -82,8 +82,8 @@ creates one proposed plan.
 - Session/server tests for Git-backed revision loading, external edits,
   proposal application, multi-hunk shifts, stale/reanchor outcomes, and
   concurrent source changes.
-- Protocol tests for escaped XML text, CDATA compatibility, protocol-v1
-  rejection, incorrect hints with unique
+- Protocol tests for escaped XML text, CDATA handling, incorrect hints with
+  unique
   recovery, ambiguous/missing context rejection, boundary lines, repeated
   text, Unicode, non-overlap, and atomic no-mutation-on-failure behavior.
 - `go test ./...`, `bun test`, `./scripts/build-web.sh`, and a live PlanMaxx

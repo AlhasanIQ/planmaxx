@@ -12,9 +12,6 @@ import (
 )
 
 func ParseResponse(raw string) (ParsedResponse, error) {
-	if strings.Contains(raw, `version="1"`) {
-		return ParsedResponse{}, errors.New("section iteration protocol v1 is unsupported; return protocol v2")
-	}
 	var wire struct {
 		XMLName      xml.Name `xml:"planmaxx_proposal"`
 		Version      string   `xml:"version,attr"`
@@ -40,19 +37,19 @@ func ParseResponse(raw string) (ParsedResponse, error) {
 		}
 		return ParsedResponse{}, fmt.Errorf("section iteration response has content outside the XML document: %v", token)
 	}
-	if wire.XMLName.Local != "planmaxx_proposal" || wire.Version != "2" || wire.Revision == "" || strings.TrimSpace(wire.Summary) == "" || len(wire.Replacements) == 0 {
-		return ParsedResponse{}, errors.New("protocol v2 requires proposal, revision, summary, and hunks")
+	if wire.XMLName.Local != "planmaxx_proposal" || wire.Version != "1" || wire.Revision == "" || strings.TrimSpace(wire.Summary) == "" || len(wire.Replacements) == 0 {
+		return ParsedResponse{}, errors.New("protocol requires proposal, revision, summary, and hunks")
 	}
 	result := ParsedResponse{RevisionID: wire.Revision, Summary: strings.TrimSpace(wire.Summary)}
 	for _, h := range wire.Replacements {
 		if h.Target != "lines" && h.Target != "selection" {
-			return ParsedResponse{}, errors.New("protocol v2 hunk target must be selection or lines")
+			return ParsedResponse{}, errors.New("protocol hunk target must be selection or lines")
 		}
 		if h.Content == nil {
-			return ParsedResponse{}, errors.New("protocol v2 hunk requires a content element")
+			return ParsedResponse{}, errors.New("protocol hunk requires a content element")
 		}
 		if h.Expected == "" {
-			return ParsedResponse{}, errors.New("protocol v2 hunk requires expected source text")
+			return ParsedResponse{}, errors.New("protocol hunk requires expected source text")
 		}
 		// Hints make the proposal easier to inspect, but the base-content match is
 		// the authority. Ignore malformed hints instead of turning a recoverable
