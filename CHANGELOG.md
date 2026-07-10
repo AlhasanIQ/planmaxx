@@ -56,6 +56,8 @@
   stale, and `/btw` states distinct through restrained surfaces and labels.
 - Automatically open a review with the checked-out revision compared to its
   direct parent when revision history exists.
+- Fixed GFM table rendering when a table is followed by a blank line and a
+  subsequent Markdown block.
 
 ## v0.1.0
 

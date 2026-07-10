@@ -67,6 +67,24 @@ describe("renderPlanLines", () => {
     expect(lines[2].html).toContain("is-right");
   });
 
+  test("renders a table followed by a blank line and another Markdown block", () => {
+    const lines = renderPlanLines([
+      "| Aspect | Owner |",
+      "|---|---|",
+      "| Rendering | PlanMaxx |",
+      "",
+      "## Next section",
+    ].join("\n"));
+
+    expect(lines.map((line) => line.kind)).toEqual([
+      "table-header",
+      "table-divider",
+      "table-row",
+      "blank",
+      "heading",
+    ]);
+  });
+
   test("uses Marked's table parsing for escaped pipes and leaves malformed tables as text", () => {
     const escaped = renderPlanLines("| Label | Value |\n| --- | --- |\n| A | x\\|y |");
     expect(escaped[2].html).toContain("x|y");

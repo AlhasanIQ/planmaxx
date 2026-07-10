@@ -199,13 +199,17 @@ function tableAt(lines: string[], start: number): { consumed: number; lines: Lin
   const first = inlineMarkdown.lexer(source)[0];
   if (!first || first.type !== "table") return null;
 
-  const rawLines = first.raw.split("\n");
-  if (rawLines.length < 2 || first.rows.length !== rawLines.length - 2) return null;
   const columns = first.header.length;
   if (columns === 0) return null;
+  // Marked includes the table's terminating newline in token.raw when another
+  // block follows. Counting raw.split("\n") then mistakes that separator for
+  // a table row and drops otherwise-valid tables. GFM tables are one header,
+  // one delimiter, and one source line per parsed row.
+  const consumed = first.rows.length + 2;
+  if (consumed > lines.length-start) return null;
 
   return {
-    consumed: rawLines.length,
+    consumed,
     lines: [
       { kind: "table-header", html: tableMarkup(first.header, columns, "header") },
       { kind: "table-divider", html: tableDividerMarkup(columns) },

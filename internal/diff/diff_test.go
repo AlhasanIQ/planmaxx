@@ -61,6 +61,20 @@ func BenchmarkLinesLargePlan(b *testing.B) {
 	}
 }
 
+func BenchmarkLinesRevisionComparison(b *testing.B) {
+	for _, lineCount := range []int{500, 2_000, 5_000} {
+		b.Run(fmt.Sprintf("%d_lines", lineCount), func(b *testing.B) {
+			before := repeatedPlan(lineCount, "before")
+			after := repeatedPlan(lineCount, "after")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = Lines(before, after)
+			}
+		})
+	}
+}
+
 func repeatedPlan(lines int, changed string) string {
 	var out strings.Builder
 	for index := 0; index < lines; index++ {
