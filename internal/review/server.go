@@ -48,6 +48,14 @@ type Server struct {
 	sectionIterations   sectioniter.Service
 	revisionStore       *revisions.Store
 	revisionPlanID      string
+	comparisonCache     sync.Map
+}
+
+type revisionComparison struct {
+	From     string                     `json:"from"`
+	To       string                     `json:"to"`
+	Lines    []plandiff.Line            `json:"lines"`
+	Feedback []session.RevisionFeedback `json:"feedback"`
 }
 
 type Result struct {
@@ -207,7 +215,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, s.session)
+	writeJSON(w, sessionForClient(*s.session))
 }
 
 func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
@@ -568,9 +576,10 @@ func (s *Server) handleRevisions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	state := sessionForClient(*s.session)
 	writeJSON(w, map[string]any{
 		"currentRevisionId": s.session.CurrentRevisionID,
-		"revisions":         s.session.Revisions,
+		"revisions":         state.Revisions,
 		"pendingProposal":   s.session.PendingProposal,
 	})
 }
@@ -600,6 +609,13 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "revision not found")
 		return
 	}
+	cacheKey, cacheable := revisionComparisonCacheKey(fromRevision, toRevision)
+	if cacheable {
+		if cached, ok := s.comparisonCache.Load(cacheKey); ok {
+			writeJSON(w, cached)
+			return
+		}
+	}
 	if store != nil && fromRevision.CommitID != "" && toRevision.CommitID != "" {
 		fromPlan, err := store.Read(plumbing.NewHash(fromRevision.CommitID))
 		if err != nil {
@@ -613,12 +629,17 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 		}
 		fromRevision.Plan, toRevision.Plan = fromPlan, toPlan
 	}
-	writeJSON(w, map[string]any{
-		"from":     from,
-		"to":       to,
-		"lines":    plandiff.Lines(fromRevision.Plan, toRevision.Plan),
-		"feedback": feedback,
-	})
+	comparison := revisionComparison{
+		From:     from,
+		To:       to,
+		Lines:    plandiff.Lines(fromRevision.Plan, toRevision.Plan),
+		Feedback: feedback,
+	}
+	if cacheable {
+		actual, _ := s.comparisonCache.LoadOrStore(cacheKey, comparison)
+		comparison = actual.(revisionComparison)
+	}
+	writeJSON(w, comparison)
 }
 
 func (s *Server) handleRevisionRestore(w http.ResponseWriter, r *http.Request, revisionID string) {
@@ -995,13 +1016,32 @@ func compactRevisionBodies(source session.Session) session.Session {
 	return copy
 }
 
+// sessionForClient keeps normal review refreshes small. The working plan is
+// already exposed as Session.Plan; historical bodies are fetched only through
+// the comparison endpoint when the reviewer asks for them.
+func sessionForClient(source session.Session) session.Session {
+	copy := source
+	copy.Revisions = append([]session.Revision(nil), source.Revisions...)
+	for i := range copy.Revisions {
+		copy.Revisions[i].Plan = ""
+	}
+	return copy
+}
+
+func revisionComparisonCacheKey(from, to session.Revision) (string, bool) {
+	if from.CommitID == "" || to.CommitID == "" {
+		return "", false
+	}
+	return from.ID + ":" + from.CommitID + ":" + to.ID + ":" + to.CommitID, true
+}
+
 func (s *Server) hydrateRevisionBodiesLocked() error {
 	if s.revisionStore == nil {
 		return nil
 	}
 	for i := range s.session.Revisions {
 		revision := &s.session.Revisions[i]
-		if revision.Plan != "" || revision.CommitID == "" {
+		if revision.ID != s.session.CurrentRevisionID || revision.Plan != "" || revision.CommitID == "" {
 			continue
 		}
 		content, err := s.revisionStore.Read(plumbing.NewHash(revision.CommitID))
@@ -1009,9 +1049,7 @@ func (s *Server) hydrateRevisionBodiesLocked() error {
 			return fmt.Errorf("load revision %s from git store: %w", revision.ID, err)
 		}
 		revision.Plan = content
-		if revision.ID == s.session.CurrentRevisionID {
-			s.session.Plan = content
-		}
+		s.session.Plan = content
 	}
 	return nil
 }

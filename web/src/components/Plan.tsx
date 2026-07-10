@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Columns2, GitCompareArrows, ListTree, MessageSquarePlus, MessageSquareText, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
+import { CheckCircle2, Columns2, GitCompareArrows, ListTree, Loader2, MessageSquarePlus, MessageSquareText, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
 import { renderPlanLines } from "../lib/markdown";
 import type { Anchor, RevisionComparison, RevisionFeedback, SectionProposal, SideAnswer, Thread, ThreadKind } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
@@ -16,6 +16,7 @@ interface PlanProps {
   theme: "light" | "dark";
   proposal?: SectionProposal | null;
   comparison?: RevisionComparison | null;
+  comparisonLoading: boolean;
   onClearComparison: () => void;
   threads: Thread[];
   sideAnswers: SideAnswer[];
@@ -68,6 +69,7 @@ export const Plan = memo(function Plan({
   theme,
   proposal,
   comparison,
+  comparisonLoading,
   onClearComparison,
   threads,
   sideAnswers,
@@ -345,6 +347,11 @@ export const Plan = memo(function Plan({
           />
         </label>
       </header>
+      {comparisonLoading ? (
+        <div className="plan-comparison-loading" role="status" aria-live="polite">
+          <Loader2 size={15} className="animate-spin" /> Loading revision changes…
+        </div>
+      ) : null}
       {comparison ? (
         <div className="plan-comparison-banner">
           <span><GitCompareArrows size={14} /> Showing changes: {comparison.from} → {comparison.to}</span>

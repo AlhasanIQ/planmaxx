@@ -102,6 +102,23 @@ func TestStateRouteReturnsSession(t *testing.T) {
 	if got.Plan != "# Plan" {
 		t.Fatalf("expected plan body, got %q", got.Plan)
 	}
+	if len(got.Revisions) != 1 || got.Revisions[0].Plan != "" {
+		t.Fatalf("expected revision metadata without duplicate plan body, got %+v", got.Revisions)
+	}
+}
+
+func TestSessionForClientOmitsHistoricalRevisionBodies(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n- First")
+	s.AddTurnRevision("# Plan\n- Second", "updated")
+	public := sessionForClient(*s)
+	if public.Plan != "# Plan\n- Second" {
+		t.Fatalf("expected working plan to remain available, got %q", public.Plan)
+	}
+	for _, revision := range public.Revisions {
+		if revision.Plan != "" {
+			t.Fatalf("expected revision %s to omit its body, got %q", revision.ID, revision.Plan)
+		}
+	}
 }
 
 func TestServerPersistsRevisionContentInGitStore(t *testing.T) {

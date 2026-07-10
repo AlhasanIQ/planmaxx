@@ -60,6 +60,7 @@ function useReviewController() {
   const [revisionDiff, setRevisionDiff] = useState<RevisionDiffState | null>(null);
   const [revisionDiffLoading, setRevisionDiffLoading] = useState(false);
   const [revisionDiffError, setRevisionDiffError] = useState<string | null>(null);
+  const revisionDiffCache = useRef(new Map<string, RevisionDiffState>());
 
   const pushToast = useCallback((kind: Toast["kind"], message: string) => {
     setToasts((prev) => [...prev, { id: Date.now() + Math.random(), kind, message }]);
@@ -343,10 +344,13 @@ function useReviewController() {
   async function handleApplyProposal(proposalId: string) {
     const revision = await withBusy("Applying proposal…", () => api.applyProposal(proposalId));
     if (!revision) return;
-    await refresh();
     if (revision.parentId) {
-      await handleCompareRevision(revision.parentId, revision.id);
+      await Promise.all([
+        refresh(),
+        handleCompareRevision(revision.parentId, revision.id),
+      ]);
     } else {
+      await refresh();
       setRevisionDiff(null);
     }
     pushToast("success", "Proposal applied");
@@ -364,10 +368,17 @@ function useReviewController() {
       setRevisionDiff(null);
       return;
     }
-    setRevisionDiffLoading(true);
     setRevisionDiffError(null);
+    const key = `${from}:${to}`;
+    const cached = revisionDiffCache.current.get(key);
+    if (cached) {
+      setRevisionDiff(cached);
+      return;
+    }
+    setRevisionDiffLoading(true);
     try {
       const result = await api.revisionDiff(from, to);
+      revisionDiffCache.current.set(key, result);
       setRevisionDiff(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load revision diff";
@@ -560,8 +571,8 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     if (!before || !after) return null;
     return {
       ...revisionDiff,
-      beforePlan: before.plan,
-      afterPlan: after.plan,
+      beforePlan: planFromDiff(revisionDiff.lines, "before"),
+      afterPlan: planFromDiff(revisionDiff.lines, "after"),
       feedback: revisionDiff.feedback ?? [],
       isDirect: after.parentId === before.id,
     };
@@ -612,6 +623,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           theme={theme.resolved}
           proposal={session.pendingProposal}
           comparison={revisionComparison}
+          comparisonLoading={revisionDiffLoading}
           onClearComparison={handleClearRevisionDiff}
           threads={session.threads}
           sideAnswers={session.sideAnswers}
@@ -725,6 +737,13 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
+}
+
+function planFromDiff(lines: DiffLine[], side: "before" | "after") {
+  return lines
+    .filter((line) => side === "before" ? line.kind !== "add" : line.kind !== "remove")
+    .map((line) => line.text)
+    .join("\n");
 }
 
 function useTheme() {

@@ -1,6 +1,10 @@
 package diff
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 func TestLinesReturnsContextForUnchangedText(t *testing.T) {
 	got := Lines("alpha\nbeta", "alpha\nbeta")
@@ -34,6 +38,49 @@ func TestLinesPreservesTrailingBlankLineAsEmptyLine(t *testing.T) {
 		{Kind: KindContext, Before: 2, After: 3, Text: ""},
 	}
 	assertLines(t, got, want)
+}
+
+func TestLinesRecoversLargeRepeatedPlan(t *testing.T) {
+	before := repeatedPlan(8_000, "before")
+	after := repeatedPlan(8_000, "after")
+	lines := Lines(before, after)
+	if got := reconstruct(lines, KindAdd); got != before {
+		t.Fatal("removed and context lines did not recover the original plan")
+	}
+	if got := reconstruct(lines, KindRemove); got != after {
+		t.Fatal("added and context lines did not recover the revised plan")
+	}
+}
+
+func BenchmarkLinesLargePlan(b *testing.B) {
+	before := repeatedPlan(12_000, "before")
+	after := repeatedPlan(12_000, "after")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = Lines(before, after)
+	}
+}
+
+func repeatedPlan(lines int, changed string) string {
+	var out strings.Builder
+	for index := 0; index < lines; index++ {
+		if index%700 == 0 {
+			fmt.Fprintf(&out, "- %s milestone %d\n", changed, index)
+			continue
+		}
+		out.WriteString("- Repeated implementation detail\n")
+	}
+	return strings.TrimSuffix(out.String(), "\n")
+}
+
+func reconstruct(lines []Line, excluded string) string {
+	var out []string
+	for _, line := range lines {
+		if line.Kind != excluded {
+			out = append(out, line.Text)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func assertLines(t *testing.T, got []Line, want []Line) {

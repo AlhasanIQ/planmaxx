@@ -47,6 +47,10 @@
 - Preserve immutable snapshots of feedback used for accepted proposals and
   display that feedback next to direct revision changes; multi-revision
   comparisons group feedback by the intervening accepted revision.
+- Made revision comparison responsive for long plans: compact normal state
+  responses, bounded fast line diffing with precise small-hunk refinement,
+  immutable comparison caches, concurrent post-apply refreshes, and a visible
+  in-editor loading state.
 
 ## v0.1.0
 

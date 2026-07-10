@@ -160,6 +160,17 @@
   color: var(--color-foreground-muted);
   font-size: 12px;
 }
+.plan-comparison-loading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface-elevated));
+  color: var(--color-accent);
+  font-size: 12px;
+  font-weight: 650;
+}
 .plan-comparison-banner span {
   display: inline-flex;
   align-items: center;
