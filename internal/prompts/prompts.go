@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+
+	"github.com/AlhasanIQ/planmaxx/internal/reviewxml"
 )
 
 //go:embed templates/*.gotmpl
@@ -14,91 +16,87 @@ var templateFS embed.FS
 var promptTemplates = template.Must(template.ParseFS(templateFS, "templates/*.gotmpl"))
 
 type handoffTemplateData struct {
-	PlanBlock     string
-	DigestBlock   string
-	NoReviewItems bool
+	PlanBlock             string
+	DigestBlock           string
+	ReviewContext         string
+	ProtocolDocumentation string
+	NoReviewItems         bool
 }
 
 type reviewDigestTemplateData struct {
-	Plan                string
-	ReviewerDecisions   string
-	PromotedSideAnswers string
+	Plan                  string
+	ReviewerDecisions     string
+	PromotedSideAnswers   string
+	ReviewContext         string
+	ProtocolDocumentation string
 }
 
 type sideQuestionTemplateData struct {
-	Question     string
-	FilePath     string
-	Reference    string
-	SelectedText string
-	PlanExcerpt  string
+	Protocol              string
+	ProtocolDocumentation string
 }
 
 type SectionIterationInput struct {
-	RevisionID          string
-	FilePath            string
-	Reference           string
-	SelectedSection     string
-	PlanExcerpt         string
-	ReviewerInstruction string
-	ReviewerDecisions   []string
-	PromotedSideAnswers []string
+	Protocol string
 }
 
 type sectionIterationTemplateData struct {
-	RevisionID          string
-	FilePath            string
-	Reference           string
-	SelectedSection     string
-	PlanExcerpt         string
-	ReviewerInstruction string
-	ReviewerDecisions   string
-	PromotedSideAnswers string
+	Protocol              string
+	ProtocolDocumentation string
 }
 
-func ApprovedHandoff(plan string, digest string, noReviewItems bool) string {
+type protocolDocumentationData struct {
+	Mode string
+}
+
+func ApprovedHandoff(plan string, digest string, reviewContext string, noReviewItems bool) string {
 	return render("approved_handoff.gotmpl", handoffTemplateData{
-		PlanBlock:     fencedBlock("markdown", plan),
-		DigestBlock:   fencedBlock("json", digest),
-		NoReviewItems: noReviewItems,
+		PlanBlock:             fencedBlock("markdown", plan),
+		DigestBlock:           fencedBlock("json", digest),
+		ReviewContext:         reviewContext,
+		ProtocolDocumentation: protocolDocumentation("handoff"),
+		NoReviewItems:         noReviewItems,
 	})
 }
 
-func RejectedHandoff(plan string, digest string) string {
+func RejectedHandoff(plan string, digest string, reviewContext string) string {
 	return render("rejected_handoff.gotmpl", handoffTemplateData{
-		PlanBlock:   fencedBlock("markdown", plan),
-		DigestBlock: fencedBlock("json", digest),
+		PlanBlock:             fencedBlock("markdown", plan),
+		DigestBlock:           fencedBlock("json", digest),
+		ReviewContext:         reviewContext,
+		ProtocolDocumentation: protocolDocumentation("handoff"),
 	})
 }
 
-func ReviewDigest(plan string, reviewerDecisions []string, promotedSideAnswers []string) string {
+func ReviewDigest(plan string, reviewerDecisions []string, promotedSideAnswers []string, reviewContext string) string {
 	return render("review_digest.gotmpl", reviewDigestTemplateData{
-		Plan:                plan,
-		ReviewerDecisions:   strings.Join(reviewerDecisions, "\n"),
-		PromotedSideAnswers: strings.Join(promotedSideAnswers, "\n"),
+		Plan:                  plan,
+		ReviewerDecisions:     strings.Join(reviewerDecisions, "\n"),
+		PromotedSideAnswers:   strings.Join(promotedSideAnswers, "\n"),
+		ReviewContext:         reviewContext,
+		ProtocolDocumentation: protocolDocumentation("review_digest"),
 	})
 }
 
 func SideQuestion(question string, filePath string, reference string, selectedText string, planExcerpt string) string {
-	return render("side_question.gotmpl", sideQuestionTemplateData{
+	return render("side_question.gotmpl", sideQuestionTemplateData{Protocol: reviewxml.SideQuestion(reviewxml.SideQuestionInput{
 		Question:     question,
 		FilePath:     filePath,
 		Reference:    reference,
 		SelectedText: selectedText,
 		PlanExcerpt:  planExcerpt,
-	})
+	}), ProtocolDocumentation: protocolDocumentation("side_question")})
 }
 
 func SectionIteration(input SectionIterationInput) string {
 	return render("section_iteration.gotmpl", sectionIterationTemplateData{
-		RevisionID:          input.RevisionID,
-		FilePath:            input.FilePath,
-		Reference:           input.Reference,
-		SelectedSection:     input.SelectedSection,
-		PlanExcerpt:         input.PlanExcerpt,
-		ReviewerInstruction: input.ReviewerInstruction,
-		ReviewerDecisions:   strings.Join(input.ReviewerDecisions, "\n"),
-		PromotedSideAnswers: strings.Join(input.PromotedSideAnswers, "\n"),
+		Protocol:              input.Protocol,
+		ProtocolDocumentation: protocolDocumentation("section_iteration"),
 	})
+}
+
+func protocolDocumentation(mode string) string {
+	return render("protocol.gotmpl", protocolDocumentationData{Mode: mode})
 }
 
 func render(name string, data any) string {

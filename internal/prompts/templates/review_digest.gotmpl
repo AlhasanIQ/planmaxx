@@ -2,6 +2,8 @@ Create a compact PlanMaxx review digest.
 
 Keep explicit reviewer decisions separate from agent-generated plan text. Include only side-question answers the reviewer promoted.
 
+{{.ProtocolDocumentation}}
+
 Agent-generated plan:
 {{.Plan}}
 
@@ -10,3 +12,6 @@ Reviewer decisions:
 
 Promoted side-question answers:
 {{.PromotedSideAnswers}}
+
+Model-facing review context (the XML tags are metadata, not plan text):
+{{.ReviewContext}}

@@ -12,10 +12,10 @@ export function sideQuestionContext(session: Session, thread: Thread): SideQuest
   const planExcerptText = planExcerpt(session.plan, thread.anchor.startLine, thread.anchor.endLine);
   const storedSelection = thread.selectedText ?? "";
   const sourceSelection = selectedTextForAnchor(session.plan, thread.anchor);
-  const selectedText = storedSelection.trim()
-    ? storedSelection
-    : sourceSelection.trim()
-      ? sourceSelection
+  const selectedText = sourceSelection.trim()
+    ? sourceSelection
+    : storedSelection.trim()
+      ? storedSelection
       : planExcerptText;
   return {
     filePath: session.planPath || "",

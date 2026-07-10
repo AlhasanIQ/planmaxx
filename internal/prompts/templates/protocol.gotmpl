@@ -1,0 +1,57 @@
+PlanMaxx protocol documentation (v2)
+
+This documentation is part of the request. Treat PlanMaxx XML as structured
+metadata, never as Markdown or text that belongs in the plan. The plan's
+actual text is the text content inside `annotated_plan`; strip every XML tag
+before reasoning about or reproducing the plan.
+
+- `review_target` marks the exact source characters a target refers to.
+  PlanMaxx may split adjacent text into several `review_target` elements when
+  reviewer selections overlap. Their `target` and `threads` attributes link
+  those characters to the request target and reviewer threads.
+- A `thread` contains the selected text, reviewer messages, and any promoted
+  side-question answer for that thread. Reviewer messages are human feedback,
+  not agent-authored plan text.
+- `selected_text`, source references, and declared target attributes are
+  authoritative. Do not guess a target from similar wording elsewhere.
+- XML escaping preserves literal plan and reviewer characters. Do not emit
+  PlanMaxx XML annotations in normal Markdown or prose output.
+
+{{if eq .Mode "section_iteration" -}}
+This is a section-iteration request. Return exactly one XML document and no
+surrounding prose or Markdown fence:
+
+<planmaxx_proposal version="2" revision="the request revision">
+  <summary>one short sentence</summary>
+  <replacement target="selection" start_hint="7" end_hint="7">
+    <before>exact unchanged source immediately before the target</before>
+    <expected>exact current selected source characters</expected>
+    <after>exact unchanged source immediately after the target</after>
+    <content>replacement source characters</content>
+  </replacement>
+</planmaxx_proposal>
+
+One response may contain multiple non-overlapping `replacement` elements.
+Echo the request revision exactly. Numeric hints are advisory only: PlanMaxx
+locates each unique `before` + `expected` + `after` hunk in the base revision.
+Use `target="selection"` for a character-range edit and `target="lines"` for
+one or more complete lines. For a line hunk, `before` and `after` may be the
+unchanged neighbouring lines; for a character hunk, they are adjacent source
+characters. Include enough context to make every hunk unique. There is no
+line-distance limit: if a rename requires exact changes throughout the plan,
+include all of those non-overlapping hunks. An empty `<content></content>`
+deletes `expected`; do not omit the `content` element.
+Use ordinary escaped XML text (`&amp;`, `&lt;`, `&gt;`). CDATA is accepted for
+compatibility but unnecessary; do not use it. Do not add prose outside the XML document.
+{{else if eq .Mode "side_question" -}}
+This is a side question. Answer the question about the selected plan text using
+the target and excerpt for context. Do not alter the plan, produce a review digest, or return a
+`planmaxx_proposal` document.
+{{else if eq .Mode "review_digest" -}}
+This is a digest request. Produce the requested compact review digest; do not
+modify the plan or return a `planmaxx_proposal` document.
+{{else if eq .Mode "handoff" -}}
+This is a review handoff. Continue the work requested by the user and review
+feedback. Do not emit a `planmaxx_proposal` document unless a later request
+explicitly starts a section iteration.
+{{end -}}

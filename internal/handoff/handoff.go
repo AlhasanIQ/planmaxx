@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/AlhasanIQ/planmaxx/internal/prompts"
+	"github.com/AlhasanIQ/planmaxx/internal/reviewxml"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 )
 
@@ -15,7 +16,7 @@ func Format(s session.Session) (string, error) {
 		return "", err
 	}
 
-	return prompts.ApprovedHandoff(s.Plan, digest, noReviewItems(s.Digest)), nil
+	return prompts.ApprovedHandoff(s.Plan, digest, reviewxml.Handoff(s), noReviewItems(s.Digest)), nil
 }
 
 func FormatRejected(s session.Session) (string, error) {
@@ -24,7 +25,7 @@ func FormatRejected(s session.Session) (string, error) {
 		return "", err
 	}
 
-	return prompts.RejectedHandoff(s.Plan, digest), nil
+	return prompts.RejectedHandoff(s.Plan, digest, reviewxml.Handoff(s)), nil
 }
 
 func encodeDigest(d session.Digest) (string, error) {

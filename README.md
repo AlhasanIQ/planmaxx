@@ -101,7 +101,13 @@ handoff.
 - Supports focused section rewrites and proposal diffs before final approval.
 - Autosaves review state next to the plan file as
   `<plan-file>.planmaxx-review.json`, with a cache-directory fallback if that
-  location is not writable.
+  location is not writable. Review state survives server restarts and concurrent
+  agent sessions; external source-file edits become preserved revisions rather
+  than silently overwriting review work. Accepted revision bodies are retained
+  in a PlanMaxx-managed bare Git store while the autosave retains review
+  metadata. The shared revision store is kept in PlanMaxx application data
+  (not an evictable cache). See the [review storage contract](docs/storage.md)
+  for the persistence, concurrency, and no-CRDT guarantees.
 
 ## Codex Integration
 

@@ -5,7 +5,6 @@ import { TopBar } from "./components/TopBar";
 import { Plan } from "./components/Plan";
 import { Threads } from "./components/Threads";
 import { HandoffPanel } from "./components/HandoffPanel";
-import { ProposalPanel } from "./components/ProposalPanel";
 import { RevisionPanel } from "./components/RevisionPanel";
 import { ToastStack, type Toast } from "./components/Toasts";
 import { CompletedScreen } from "./components/CompletedScreen";
@@ -95,12 +94,17 @@ function useReviewController() {
       try {
         await api.setThreadKind(threadId, kind);
       } catch (e) {
+        if (isSourceChangeConflict(e)) {
+          await refresh();
+          pushToast("error", "The plan changed outside PlanMaxx. Review state was refreshed.");
+          return;
+        }
         setSession(previous);
         const msg = e instanceof Error ? e.message : "Failed to update thread kind";
         pushToast("error", msg);
       }
     },
-    [pushToast, session],
+    [pushToast, refresh, session],
   );
 
   const liveDigest = useMemo(() => (session ? buildDigestDraft(session) : null), [session]);
@@ -149,6 +153,13 @@ function useReviewController() {
       setStatus({ label: "Codex paused — review in progress", kind: "idle" });
       return result;
     } catch (e) {
+      if (isSourceChangeConflict(e)) {
+        await refresh();
+        setDialog(null);
+        setEditingThreadId(null);
+        pushToast("error", "The plan changed outside PlanMaxx. Review state was refreshed.");
+        return null;
+      }
       const msg = e instanceof Error ? e.message : "Request failed";
       setStatus({ label: msg, kind: "error" });
       pushToast("error", msg);
@@ -346,6 +357,14 @@ function useReviewController() {
     }
   }
 
+  async function handleRestoreRevision(revisionId: string) {
+    const restored = await withBusy("Restoring revision…", () => api.restoreRevision(revisionId));
+    if (!restored) return;
+    setRevisionDiff(null);
+    await refresh();
+    pushToast("success", `Restored ${revisionId} as ${restored.id}`);
+  }
+
   async function handleFinalize(digest: Digest) {
     setDialog(null);
     const ok = await withBusy("Finalizing…", () => api.finalize(digest));
@@ -422,6 +441,14 @@ function useReviewController() {
     toasts,
     updateThreadKind,
   };
+}
+
+function isSourceChangeConflict(error: unknown): error is ApiError {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    (error.message.includes("source plan changed outside PlanMaxx") || error.message.includes("review state changed in another PlanMaxx session"))
+  );
 }
 
 type ReviewController = ReturnType<typeof useReviewController>;
@@ -542,6 +569,8 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
       <main className="mx-auto grid w-full max-w-[1240px] grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Plan
           plan={session.plan}
+          theme={theme.resolved}
+          proposal={session.pendingProposal}
           threads={session.threads}
           hoveredThreadId={hoveredThreadId}
           focusedThreadId={focusedThreadId}
@@ -550,20 +579,15 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           onUpdateComment={handleUpdateThread}
           onAskSideFromDraft={handleCreateThreadAndAsk}
           onIterateDraft={(anchor, instruction) => handleIterateSection(anchor, instruction)}
+          proposalDisabled={busy}
+          onApplyProposal={handleApplyProposal}
+          onDiscardProposal={handleDiscardProposal}
+          onIterateProposal={(anchor, instruction) => handleIterateSection(anchor, instruction)}
           onEditDone={clearEditingThread}
           onFocusThread={focusThreadTemporarily}
         />
 
         <aside className="min-w-0 space-y-3">
-          {session.pendingProposal ? (
-            <ProposalPanel
-              proposal={session.pendingProposal}
-              disabled={busy}
-              onApply={handleApplyProposal}
-              onDiscard={handleDiscardProposal}
-              onIterate={(anchor, instruction) => handleIterateSection(anchor, instruction)}
-            />
-          ) : null}
           {liveDigest ? (
             <HandoffPanel
               digest={liveDigest}
@@ -579,12 +603,14 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           ) : null}
           <RevisionPanel
             currentRevisionId={session.currentRevisionId}
+            theme={theme.resolved}
             revisions={session.revisions}
             diff={revisionDiff}
             loading={revisionDiffLoading}
             error={revisionDiffError}
             disabled={busy}
             onCompare={handleCompareRevision}
+            onRestore={handleRestoreRevision}
           />
           <label
             htmlFor="thread-filter"

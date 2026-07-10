@@ -32,6 +32,16 @@ describe("sideQuestionContext", () => {
       ].join("\n"),
     );
   });
+
+  test("prefers the current anchored characters over a trimmed stored quote", () => {
+    const thread = threadFixture({
+      selectedText: "specific",
+      anchor: { startLine: 2, startChar: 8, endLine: 2, endChar: 18 },
+    });
+    const context = sideQuestionContext(sessionFixture(thread), thread);
+
+    expect(context.selectedText).toBe(" specific ");
+  });
 });
 
 function sessionFixture(thread: Thread): Session {

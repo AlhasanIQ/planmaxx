@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"github.com/AlhasanIQ/planmaxx/internal/handoff"
 	"github.com/AlhasanIQ/planmaxx/internal/planfile"
 	"github.com/AlhasanIQ/planmaxx/internal/review"
+	"github.com/AlhasanIQ/planmaxx/internal/revisions"
 	"github.com/AlhasanIQ/planmaxx/internal/sectioniter"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 	"github.com/AlhasanIQ/planmaxx/internal/sidequestions"
@@ -38,6 +40,7 @@ type reviewOptions struct {
 var execCommandContext = exec.CommandContext
 var openBrowser = browser.Open
 var userCacheDir = os.UserCacheDir
+var userDataDir = os.UserConfigDir
 
 func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	opts := reviewOptions{host: "127.0.0.1", sideQuestionTimeout: 45 * time.Second}
@@ -55,38 +58,68 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				planPath = plan.Path
 			}
+			document := review.NewDocument(planPath, plan.Markdown)
+			planPath = document.CanonicalPath
 
 			autosavePath := opts.autosaveOut
 			explicitAutosave := autosavePath != ""
 			if !explicitAutosave {
-				autosavePath = defaultAutosavePath(args[0])
+				autosavePath = defaultAutosavePath(planPath)
 			}
 			reviewSession := session.New("session-1", plan.Markdown)
-			if saved, ok, err := review.LoadAutosave(autosavePath); err != nil {
+			loadedPath := autosavePath
+			candidates := []string{autosavePath}
+			fallbackPath := ""
+			if !explicitAutosave {
+				var fallbackErr error
+				fallbackPath, fallbackErr = cacheAutosavePath(planPath)
+				if fallbackErr != nil {
+					return fmt.Errorf("find review autosave fallback: %w", fallbackErr)
+				}
+				candidates = append(candidates, fallbackPath)
+			}
+			if saved, path, ok, err := loadNewestAutosave(candidates, document); err != nil {
 				return fmt.Errorf("load review autosave: %w", err)
 			} else if ok {
+				loadedPath = path
+				autosavePath = path
 				reviewSession = &saved.Session
-				if reviewSession.Plan != plan.Markdown {
-					reviewSession.AddTurnRevision(plan.Markdown, "Plan updated by Codex turn")
+				if !saved.Document.SourceMatches(plan.Markdown) {
+					reviewSession.ReconcileExternalPlan(saved.Document.SourceText, plan.Markdown)
 				}
-				fmt.Fprintf(stderr, "PlanMaxx restored autosave: %s\n", autosavePath)
+				fmt.Fprintf(stderr, "PlanMaxx restored autosave: %s\n", loadedPath)
 			}
 			reviewSession.PlanPath = planPath
-			reviewServer := review.NewServer(reviewSession).WithSideQuestionTimeout(opts.sideQuestionTimeout)
+			reviewServer := review.NewServer(reviewSession).
+				WithSideQuestionTimeout(opts.sideQuestionTimeout).
+				WithAutosaveDocument(document).
+				WithAutosaveFallback(fallbackPath)
+			store, storeErr := openRevisionStore(planPath)
+			if storeErr != nil {
+				return storeErr
+			}
+			reviewServer.WithRevisionStore(store, revisions.PlanID(planPath))
 			if err := reviewServer.EnableAutosave(autosavePath); err != nil {
 				if explicitAutosave {
 					return fmt.Errorf("write review autosave: %w", err)
 				}
-				fallbackPath, fallbackErr := cacheAutosavePath(planPath)
-				if fallbackErr != nil {
-					return fmt.Errorf("write review autosave: %w", err)
-				}
 				fmt.Fprintf(stderr, "PlanMaxx autosave fallback: %s (%v)\n", fallbackPath, err)
 				autosavePath = fallbackPath
-				reviewServer = review.NewServer(reviewSession).WithSideQuestionTimeout(opts.sideQuestionTimeout)
+				reviewServer = review.NewServer(reviewSession).
+					WithSideQuestionTimeout(opts.sideQuestionTimeout).
+					WithAutosaveDocument(document)
+				store, storeErr := openRevisionStore(planPath)
+				if storeErr != nil {
+					return storeErr
+				}
+				reviewServer.WithRevisionStore(store, revisions.PlanID(planPath))
 				if err := reviewServer.EnableAutosave(autosavePath); err != nil {
 					return fmt.Errorf("write review autosave fallback: %w", err)
 				}
+			}
+			if actualPath := reviewServer.AutosavePath(); actualPath != autosavePath {
+				fmt.Fprintf(stderr, "PlanMaxx autosave fallback: %s\n", actualPath)
+				autosavePath = actualPath
 			}
 			if cleanup := tryAttachAppServerServices(cmd.Context(), stderr, reviewServer, os.Getenv("CODEX_THREAD_ID")); cleanup != nil {
 				defer cleanup()
@@ -156,6 +189,40 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	return cmd
 }
 
+func openRevisionStore(planPath string) (*revisions.Store, error) {
+	dataDir, err := userDataDir()
+	if err != nil || dataDir == "" {
+		if err != nil {
+			return nil, fmt.Errorf("find application data directory for revision store: %w", err)
+		}
+		return nil, errors.New("application data directory for revision store is empty")
+	}
+	planID := revisions.PlanID(planPath)
+	storePath := filepath.Join(dataDir, "planmaxx", "revisions.git")
+	store, err := revisions.Open(storePath)
+	if err != nil {
+		return nil, fmt.Errorf("open revision store: %w", err)
+	}
+	cacheDir, cacheErr := userCacheDir()
+	if cacheErr != nil || cacheDir == "" {
+		return store, nil
+	}
+	legacyPath := filepath.Join(cacheDir, "planmaxx", "revisions.git")
+	if filepath.Clean(legacyPath) == filepath.Clean(storePath) {
+		return store, nil
+	}
+	legacy, ok, err := revisions.OpenExisting(legacyPath)
+	if err != nil {
+		return nil, fmt.Errorf("open legacy cache revision store: %w", err)
+	}
+	if ok {
+		if err := store.MigratePlanFrom(legacy, planID); err != nil {
+			return nil, fmt.Errorf("migrate legacy revision store: %w", err)
+		}
+	}
+	return store, nil
+}
+
 func defaultAutosavePath(planPath string) string {
 	abs, err := filepath.Abs(planPath)
 	if err != nil {
@@ -176,6 +243,40 @@ func cacheAutosavePath(planPath string) (string, error) {
 	sum := sha256.Sum256([]byte(abs))
 	name := hex.EncodeToString(sum[:16]) + ".planmaxx-review.json"
 	return filepath.Join(cacheDir, "planmaxx", "reviews", name), nil
+}
+
+func loadNewestAutosave(paths []string, document review.Document) (review.Autosave, string, bool, error) {
+	var newest review.Autosave
+	var newestPath string
+	var firstErr error
+	for _, path := range paths {
+		saved, ok, err := review.LoadAutosave(path)
+		if err != nil {
+			if errors.Is(err, review.ErrFutureAutosave) {
+				return review.Autosave{}, "", false, fmt.Errorf("%s: %w", path, err)
+			}
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s: %w", path, err)
+			}
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if !saved.Document.MatchesPath(document.CanonicalPath) {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s belongs to %q, not %q", path, saved.Document.CanonicalPath, document.CanonicalPath)
+			}
+			continue
+		}
+		if newestPath == "" || saved.SavedAt.After(newest.SavedAt) {
+			newest, newestPath = saved, path
+		}
+	}
+	if newestPath == "" && firstErr != nil {
+		return review.Autosave{}, "", false, firstErr
+	}
+	return newest, newestPath, newestPath != "", nil
 }
 
 func tryAttachAppServerServices(ctx context.Context, stderr io.Writer, reviewServer *review.Server, currentThreadID string) func() {

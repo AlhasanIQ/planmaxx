@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Added revision-bound XML patch protocol v2 with exact content anchors,
+  multi-hunk atomic application, and safe character-range edits.
+- Added Git-backed immutable plan revisions, append-only restore, compact
+  autosaves, and crash recovery journaling.
+- Moved revision storage to durable per-user application data and migrated
+  cache-backed histories on demand.
+- Serialized multi-process revision writes with per-plan transactions and
+  compare-and-swap Git heads.
+
 ## v0.1.0
 
 - Initial open-source release.

@@ -1,44 +1,7 @@
 PlanMaxx section iteration
 
-Rewrite only the selected plan section. Preserve the surrounding plan structure,
-markdown style, heading level, and intent. Account for reviewer decisions and
-promoted side-question Q+A. Do not modify unrelated sections. Do not produce a
-final review digest.
+{{.ProtocolDocumentation}}
 
-Return only:
+Iteration request:
 
-Summary: <one short sentence>
-
-```markdown
-<fenced markdown replacement section>
-```
-
-Revision:
-{{.RevisionID}}
-
-File:
-{{.FilePath}}
-
-Reference:
-{{.Reference}}
-
-Reviewer instruction:
-{{.ReviewerInstruction}}
-
-Selected section:
-{{.SelectedSection}}
-
-{{if .ReviewerDecisions -}}
-Reviewer decisions:
-{{.ReviewerDecisions}}
-
-{{end -}}
-{{if .PromotedSideAnswers -}}
-Promoted side-question Q+A:
-{{.PromotedSideAnswers}}
-
-{{end -}}
-{{if .PlanExcerpt -}}
-Surrounding plan context:
-{{.PlanExcerpt}}
-{{end -}}
+{{.Protocol}}

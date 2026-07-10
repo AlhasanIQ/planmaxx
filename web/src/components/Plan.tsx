@@ -1,12 +1,16 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { MessageSquarePlus, Sparkles } from "lucide-react";
+import { CheckCircle2, MessageSquarePlus, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { renderPlanLines } from "../lib/markdown";
-import type { Anchor, Thread } from "../types";
+import type { Anchor, SectionProposal, Thread } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
+import { lineDiff } from "../lib/diff";
+import { highlightCodeBlocks, type HighlightToken } from "../lib/codeHighlight";
 
 interface PlanProps {
   plan: string;
+  theme: "light" | "dark";
+  proposal?: SectionProposal | null;
   threads: Thread[];
   hoveredThreadId: string | null;
   focusedThreadId: string | null;
@@ -15,6 +19,10 @@ interface PlanProps {
   onUpdateComment: (threadId: string, anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
   onAskSideFromDraft: (anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
   onIterateDraft: (anchor: Anchor, instruction: string) => Promise<boolean>;
+  proposalDisabled: boolean;
+  onApplyProposal: (proposalId: string) => void;
+  onDiscardProposal: (proposalId: string) => void;
+  onIterateProposal: (anchor: Anchor, instruction: string) => Promise<boolean>;
   onEditDone: () => void;
   onFocusThread: (threadId: string) => void;
 }
@@ -28,6 +36,8 @@ interface CommentDraft {
 
 export const Plan = memo(function Plan({
   plan,
+  theme,
+  proposal,
   threads,
   hoveredThreadId,
   focusedThreadId,
@@ -36,11 +46,39 @@ export const Plan = memo(function Plan({
   onUpdateComment,
   onAskSideFromDraft,
   onIterateDraft,
+  proposalDisabled,
+  onApplyProposal,
+  onDiscardProposal,
+  onIterateProposal,
   onEditDone,
   onFocusThread,
 }: PlanProps) {
   const articleRef = useRef<HTMLElement>(null);
   const lines = useMemo(() => renderPlanLines(plan), [plan]);
+  const highlightedCode = useHighlightedCode(plan, theme);
+  const proposalLines = useMemo(
+    () => (proposal ? renderPlanLines(proposal.proposedPlan) : []),
+    [proposal],
+  );
+  const displayRows = useMemo(() => {
+    if (!proposal) {
+      return lines.map((line, index) => ({ diffKind: "context" as const, line, lineNumber: index + 1 }));
+    }
+    return lineDiff(plan, proposal.proposedPlan).map((diffLine) => {
+      const lineNumber = diffLine.before ?? diffLine.after ?? 0;
+      const sourceLines = diffLine.kind === "add" ? proposalLines : lines;
+      const sourceIndex = ((diffLine.kind === "add" ? diffLine.after : diffLine.before) ?? 0) - 1;
+      return {
+        diffKind: diffLine.kind,
+        line: sourceLines[sourceIndex] ?? renderPlanLines(diffLine.text)[0],
+        lineNumber,
+      };
+    });
+  }, [lines, plan, proposal, proposalLines]);
+  const lastProposalChangeIndex = useMemo(
+    () => displayRows.reduce((last, row, index) => (row.diffKind === "context" ? last : index), -1),
+    [displayRows],
+  );
   const [draft, setDraft] = useState<CommentDraft | null>(null);
   const [submittingDraft, setSubmittingDraft] = useState(false);
 
@@ -169,51 +207,47 @@ export const Plan = memo(function Plan({
       onPointerUp={handlePointerUp}
     >
       <div className="plan-body py-2">
-        {lines.map((line, idx) => {
-          const lineNumber = idx + 1;
-          const inDraft = draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
-          const inHoverAnchor = activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
-          const anchoredThreadId = lineToThread.get(lineNumber);
+        {displayRows.map((row, idx) => {
+          const lineNumber = row.lineNumber;
+          const line = row.line;
+          const isProposedLine = row.diffKind === "add";
+          const inDraft = !isProposedLine && draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
+          const inHoverAnchor = !isProposedLine && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
+          const anchoredThreadId = isProposedLine ? undefined : lineToThread.get(lineNumber);
           return (
-            <div key={lineNumber}>
+            <div key={`${row.diffKind}-${lineNumber}-${idx}`}>
               <div
-                data-line={lineNumber}
+                data-line={isProposedLine ? undefined : lineNumber}
                 className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
                   inDraft ? " is-anchored" : ""
-                }${inHoverAnchor ? " is-hover-anchor" : ""}`}
+                }${inHoverAnchor ? " is-hover-anchor" : ""}${
+                  row.diffKind === "remove" ? " is-proposal-remove" : ""
+                }${row.diffKind === "add" ? " is-proposal-add" : ""}`}
               >
                 <div className="line-number">{lineNumber}</div>
                 <div className="pin-cell">
-                  <button
-                    type="button"
-                    className={`pin-btn${anchoredThreadId ? " has-anchor" : ""}`}
-                    title={
-                      anchoredThreadId
-                        ? "Open existing thread"
-                        : `Comment on line ${lineNumber}`
-                    }
-                    aria-label={
-                      anchoredThreadId
-                        ? "Open existing thread"
-                        : `Comment on line ${lineNumber}`
-                    }
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      if (anchoredThreadId) {
-                        onFocusThread(anchoredThreadId);
-                      } else {
-                        openFullLineDraft(lineNumber);
-                      }
-                    }}
-                  >
-                    <MessageSquarePlus size={14} />
-                  </button>
+                  {!isProposedLine ? (
+                    <button
+                      type="button"
+                      className={`pin-btn${anchoredThreadId ? " has-anchor" : ""}`}
+                      title={anchoredThreadId ? "Open existing thread" : `Comment on line ${lineNumber}`}
+                      aria-label={anchoredThreadId ? "Open existing thread" : `Comment on line ${lineNumber}`}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (anchoredThreadId) onFocusThread(anchoredThreadId);
+                        else openFullLineDraft(lineNumber);
+                      }}
+                    >
+                      <MessageSquarePlus size={14} />
+                    </button>
+                  ) : null}
                 </div>
                 <PlanLineContent
                   html={line.html}
                   lineNumber={lineNumber}
                   anchoredThreadId={anchoredThreadId}
+                  codeTokens={isProposedLine ? undefined : highlightedCode.get(lineNumber)}
                   onFocusThread={onFocusThread}
                 />
               </div>
@@ -230,6 +264,15 @@ export const Plan = memo(function Plan({
                   onIterate={iterateDraft}
                 />
               ) : null}
+              {proposal && idx === lastProposalChangeIndex ? (
+                <InlineProposalControls
+                  proposal={proposal}
+                  disabled={proposalDisabled}
+                  onApply={onApplyProposal}
+                  onDiscard={onDiscardProposal}
+                  onIterate={onIterateProposal}
+                />
+              ) : null}
             </div>
           );
         })}
@@ -242,6 +285,78 @@ export const Plan = memo(function Plan({
     </article>
   );
 });
+
+function useHighlightedCode(plan: string, theme: "light" | "dark") {
+  const [highlighted, setHighlighted] = useState<Map<number, HighlightToken[]>>(new Map());
+
+  useEffect(() => {
+    let current = true;
+    void highlightCodeBlocks(plan, theme).then((next) => {
+      if (current) setHighlighted(next);
+    });
+    return () => {
+      current = false;
+    };
+  }, [plan, theme]);
+
+  return highlighted;
+}
+
+function InlineProposalControls({
+  proposal,
+  disabled,
+  onApply,
+  onDiscard,
+  onIterate,
+}: {
+  proposal: SectionProposal;
+  disabled: boolean;
+  onApply: (proposalId: string) => void;
+  onDiscard: (proposalId: string) => void;
+  onIterate: (anchor: Anchor, instruction: string) => Promise<boolean>;
+}) {
+  const [instruction, setInstruction] = useState("");
+  const canIterate = instruction.trim().length > 0 && !disabled;
+
+  async function iterateAgain() {
+    if (!canIterate) return;
+    const ok = await onIterate(proposal.anchor, instruction.trim());
+    if (ok) setInstruction("");
+  }
+
+  return (
+    <section className="inline-proposal-controls">
+      <div className="flex items-center gap-2">
+        <span className="handoff-arrow" aria-hidden><Sparkles size={14} /></span>
+        <div>
+          <h2 className="text-[13px] font-semibold tracking-tight">Pending proposal</h2>
+          <p className="text-[11px] text-foreground-muted">{anchorLabel(proposal.anchor)}</p>
+        </div>
+      </div>
+      {proposal.summary ? <p className="inline-proposal-summary">{proposal.summary}</p> : null}
+      <label className="mt-3 block text-xs font-semibold text-foreground-muted">
+        Refine
+        <textarea
+          className="field mt-1 min-h-20 resize-y font-sans"
+          value={instruction}
+          onChange={(event) => setInstruction(event.target.value)}
+          placeholder="Ask for a narrower, clearer, or more specific version..."
+        />
+      </label>
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        <button type="button" className="btn btn-sm" onClick={iterateAgain} disabled={!canIterate}>
+          <RotateCcw size={13} /> Iterate again
+        </button>
+        <button type="button" className="btn btn-ghost btn-sm btn-danger" onClick={() => onDiscard(proposal.id)} disabled={disabled}>
+          <Trash2 size={13} /> Discard
+        </button>
+        <button type="button" className="btn btn-primary btn-sm" onClick={() => onApply(proposal.id)} disabled={disabled}>
+          <CheckCircle2 size={13} /> Apply
+        </button>
+      </div>
+    </section>
+  );
+}
 
 function InlineCommentComposer({
   draft,
@@ -344,14 +459,22 @@ const PlanLineContent = memo(function PlanLineContent({
   html,
   lineNumber,
   anchoredThreadId,
+  codeTokens,
   onFocusThread,
 }: {
   html: string;
   lineNumber: number;
   anchoredThreadId: string | undefined;
+  codeTokens?: HighlightToken[];
   onFocusThread: (threadId: string) => void;
 }) {
-  const content = useMemo(() => renderInlineNodes(html || "&nbsp;"), [html]);
+  const content = useMemo(() => codeTokens
+    ? codeTokens.map((token, index) => (
+      <span key={index} style={{ color: token.color, fontStyle: token.fontStyle === 1 ? "italic" : undefined, fontWeight: token.fontStyle === 2 ? 700 : undefined, textDecoration: token.fontStyle === 4 ? "underline" : undefined }}>
+        {token.content}
+      </span>
+    ))
+    : renderInlineNodes(html || "&nbsp;"), [codeTokens, html]);
 
   function activate(event: React.MouseEvent | React.KeyboardEvent) {
     if (!anchoredThreadId) return;

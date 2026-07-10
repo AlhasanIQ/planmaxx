@@ -31,6 +31,67 @@ func TestSessionStoresThreadedComments(t *testing.T) {
 	}
 }
 
+func TestSessionDoesNotReuseThreadOrSideAnswerIDs(t *testing.T) {
+	s := New("plan-1", "# Plan")
+	first := s.AddThread(Anchor{StartLine: 1, EndLine: 1}, "First")
+	if !s.DeleteThread(first.ID) {
+		t.Fatal("expected thread deletion")
+	}
+	second := s.AddThread(Anchor{StartLine: 1, EndLine: 1}, "Second")
+	if second.ID != "thread-2" {
+		t.Fatalf("expected a new thread ID, got %q", second.ID)
+	}
+	firstAnswer := s.AddSideAnswer(second.ID, "Why?", "Because.")
+	s.SideAnswers = nil // Simulate deletion of an answer before a restart.
+	s.RestoreCounters()
+	secondAnswer := s.AddSideAnswer(second.ID, "Why now?", "Because now.")
+	if firstAnswer.ID == secondAnswer.ID || secondAnswer.ID != "side-2" {
+		t.Fatalf("expected a new side-answer ID, got %q after %q", secondAnswer.ID, firstAnswer.ID)
+	}
+}
+
+func TestReconcileExternalPlanMovesUniqueAnchorsAndStalesAmbiguousOnes(t *testing.T) {
+	previous := "# Plan\n\n- Keep\n- Duplicate\n- Duplicate\n"
+	next := "# Plan\n\n- Added\n- Keep\n- Duplicate\n- Duplicate\n"
+	s := New("plan-1", previous)
+	moved := s.AddThread(Anchor{StartLine: 3, EndLine: 3}, "Keep this")
+	stale := s.AddThread(Anchor{StartLine: 4, EndLine: 4}, "Which duplicate?")
+
+	s.ReconcileExternalPlan(previous, next)
+	if got := s.Threads[0].Anchor; got != (Anchor{StartLine: 4, EndLine: 4}) {
+		t.Fatalf("expected unique line to move, got %+v", got)
+	}
+	if got := s.Threads[1].Status; got != ThreadStatusStale {
+		t.Fatalf("expected ambiguous thread %q to be stale, got %q", stale.ID, got)
+	}
+	if s.Threads[0].ID != moved.ID || s.Plan != next || len(s.Revisions) != 2 {
+		t.Fatalf("expected review data and external revision to survive: %+v", s)
+	}
+}
+
+func TestReconcileExternalPlanPreservesPendingProposalAsObsolete(t *testing.T) {
+	previous := "# Plan\n\n- Original\n"
+	next := "# Plan\n\n- Changed outside PlanMaxx\n"
+	s := New("plan-1", previous)
+	proposal := s.CreateSectionProposal(SectionProposalInput{
+		Anchor:          Anchor{StartLine: 3, EndLine: 3},
+		OriginalSection: "- Original",
+		ProposedSection: "- Proposed",
+		ProposedPlan:    "# Plan\n\n- Proposed\n",
+	})
+
+	s.ReconcileExternalPlan(previous, next)
+	if s.PendingProposal == nil || s.PendingProposal.ID != proposal.ID || !s.PendingProposal.Obsolete {
+		t.Fatalf("expected proposal to remain as obsolete, got %+v", s.PendingProposal)
+	}
+	if _, ok := s.ApplyProposal(proposal.ID); ok {
+		t.Fatal("expected obsolete proposal apply to fail")
+	}
+	if !s.DiscardProposal(proposal.ID) {
+		t.Fatal("expected obsolete proposal to be discardable")
+	}
+}
+
 func TestRestoreCountersContinuesMessageIDs(t *testing.T) {
 	s := New("plan-1", "# Plan")
 	thread := s.AddThread(Anchor{StartLine: 1, EndLine: 1}, "First")
@@ -196,6 +257,87 @@ func TestApplySectionProposalAdjustsThreadStatusesAndAnchors(t *testing.T) {
 	}
 }
 
+func TestApplyProposalUsesExplicitAppliedAnchorForThreadLifecycle(t *testing.T) {
+	s := New("plan-1", "# Plan\n\n- One\n- Two\n- Three")
+	included := s.AddThread(Anchor{StartLine: 3, StartChar: 2, EndLine: 3, EndChar: 5}, "Expand this")
+	s.AddThread(Anchor{StartLine: 4, EndLine: 4}, "Still review this")
+	s.AddThread(Anchor{StartLine: 5, EndLine: 5}, "After")
+	proposal := s.CreateSectionProposal(SectionProposalInput{
+		ThreadID:          included.ID,
+		Anchor:            included.Anchor,
+		AppliedAnchor:     Anchor{StartLine: 3, EndLine: 4},
+		ReplacementAnchor: Anchor{StartLine: 3, EndLine: 5},
+		OriginalSection:   "- One\n- Two",
+		ProposedSection:   "- One refined\n- Two refined\n- Extra",
+		ProposedPlan:      "# Plan\n\n- One refined\n- Two refined\n- Extra\n- Three",
+		Summary:           "Expanded scope",
+		Instruction:       "Expand this",
+		IncludedThreadIDs: []string{included.ID},
+	})
+	if _, ok := s.ApplyProposal(proposal.ID); !ok {
+		t.Fatal("expected proposal to apply")
+	}
+	if got := s.Threads[0].Status; got != ThreadStatusResolved {
+		t.Fatalf("expected included thread resolved, got %q", got)
+	}
+	if got := s.Threads[1].Status; got != ThreadStatusStale {
+		t.Fatalf("expected thread in declared full-line scope stale, got %q", got)
+	}
+	if got := s.Threads[2].Anchor; got != (Anchor{StartLine: 6, EndLine: 6}) {
+		t.Fatalf("expected post-scope anchor to shift by line delta, got %+v", got)
+	}
+}
+
+func TestApplyProposalAdjustsThreadsForMultipleHunks(t *testing.T) {
+	s := New("plan-1", "before\nold one\nkeep\nold two\nafter")
+	included := s.AddThread(Anchor{StartLine: 2, EndLine: 2}, "First")
+	affected := s.AddThread(Anchor{StartLine: 4, EndLine: 4}, "Second")
+	after := s.AddThread(Anchor{StartLine: 5, EndLine: 5}, "After")
+	p := s.CreateSectionProposal(SectionProposalInput{Anchor: included.Anchor, AppliedAnchor: included.Anchor, AppliedHunks: []AppliedHunk{{Anchor: Anchor{StartLine: 2, EndLine: 2}, Result: Anchor{StartLine: 2, EndLine: 3}, LineDelta: 1}, {Anchor: Anchor{StartLine: 4, EndLine: 4}, Result: Anchor{StartLine: 5, EndLine: 5}, LineDelta: 0}}, ProposedPlan: "before\nnew one\nextra\nkeep\nnew two\nafter", ProposedSection: "new one", IncludedThreadIDs: []string{included.ID}})
+	if _, ok := s.ApplyProposal(p.ID); !ok {
+		t.Fatal("apply")
+	}
+	if s.Threads[0].Status != ThreadStatusResolved || s.Threads[1].Status != ThreadStatusStale {
+		t.Fatalf("unexpected affected states %+v", s.Threads)
+	}
+	if got := s.Threads[2].Anchor; got != (Anchor{StartLine: 6, EndLine: 6}) || after.ID == "" || affected.ID == "" {
+		t.Fatalf("after anchor %+v", got)
+	}
+}
+
+func TestApplyProposalPreservesDisjointCharacterThreadOnSameLine(t *testing.T) {
+	s := New("plan-1", "- Name: old | keep")
+	selected := s.AddThread(Anchor{StartLine: 1, StartChar: 8, EndLine: 1, EndChar: 11}, "Rename old")
+	disjoint := s.AddThread(Anchor{StartLine: 1, StartChar: 14, EndLine: 1, EndChar: 18}, "Keep wording")
+	p := s.CreateSectionProposal(SectionProposalInput{
+		ThreadID: selected.ID, Anchor: selected.Anchor, AppliedAnchor: selected.Anchor,
+		AppliedHunks: []AppliedHunk{{Anchor: selected.Anchor, Result: Anchor{StartLine: 1, StartChar: 8, EndLine: 1, EndChar: 15}}},
+		ProposedPlan: "- Name: renamed | keep", ProposedSection: "renamed", IncludedThreadIDs: []string{selected.ID},
+	})
+	if _, ok := s.ApplyProposal(p.ID); !ok {
+		t.Fatal("apply")
+	}
+	if got := s.Threads[0].Status; got != ThreadStatusResolved {
+		t.Fatalf("selected status %q", got)
+	}
+	if got := s.Threads[1]; got.Status != ThreadStatusOpen || got.Anchor != (Anchor{StartLine: 1, StartChar: 18, EndLine: 1, EndChar: 22}) || got.ID != disjoint.ID {
+		t.Fatalf("expected disjoint thread to move, got %+v", got)
+	}
+}
+
+func TestReconcileExternalPlanReanchorsMultilineCharacterSelection(t *testing.T) {
+	s := New("plan-1", "before\nalpha one\nbeta two\nafter")
+	thread := s.AddThread(Anchor{StartLine: 2, StartChar: 6, EndLine: 3, EndChar: 4}, "Keep this together")
+	next := "intro\nbefore\nalpha one\nbeta two\nafter"
+	s.ReconcileExternalPlan(s.Plan, next)
+	if got := s.Threads[0].Anchor; got != (Anchor{StartLine: 3, StartChar: 6, EndLine: 4, EndChar: 4}) {
+		t.Fatalf("expected multiline character anchor to reanchor, got %+v", got)
+	}
+	if s.Threads[0].Status != ThreadStatusOpen || thread.ID == "" {
+		t.Fatalf("expected retained open thread, got %+v", s.Threads[0])
+	}
+}
+
 func TestApplyRefinedSectionProposalShiftsThreadsByPlanDelta(t *testing.T) {
 	s := New("plan-1", "# Plan\n\n- A\n- B\n- C\n- D\n- Later")
 	after := s.AddThread(Anchor{StartLine: 7, EndLine: 7}, "After")
@@ -268,8 +410,8 @@ func TestApplySectionProposalRejectsStaleParent(t *testing.T) {
 	if s.Plan != "# Plan\n\n- Codex updated" {
 		t.Fatalf("expected stale apply not to replace current plan, got %q", s.Plan)
 	}
-	if s.PendingProposal != nil {
-		t.Fatalf("expected stale proposal to clear after failed apply, got %+v", s.PendingProposal)
+	if s.PendingProposal == nil || s.PendingProposal.ID != proposal.ID {
+		t.Fatalf("expected stale proposal to remain available for discard, got %+v", s.PendingProposal)
 	}
 }
 

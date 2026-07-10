@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,32 +17,38 @@ import (
 
 	plandiff "github.com/AlhasanIQ/planmaxx/internal/diff"
 	"github.com/AlhasanIQ/planmaxx/internal/digest"
+	"github.com/AlhasanIQ/planmaxx/internal/reviewxml"
+	"github.com/AlhasanIQ/planmaxx/internal/revisions"
 	"github.com/AlhasanIQ/planmaxx/internal/sectioniter"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 	"github.com/AlhasanIQ/planmaxx/internal/sidequestions"
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 // The web UI is built separately into static/ (see scripts/build-web.sh).
-// Listing the bundle files explicitly forces `go build` to fail loudly when
-// the UI hasn't been built yet, instead of silently shipping a binary that
-// serves a broken page.
+// Embed the complete generated directory: @pierre/diffs lazily loads its
+// language and theme assets in addition to the application shell. Referencing
+// static still makes `go build` fail loudly until the UI has been built.
 //
-//go:embed static/index.html
-//go:embed static/assets/app.js
-//go:embed static/assets/app.css
+//go:embed static
 var staticFiles embed.FS
 
 type Server struct {
-	mu             sync.Mutex
-	session        *session.Session
-	done           chan Result
-	finished       bool
-	autosavePath   string
-	autosaveStatus string
+	mu                 sync.Mutex
+	session            *session.Session
+	done               chan Result
+	finished           bool
+	autosavePath       string
+	autosaveStatus     string
+	autosaveGeneration uint64
+	autosaveDocument   Document
+	autosaveFallback   string
 
 	sideQuestions       sidequestions.Service
 	sideQuestionTimeout time.Duration
 	sectionIterations   sectioniter.Service
+	revisionStore       *revisions.Store
+	revisionPlanID      string
 }
 
 type Result struct {
@@ -87,12 +94,78 @@ func (s *Server) WithSectionIterations(service sectioniter.Service) *Server {
 	return s
 }
 
+func (s *Server) WithRevisionStore(store *revisions.Store, planID string) *Server {
+	s.revisionStore = store
+	s.revisionPlanID = planID
+	return s
+}
+
 func (s *Server) EnableAutosave(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autosavePath = path
 	s.autosaveStatus = "active"
+	requestedDocument := s.autosaveDocument
+	if s.autosaveDocument.SourceHash == "" && s.session.PlanPath != "" {
+		s.autosaveDocument = NewDocument(s.session.PlanPath, s.session.Plan)
+	}
+	if err := s.recoverRevisionJournalLocked(); err != nil {
+		return err
+	}
+	if saved, ok, err := LoadAutosave(path); err != nil {
+		return fmt.Errorf("load existing autosave: %w", err)
+	} else if ok {
+		s.session = &saved.Session
+		s.autosaveStatus = saved.Status
+		s.autosaveDocument = saved.Document
+		s.autosaveGeneration = saved.Generation
+		if requestedDocument.SourceHash != "" && !saved.Document.SourceMatches(requestedDocument.SourceText) {
+			s.session.ReconcileExternalPlan(saved.Document.SourceText, requestedDocument.SourceText)
+			s.autosaveDocument = requestedDocument
+			return s.persistLocked()
+		}
+		if err := s.hydrateRevisionBodiesLocked(); err != nil {
+			return err
+		}
+		if s.revisionStore != nil && hasUnpersistedRevisions(*s.session) {
+			return s.persistLocked()
+		}
+		return nil
+	}
+	if err := s.hydrateRevisionBodiesLocked(); err != nil {
+		return err
+	}
 	return s.persistLocked()
+}
+
+func hasUnpersistedRevisions(s session.Session) bool {
+	for _, revision := range s.Revisions {
+		if revision.CommitID == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// WithAutosaveDocument identifies the source file independently from the
+// mutable review draft. This prevents an accepted in-app revision from being
+// mistaken for an external file change after reopening the review.
+func (s *Server) WithAutosaveDocument(document Document) *Server {
+	s.autosaveDocument = document
+	return s
+}
+
+// WithAutosaveFallback keeps review state durable if the preferred sidecar
+// becomes unwritable after a review has already started.
+func (s *Server) WithAutosaveFallback(path string) *Server {
+	s.autosaveFallback = path
+	return s
+}
+
+func (s *Server) AutosavePath() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.autosavePath
 }
 
 func (s *Server) WithSideQuestionTimeout(timeout time.Duration) *Server {
@@ -133,6 +206,10 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.reloadAutosaveLocked(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, s.session)
 }
 
@@ -196,17 +273,26 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "review already completed")
 		return
 	}
+	if err := s.syncExternalSourceLocked(); err != nil {
+		s.mu.Unlock()
+		writeSourceSyncError(w, err)
+		return
+	}
 	request.Body = strings.TrimSpace(request.Body)
 	if err := validateThreadRequest(request, s.session.Plan); err != nil {
 		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "invalid thread json")
 		return
 	}
+	before := cloneSession(*s.session)
 	thread := s.session.AddThreadWithSelectedText(request.Anchor, request.Body, request.SelectedText)
 	if err := s.persistLocked(); err != nil {
-		s.mu.Unlock()
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		if !autosaveWasCommitted(err) {
+			*s.session = before
+			s.mu.Unlock()
+			writePersistenceError(w, err)
+			return
+		}
 	}
 	s.mu.Unlock()
 	writeJSON(w, thread)
@@ -299,11 +385,20 @@ func (s *Server) handleSideQuestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "review already completed")
 		return
 	}
+	if err := s.syncExternalSourceLocked(); err != nil {
+		s.mu.Unlock()
+		writeSourceSyncError(w, err)
+		return
+	}
+	before := cloneSession(*s.session)
 	sideAnswer := s.session.AddSideAnswer(req.ThreadID, req.Question, answer)
 	if err := s.persistLocked(); err != nil {
-		s.mu.Unlock()
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		if !autosaveWasCommitted(err) {
+			*s.session = before
+			s.mu.Unlock()
+			writePersistenceError(w, err)
+			return
+		}
 	}
 	s.mu.Unlock()
 	writeJSON(w, sideAnswer)
@@ -503,6 +598,10 @@ func (s *Server) handleRevisions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
+	if revisionID, ok := parseRevisionRestorePath(r.URL.Path); ok {
+		s.handleRevisionRestore(w, r, revisionID)
+		return
+	}
 	from, to, ok := parseRevisionDiffPath(r.URL.Path)
 	if !ok {
 		writeError(w, http.StatusNotFound, "not found")
@@ -516,15 +615,51 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	fromRevision, fromOK := findRevision(*s.session, from)
 	toRevision, toOK := findRevision(*s.session, to)
+	store := s.revisionStore
 	s.mu.Unlock()
 	if !fromOK || !toOK {
 		writeError(w, http.StatusNotFound, "revision not found")
 		return
 	}
+	if store != nil && fromRevision.CommitID != "" && toRevision.CommitID != "" {
+		fromPlan, err := store.Read(plumbing.NewHash(fromRevision.CommitID))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		toPlan, err := store.Read(plumbing.NewHash(toRevision.CommitID))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		fromRevision.Plan, toRevision.Plan = fromPlan, toPlan
+	}
 	writeJSON(w, map[string]any{
 		"from":  from,
 		"to":    to,
 		"lines": plandiff.Lines(fromRevision.Plan, toRevision.Plan),
+	})
+}
+
+func (s *Server) handleRevisionRestore(w http.ResponseWriter, r *http.Request, revisionID string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	s.mutateSession(w, func() (any, error) {
+		revision, ok := findRevision(*s.session, revisionID)
+		if !ok {
+			return nil, responseError{status: http.StatusNotFound, message: "revision not found"}
+		}
+		content := revision.Plan
+		if s.revisionStore != nil && revision.CommitID != "" {
+			var err error
+			content, err = s.revisionStore.Read(plumbing.NewHash(revision.CommitID))
+			if err != nil {
+				return nil, err
+			}
+		}
+		return s.session.AddTurnRevision(content, "Restored revision "+revisionID), nil
 	})
 }
 
@@ -554,9 +689,19 @@ func (s *Server) handleProposeSection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "review already completed")
 		return
 	}
+	if err := s.syncExternalSourceLocked(); err != nil {
+		s.mu.Unlock()
+		writeSourceSyncError(w, err)
+		return
+	}
 	if err := validateAnchor(request.Anchor, s.session.Plan); err != nil {
 		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "invalid section proposal json")
+		return
+	}
+	if s.session.PendingProposal != nil && s.session.PendingProposal.Obsolete {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "discard the stale section proposal before iterating again")
 		return
 	}
 	baseRevisionID := s.session.CurrentRevisionID
@@ -589,14 +734,22 @@ func (s *Server) handleProposeSection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "review already completed")
 		return
 	}
+	if err := s.syncExternalSourceLocked(); err != nil {
+		writeSourceSyncError(w, err)
+		return
+	}
 	if s.session.CurrentRevisionID != baseRevisionID || pendingProposalID(s.session.PendingProposal) != basePendingProposalID {
 		writeError(w, http.StatusConflict, "plan changed while section iteration was running")
 		return
 	}
+	before := cloneSession(*s.session)
 	proposal := s.session.CreateSectionProposal(input)
 	if err := s.persistLocked(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		if !autosaveWasCommitted(err) {
+			*s.session = before
+			writePersistenceError(w, err)
+			return
+		}
 	}
 	writeJSON(w, proposal)
 }
@@ -619,6 +772,9 @@ func (s *Server) handleRevisionProposalAction(w http.ResponseWriter, r *http.Req
 	switch action {
 	case "apply":
 		s.mutateSession(w, func() (any, error) {
+			if proposal := s.session.PendingProposal; proposal != nil && proposal.ID == proposalID && (proposal.Obsolete || proposal.ParentID != s.session.CurrentRevisionID) {
+				return nil, responseError{status: http.StatusConflict, message: "proposal is stale after a source-file change; discard it and iterate again"}
+			}
 			revision, ok := s.session.ApplyProposal(proposalID)
 			if !ok {
 				return nil, responseError{status: http.StatusNotFound, message: "proposal not found"}
@@ -678,6 +834,11 @@ func (s *Server) mutateSession(w http.ResponseWriter, mutate func() (any, error)
 		writeError(w, http.StatusConflict, "review already completed")
 		return
 	}
+	if err := s.syncExternalSourceLocked(); err != nil {
+		writeSourceSyncError(w, err)
+		return
+	}
+	before := cloneSession(*s.session)
 	response, err := mutate()
 	if err != nil {
 		var httpErr responseError
@@ -689,8 +850,11 @@ func (s *Server) mutateSession(w http.ResponseWriter, mutate func() (any, error)
 		return
 	}
 	if err := s.persistLocked(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		if !autosaveWasCommitted(err) {
+			*s.session = before
+			writePersistenceError(w, err)
+			return
+		}
 	}
 	writeJSON(w, response)
 }
@@ -719,11 +883,21 @@ func (s *Server) finalize(digest session.Digest) (Result, error) {
 	if s.finished {
 		return Result{}, errors.New("review already completed")
 	}
+	if err := s.syncExternalSourceLocked(); err != nil {
+		return Result{}, err
+	}
+	before := cloneSession(*s.session)
+	previousStatus := s.autosaveStatus
 	s.session.SetDigest(digest)
 	s.finished = true
 	s.autosaveStatus = "finalized"
 	if err := s.persistLocked(); err != nil {
-		return Result{}, err
+		if !autosaveWasCommitted(err) {
+			*s.session = before
+			s.finished = false
+			s.autosaveStatus = previousStatus
+			return Result{}, err
+		}
 	}
 	return Result{Session: *s.session}, nil
 }
@@ -734,10 +908,15 @@ func (s *Server) cancel() (Result, error) {
 	if s.finished {
 		return Result{}, errors.New("review already completed")
 	}
+	previousStatus := s.autosaveStatus
 	s.finished = true
 	s.autosaveStatus = "canceled"
 	if err := s.persistLocked(); err != nil {
-		return Result{}, err
+		if !autosaveWasCommitted(err) {
+			s.finished = false
+			s.autosaveStatus = previousStatus
+			return Result{}, err
+		}
 	}
 	return Result{Session: *s.session, Canceled: true}, nil
 }
@@ -748,20 +927,246 @@ func (s *Server) reject(digest session.Digest) (Result, error) {
 	if s.finished {
 		return Result{}, errors.New("review already completed")
 	}
+	if err := s.syncExternalSourceLocked(); err != nil {
+		return Result{}, err
+	}
+	before := cloneSession(*s.session)
+	previousStatus := s.autosaveStatus
 	s.session.SetDigest(digest)
 	s.finished = true
 	s.autosaveStatus = "rejected"
 	if err := s.persistLocked(); err != nil {
-		return Result{}, err
+		if !autosaveWasCommitted(err) {
+			*s.session = before
+			s.finished = false
+			s.autosaveStatus = previousStatus
+			return Result{}, err
+		}
 	}
 	return Result{Session: *s.session, Rejected: true}, nil
 }
 
 func (s *Server) persistLocked() error {
+	if s.revisionStore != nil && s.revisionPlanID != "" {
+		return s.revisionStore.WithPlanTransaction(s.revisionPlanID, s.persistTransactionLocked)
+	}
+	return s.persistTransactionLocked()
+}
+
+func (s *Server) persistTransactionLocked() error {
+	if err := s.syncRevisionStoreLocked(); err != nil {
+		return err
+	}
 	if s.autosaveStatus == "" {
 		s.autosaveStatus = "active"
 	}
-	return writeAutosave(s.autosavePath, s.autosaveStatus, *s.session)
+	savedSession := compactRevisionBodies(*s.session)
+	journaled := s.revisionStore != nil && s.autosavePath != ""
+	if journaled {
+		if err := writeRevisionJournal(s.autosavePath, revisionJournal{ExpectedGeneration: s.autosaveGeneration, Status: s.autosaveStatus, Document: s.autosaveDocument, Session: savedSession}); err != nil {
+			return err
+		}
+	}
+	nextGeneration, err := writeAutosave(s.autosavePath, s.autosaveStatus, savedSession, s.autosaveDocument, s.autosaveGeneration)
+	if nextGeneration != s.autosaveGeneration {
+		s.autosaveGeneration = nextGeneration
+	}
+	if err == nil || autosaveWasCommitted(err) {
+		if journaled {
+			if clearErr := clearRevisionJournal(s.autosavePath); clearErr != nil {
+				return clearErr
+			}
+		}
+		return err
+	}
+	if errors.Is(err, ErrAutosaveConflict) || s.autosaveFallback == "" || s.autosaveFallback == s.autosavePath {
+		if journaled {
+			_ = clearRevisionJournal(s.autosavePath)
+		}
+		return err
+	}
+	if nextGeneration, fallbackErr := writeAutosave(s.autosaveFallback, s.autosaveStatus, savedSession, s.autosaveDocument, s.autosaveGeneration); fallbackErr != nil {
+		return fmt.Errorf("write autosave: %w; write fallback: %v", err, fallbackErr)
+	} else {
+		s.autosaveGeneration = nextGeneration
+	}
+	if journaled {
+		if clearErr := clearRevisionJournal(s.autosavePath); clearErr != nil {
+			return clearErr
+		}
+	}
+	s.autosavePath = s.autosaveFallback
+	return nil
+}
+
+func (s *Server) recoverRevisionJournalLocked() error {
+	if s.revisionStore != nil && s.revisionPlanID != "" {
+		return s.revisionStore.WithPlanTransaction(s.revisionPlanID, s.recoverRevisionJournalTransactionLocked)
+	}
+	return s.recoverRevisionJournalTransactionLocked()
+}
+
+func (s *Server) recoverRevisionJournalTransactionLocked() error {
+	if s.revisionStore == nil || s.autosavePath == "" {
+		return nil
+	}
+	journal, ok, err := loadRevisionJournal(s.autosavePath)
+	if err != nil || !ok {
+		return err
+	}
+	saved, exists, err := LoadAutosave(s.autosavePath)
+	if err != nil {
+		return err
+	}
+	if exists && saved.Generation > journal.ExpectedGeneration {
+		return clearRevisionJournal(s.autosavePath)
+	}
+	if exists && saved.Generation != journal.ExpectedGeneration {
+		return fmt.Errorf("recover revision journal: %w (expected generation %d, found %d)", ErrAutosaveConflict, journal.ExpectedGeneration, saved.Generation)
+	}
+	if _, err := writeAutosave(s.autosavePath, journal.Status, journal.Session, journal.Document, journal.ExpectedGeneration); err != nil && !autosaveWasCommitted(err) {
+		return fmt.Errorf("recover revision journal: %w", err)
+	}
+	return clearRevisionJournal(s.autosavePath)
+}
+
+func compactRevisionBodies(source session.Session) session.Session {
+	copy := cloneSession(source)
+	for i := range copy.Revisions {
+		if copy.Revisions[i].CommitID != "" {
+			copy.Revisions[i].Plan = ""
+		}
+	}
+	return copy
+}
+
+func (s *Server) hydrateRevisionBodiesLocked() error {
+	if s.revisionStore == nil {
+		return nil
+	}
+	for i := range s.session.Revisions {
+		revision := &s.session.Revisions[i]
+		if revision.Plan != "" || revision.CommitID == "" {
+			continue
+		}
+		content, err := s.revisionStore.Read(plumbing.NewHash(revision.CommitID))
+		if err != nil {
+			return fmt.Errorf("load revision %s from git store: %w", revision.ID, err)
+		}
+		revision.Plan = content
+		if revision.ID == s.session.CurrentRevisionID {
+			s.session.Plan = content
+		}
+	}
+	return nil
+}
+
+func (s *Server) syncRevisionStoreLocked() error {
+	if s.revisionStore == nil || s.revisionPlanID == "" {
+		return nil
+	}
+	commits := map[string]string{}
+	for _, revision := range s.session.Revisions {
+		commits[revision.ID] = revision.CommitID
+	}
+	for i := range s.session.Revisions {
+		revision := &s.session.Revisions[i]
+		if revision.CommitID != "" {
+			continue
+		}
+		parent := plumbing.ZeroHash
+		if revision.ParentID != "" {
+			parentID := commits[revision.ParentID]
+			if parentID == "" {
+				return fmt.Errorf("revision %s has no persisted parent commit", revision.ID)
+			}
+			parent = plumbing.NewHash(parentID)
+		}
+		hash, err := s.revisionStore.Commit(s.revisionPlanID, parent, revision.Plan, revision.Summary)
+		if err != nil {
+			return fmt.Errorf("persist revision %s in git store: %w", revision.ID, err)
+		}
+		revision.CommitID = hash.String()
+		commits[revision.ID] = revision.CommitID
+	}
+	return nil
+}
+
+func (s *Server) reloadAutosaveLocked() error {
+	if s.autosavePath == "" {
+		return nil
+	}
+	saved, ok, err := LoadAutosave(s.autosavePath)
+	if err != nil || !ok || saved.Generation <= s.autosaveGeneration {
+		return err
+	}
+	s.session = &saved.Session
+	s.autosaveStatus = saved.Status
+	s.autosaveDocument = saved.Document
+	s.autosaveGeneration = saved.Generation
+	return nil
+}
+
+func cloneSession(source session.Session) session.Session {
+	data, err := json.Marshal(source)
+	if err != nil {
+		panic(fmt.Sprintf("clone review session: %v", err))
+	}
+	var cloned session.Session
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		panic(fmt.Sprintf("decode review session clone: %v", err))
+	}
+	cloned.RestoreCounters()
+	return cloned
+}
+
+// syncExternalSourceLocked detects a plan edit made by an editor or another
+// agent while this review is open. Session.Plan is deliberately not compared:
+// applying a proposal changes the working review draft, not the source file.
+func (s *Server) syncExternalSourceLocked() error {
+	if s.autosaveDocument.CanonicalPath == "" {
+		return nil
+	}
+	source, err := os.ReadFile(s.autosaveDocument.CanonicalPath)
+	if err != nil {
+		return fmt.Errorf("read source plan: %w", err)
+	}
+	if s.autosaveDocument.SourceMatches(string(source)) {
+		return nil
+	}
+	beforeSession := cloneSession(*s.session)
+	beforeDocument := s.autosaveDocument
+	s.session.ReconcileExternalPlan(s.autosaveDocument.SourceText, string(source))
+	s.autosaveDocument = NewDocument(s.autosaveDocument.CanonicalPath, string(source))
+	if err := s.persistLocked(); err != nil {
+		if !autosaveWasCommitted(err) {
+			*s.session = beforeSession
+			s.autosaveDocument = beforeDocument
+			return err
+		}
+	}
+	return responseError{status: http.StatusConflict, message: "source plan changed outside PlanMaxx; reload the review before continuing"}
+}
+
+func writeSourceSyncError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrAutosaveConflict) {
+		writeError(w, http.StatusConflict, "review state changed in another PlanMaxx session; reload the review before continuing")
+		return
+	}
+	var httpErr responseError
+	if errors.As(err, &httpErr) {
+		writeError(w, httpErr.status, httpErr.message)
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
+}
+
+func writePersistenceError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrAutosaveConflict) || errors.Is(err, revisions.ErrHeadChanged) {
+		writeError(w, http.StatusConflict, "review state changed in another PlanMaxx session; reload the review before continuing")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 func validateThreadRequest(request createThreadRequest, plan string) error {
@@ -840,6 +1245,11 @@ func parseRevisionDiffPath(path string) (string, string, bool) {
 	return parts[0], parts[2], true
 }
 
+func parseRevisionRestorePath(path string) (string, bool) {
+	parts := strings.Split(strings.TrimPrefix(path, "/api/revisions/"), "/")
+	return parts[0], len(parts) == 2 && parts[0] != "" && parts[1] == "restore"
+}
+
 func (s *Server) hasThread(threadID string) bool {
 	_, ok := s.threadByID(threadID)
 	return ok
@@ -862,6 +1272,7 @@ func (s *Server) threadByID(threadID string) (session.Thread, bool) {
 func (s *Server) sectionIterationRequestLocked(request proposeSectionRequest) sectioniter.Request {
 	basePlan := s.session.Plan
 	replacementAnchor := request.Anchor
+	rootAppliedAnchor := session.Anchor{}
 	selectedSection, _ := sectioniter.SectionForAnchor(basePlan, request.Anchor)
 	if s.session.PendingProposal != nil && anchorsEqual(s.session.PendingProposal.Anchor, request.Anchor) {
 		basePlan = s.session.PendingProposal.ProposedPlan
@@ -870,23 +1281,42 @@ func (s *Server) sectionIterationRequestLocked(request proposeSectionRequest) se
 		if replacementAnchor.StartLine == 0 {
 			replacementAnchor = pendingProposalReplacementAnchor(request.Anchor, selectedSection)
 		}
+		rootAppliedAnchor = s.session.PendingProposal.AppliedAnchor
+		if rootAppliedAnchor.StartLine == 0 {
+			rootAppliedAnchor = s.session.PendingProposal.Anchor
+		}
 	}
 	includedThreadIDs := includedThreadIDs(*s.session, request.ThreadID, request.Anchor)
+	protocolRevisionID := s.protocolRevisionIDLocked()
 	return sectioniter.Request{
-		RevisionID:          s.session.CurrentRevisionID,
+		RevisionID:          protocolRevisionID,
 		ThreadID:            request.ThreadID,
 		Plan:                basePlan,
-		FilePath:            s.session.PlanPath,
-		Reference:           anchorReference(s.session.PlanPath, request.Anchor),
 		Anchor:              request.Anchor,
 		ReplacementAnchor:   replacementAnchor,
+		RootAppliedAnchor:   rootAppliedAnchor,
 		SelectedSection:     selectedSection,
-		PlanExcerpt:         planLineExcerpt(basePlan, max(1, request.Anchor.StartLine-2), request.Anchor.EndLine+2),
 		ReviewerInstruction: request.Instruction,
-		ReviewerDecisions:   reviewerDecisionsForAnchor(*s.session, request.Anchor),
-		PromotedSideAnswers: promotedSideAnswersForAnchor(*s.session, request.Anchor),
-		IncludedThreadIDs:   includedThreadIDs,
+		Protocol: reviewxml.Iteration(reviewxml.IterationInput{
+			RevisionID:  protocolRevisionID,
+			FilePath:    s.session.PlanPath,
+			Plan:        basePlan,
+			Target:      replacementAnchor,
+			Instruction: request.Instruction,
+			Threads:     s.session.Threads,
+			SideAnswers: s.session.SideAnswers,
+		}),
+		IncludedThreadIDs: includedThreadIDs,
 	}
+}
+
+func (s *Server) protocolRevisionIDLocked() string {
+	for _, revision := range s.session.Revisions {
+		if revision.ID == s.session.CurrentRevisionID && revision.CommitID != "" {
+			return revision.CommitID
+		}
+	}
+	return s.session.CurrentRevisionID
 }
 
 func (s *Server) withSideQuestionContext(req sidequestions.Request, thread session.Thread) sidequestions.Request {
@@ -992,8 +1422,23 @@ func findThread(s session.Session, threadID string) (session.Thread, bool) {
 }
 
 func anchorsOverlap(a session.Anchor, b session.Anchor) bool {
-	return a.StartLine <= b.EndLine && b.StartLine <= a.EndLine
+	aStartLine, aStartChar, aEndLine, aEndChar := anchorBounds(a)
+	bStartLine, bStartChar, bEndLine, bEndChar := anchorBounds(b)
+	return pointBefore(aStartLine, aStartChar, bEndLine, bEndChar) && pointBefore(bStartLine, bStartChar, aEndLine, aEndChar)
 }
+
+func anchorBounds(anchor session.Anchor) (startLine, startChar, endLine, endChar int) {
+	if anchor.StartChar == 0 && anchor.EndChar == 0 {
+		return anchor.StartLine, 0, anchor.EndLine, maxInt
+	}
+	return anchor.StartLine, anchor.StartChar, anchor.EndLine, anchor.EndChar
+}
+
+func pointBefore(line, char, otherLine, otherChar int) bool {
+	return line < otherLine || (line == otherLine && char < otherChar)
+}
+
+const maxInt = int(^uint(0) >> 1)
 
 func anchorsEqual(a session.Anchor, b session.Anchor) bool {
 	return a.StartLine == b.StartLine &&

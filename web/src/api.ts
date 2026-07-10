@@ -117,6 +117,11 @@ export const api = {
     request<{ from: string; to: string; lines: DiffLine[] }>(
       `/api/revisions/${encodeURIComponent(from)}/diff/${encodeURIComponent(to)}`,
     ),
+  restoreRevision: (revisionId: string) =>
+    request<Revision>(`/api/revisions/${encodeURIComponent(revisionId)}/restore`, {
+      method: "POST",
+      body: "{}",
+    }),
   proposeSection: (threadId: string | undefined, anchor: Anchor, instruction: string) =>
     request<SectionProposal>("/api/revisions/propose-section", {
       method: "POST",

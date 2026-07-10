@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -25,7 +26,15 @@ func TestMain(m *testing.M) {
 	openBrowser = func(string) error {
 		return nil
 	}
-	os.Exit(m.Run())
+	root, err := os.MkdirTemp("", "planmaxx-cli-test-*")
+	if err != nil {
+		panic(err)
+	}
+	userCacheDir = func() (string, error) { return filepath.Join(root, "cache"), nil }
+	userDataDir = func() (string, error) { return filepath.Join(root, "data"), nil }
+	code := m.Run()
+	_ = os.RemoveAll(root)
+	os.Exit(code)
 }
 
 func TestRootCommandSilencesErrors(t *testing.T) {
@@ -632,7 +641,7 @@ func TestReviewFallsBackToCacheAutosaveWhenDefaultPathCannotBeWritten(t *testing
 		t.Fatal("timed out waiting for review command")
 	}
 
-	fallbackPath, err := cacheAutosavePath(path)
+	fallbackPath, err := cacheAutosavePath(review.NewDocument(path, "# Test plan\n").CanonicalPath)
 	if err != nil {
 		t.Fatalf("cache autosave path: %v", err)
 	}
@@ -706,7 +715,8 @@ func TestReviewRestoresMatchingAutosave(t *testing.T) {
 	if got := state.Threads[0].Messages[0].Body; got != "Recovered comment" {
 		t.Fatalf("expected restored comment, got %q", got)
 	}
-	if !strings.Contains(stderr.String(), "PlanMaxx restored autosave: "+path+".planmaxx-review.json") {
+	canonicalPath := review.NewDocument(path, plan).CanonicalPath
+	if !strings.Contains(stderr.String(), "PlanMaxx restored autosave: "+canonicalPath+".planmaxx-review.json") {
 		t.Fatalf("expected restored autosave message, got %q", stderr.String())
 	}
 
@@ -726,6 +736,195 @@ func TestReviewRestoresMatchingAutosave(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for review command")
+	}
+}
+
+func TestReviewRestoresCacheFallbackOnNextSession(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+
+	cacheDir := t.TempDir()
+	oldUserCacheDir := userCacheDir
+	userCacheDir = func() (string, error) { return cacheDir, nil }
+	t.Cleanup(func() { userCacheDir = oldUserCacheDir })
+
+	path := filepath.Join(t.TempDir(), "plan.md")
+	plan := "# Test plan\n"
+	if err := os.WriteFile(path, []byte(plan), 0o600); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	document := review.NewDocument(path, plan)
+	fallbackPath, err := cacheAutosavePath(document.CanonicalPath)
+	if err != nil {
+		t.Fatalf("cache autosave path: %v", err)
+	}
+	savedSession := session.New("session-1", plan)
+	savedSession.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Recovered from cache")
+	payload, err := json.Marshal(review.Autosave{
+		Version:  2,
+		Format:   "planmaxx.review",
+		Status:   "canceled",
+		Document: document,
+		Session:  *savedSession,
+	})
+	if err != nil {
+		t.Fatalf("marshal fallback autosave: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(fallbackPath), 0o700); err != nil {
+		t.Fatalf("create fallback directory: %v", err)
+	}
+	if err := os.WriteFile(fallbackPath, payload, 0o600); err != nil {
+		t.Fatalf("write fallback autosave: %v", err)
+	}
+
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--no-browser", path})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.ExecuteContext(ctx) }()
+
+	url := waitForReviewURL(t, &stderr)
+	stateRes, err := http.Get(url + "/api/state")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	defer stateRes.Body.Close()
+	var state session.Session
+	if err := json.NewDecoder(stateRes.Body).Decode(&state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if len(state.Threads) != 1 || state.Threads[0].Messages[0].Body != "Recovered from cache" {
+		t.Fatalf("expected fallback comment to be restored, got %+v", state.Threads)
+	}
+	if !strings.Contains(stderr.String(), "PlanMaxx restored autosave: "+fallbackPath) {
+		t.Fatalf("expected fallback restore message, got %q", stderr.String())
+	}
+	cancelRes, err := http.Post(url+"/api/cancel", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("cancel review: %v", err)
+	}
+	cancelRes.Body.Close()
+	if err := <-errCh; err == nil {
+		t.Fatal("expected canceled review to return an error")
+	}
+}
+
+func TestReviewKeepsInAppRevisionWhenSourceFileIsUnchanged(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+
+	path := filepath.Join(t.TempDir(), "plan.md")
+	sourcePlan := "# Test plan\n\n- Source\n"
+	if err := os.WriteFile(path, []byte(sourcePlan), 0o600); err != nil {
+		t.Fatalf("write plan: %v", err)
+	}
+	document := review.NewDocument(path, sourcePlan)
+	savedSession := session.New("session-1", sourcePlan)
+	workingPlan := "# Test plan\n\n- Edited in PlanMaxx\n"
+	savedSession.AddTurnRevision(workingPlan, "Accepted proposal")
+	payload, err := json.Marshal(review.Autosave{
+		Version:  2,
+		Format:   "planmaxx.review",
+		Status:   "canceled",
+		Document: document,
+		Session:  *savedSession,
+	})
+	if err != nil {
+		t.Fatalf("marshal autosave: %v", err)
+	}
+	if err := os.WriteFile(document.CanonicalPath+".planmaxx-review.json", payload, 0o600); err != nil {
+		t.Fatalf("write autosave: %v", err)
+	}
+
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--no-browser", path})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.ExecuteContext(ctx) }()
+	url := waitForReviewURL(t, &stderr)
+	stateRes, err := http.Get(url + "/api/state")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	defer stateRes.Body.Close()
+	var state session.Session
+	if err := json.NewDecoder(stateRes.Body).Decode(&state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if state.Plan != workingPlan || len(state.Revisions) != 2 {
+		t.Fatalf("expected working revision to survive, got plan=%q revisions=%+v", state.Plan, state.Revisions)
+	}
+	cancelRes, err := http.Post(url+"/api/cancel", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("cancel review: %v", err)
+	}
+	cancelRes.Body.Close()
+	if err := <-errCh; err == nil {
+		t.Fatal("expected canceled review to return an error")
+	}
+}
+
+func TestLoadNewestAutosaveUsesFallbackWhenSidecarIsInvalid(t *testing.T) {
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	plan := "# Plan\n"
+	document := review.NewDocument(planPath, plan)
+	sidecar := planPath + ".planmaxx-review.json"
+	fallback := filepath.Join(dir, "fallback.json")
+	if err := os.WriteFile(sidecar, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write invalid sidecar: %v", err)
+	}
+	s := session.New("session-1", plan)
+	s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Keep fallback")
+	payload, err := json.Marshal(review.Autosave{Version: 2, Format: "planmaxx.review", Document: document, Session: *s})
+	if err != nil {
+		t.Fatalf("marshal fallback: %v", err)
+	}
+	if err := os.WriteFile(fallback, payload, 0o600); err != nil {
+		t.Fatalf("write fallback: %v", err)
+	}
+
+	saved, path, ok, err := loadNewestAutosave([]string{sidecar, fallback}, document)
+	if err != nil || !ok || path != fallback {
+		t.Fatalf("expected valid fallback, got saved=%+v path=%q ok=%v err=%v", saved, path, ok, err)
+	}
+	if len(saved.Session.Threads) != 1 || saved.Session.Threads[0].Messages[0].Body != "Keep fallback" {
+		t.Fatalf("expected fallback state, got %+v", saved.Session)
+	}
+}
+
+func TestLoadNewestAutosaveRefusesToOverwriteFutureSidecar(t *testing.T) {
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	plan := "# Plan\n"
+	document := review.NewDocument(planPath, plan)
+	sidecar := planPath + ".planmaxx-review.json"
+	fallback := filepath.Join(dir, "fallback.json")
+	future := `{"version":99,"format":"planmaxx.review","session":{}}`
+	if err := os.WriteFile(sidecar, []byte(future), 0o600); err != nil {
+		t.Fatalf("write future sidecar: %v", err)
+	}
+	payload, err := json.Marshal(review.Autosave{Version: 2, Format: "planmaxx.review", Document: document, Session: *session.New("session-1", plan)})
+	if err != nil {
+		t.Fatalf("marshal fallback: %v", err)
+	}
+	if err := os.WriteFile(fallback, payload, 0o600); err != nil {
+		t.Fatalf("write fallback: %v", err)
+	}
+
+	if _, _, _, err := loadNewestAutosave([]string{sidecar, fallback}, document); err == nil || !strings.Contains(err.Error(), "newer") {
+		t.Fatalf("expected future-version error, got %v", err)
+	}
+	data, err := os.ReadFile(sidecar)
+	if err != nil {
+		t.Fatalf("read future sidecar: %v", err)
+	}
+	if string(data) != future {
+		t.Fatalf("future sidecar was modified: %q", data)
 	}
 }
 
@@ -786,7 +985,7 @@ func TestReviewRecordsChangedAutosavePlanAsTurnRevision(t *testing.T) {
 	if state.CurrentRevisionID != "rev-2" || len(state.Revisions) != 2 {
 		t.Fatalf("expected turn revision after changed autosave, got current=%q revisions=%+v", state.CurrentRevisionID, state.Revisions)
 	}
-	if state.Revisions[1].Source != session.RevisionSourceTurn || state.Revisions[1].ParentID != "rev-1" {
+	if state.Revisions[1].Source != session.RevisionSourceExternal || state.Revisions[1].ParentID != "rev-1" {
 		t.Fatalf("expected second revision to be turn child, got %+v", state.Revisions[1])
 	}
 	if len(state.Threads) != 1 || state.Threads[0].Messages[0].Body != "Recovered comment" {

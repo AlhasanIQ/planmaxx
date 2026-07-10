@@ -108,8 +108,12 @@ func TestFormatRejectedIncludesReiterationInstructionPlanAndDigest(t *testing.T)
 	}
 }
 
-func TestFormatMatchesExactOutput(t *testing.T) {
+func TestFormatAddsModelFacingReviewContext(t *testing.T) {
 	s := session.New("plan-1", "# Final Plan")
+	thread := s.AddThreadWithSelectedText(session.Anchor{StartLine: 1, StartChar: 2, EndLine: 1, EndChar: 7}, "Use Go with Cobra for CLI commands.", "Final")
+	s.PlanPath = "/repo/PLAN.md"
+	promoted := s.AddSideAnswer(thread.ID, "Why Cobra?", "It keeps commands consistent.")
+	s.PromoteSideAnswer(promoted.ID)
 	s.SetDigest(session.Digest{
 		Summary:             "Reviewer approved the CLI-first implementation.",
 		ReviewerDecisions:   []string{"Use Go with Cobra for CLI commands."},
@@ -121,24 +125,17 @@ func TestFormatMatchesExactOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := `Continue from this approved PlanMaxx review.
-
-Use the final plan and approved review digest below. Treat reviewer decisions as human feedback and distinguish them from the agent-generated plan text.
-
-Final plan:
-
-` + "```markdown\n# Final Plan\n```\n\nApproved review digest:\n\n```json\n" + `{
-  "summary": "Reviewer approved the CLI-first implementation.",
-  "reviewerDecisions": [
-    "Use Go with Cobra for CLI commands."
-  ],
-  "promotedSideAnswers": [
-    "Promote answer about CLI contract."
-  ]
-}
-` + "```\n"
-	if out != want {
-		t.Fatalf("expected exact handoff output:\n%q\ngot:\n%q", want, out)
+	for _, want := range []string{
+		"Model-facing review context",
+		`<planmaxx_review version="1">`,
+		`<review_target threads="thread-1">Final</review_target>`,
+		`<thread id="thread-1" target="1:3-1:8">`,
+		"Use Go with Cobra for CLI commands.",
+		"It keeps commands consistent.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected review context to contain %q\n%s", want, out)
+		}
 	}
 }
 

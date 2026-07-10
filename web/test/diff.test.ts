@@ -19,4 +19,21 @@ describe("lineDiff", () => {
       { kind: "context", before: 2, after: 3, text: "" },
     ]);
   });
+
+  test("shows a change in the middle of the complete plan at its actual line", () => {
+    expect(lineDiff("# Plan\n- First\n- Middle\n- Last", "# Plan\n- First\n- Updated middle\n- Last")).toEqual([
+      { kind: "context", before: 1, after: 1, text: "# Plan" },
+      { kind: "context", before: 2, after: 2, text: "- First" },
+      { kind: "remove", before: 3, text: "- Middle" },
+      { kind: "add", after: 3, text: "- Updated middle" },
+      { kind: "context", before: 4, after: 4, text: "- Last" },
+    ]);
+  });
+
+  test("does not hide a proposed change outside the originally selected lines", () => {
+    const diff = lineDiff("# Plan\n- Selected\n- Unselected", "# Plan\n- Selected\n- Changed elsewhere");
+
+    expect(diff).toContainEqual({ kind: "remove", before: 3, text: "- Unselected" });
+    expect(diff).toContainEqual({ kind: "add", after: 3, text: "- Changed elsewhere" });
+  });
 });

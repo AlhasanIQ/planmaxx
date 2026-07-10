@@ -44,8 +44,9 @@ export interface Digest {
 
 export interface Revision {
   id: string;
+  commitId?: string;
   parentId?: string;
-  source: "initial" | "turn" | "immediate";
+  source: "initial" | "turn" | "immediate" | "external";
   createdAt: string;
   plan: string;
   anchor?: Anchor;
@@ -57,6 +58,8 @@ export interface SectionProposal {
   parentId: string;
   threadId?: string;
   anchor: Anchor;
+  appliedAnchor?: Anchor;
+  replacementAnchor?: Anchor;
   originalSection: string;
   proposedSection: string;
   proposedPlan: string;
@@ -64,6 +67,7 @@ export interface SectionProposal {
   instruction: string;
   rawResponse: string;
   includedThreadIds?: string[];
+  obsolete?: boolean;
   createdAt: string;
 }
 

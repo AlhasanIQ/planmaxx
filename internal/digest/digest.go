@@ -5,11 +5,12 @@ import (
 	"strings"
 
 	"github.com/AlhasanIQ/planmaxx/internal/prompts"
+	"github.com/AlhasanIQ/planmaxx/internal/reviewxml"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 )
 
 func BuildPrompt(s session.Session) string {
-	return prompts.ReviewDigest(s.Plan, threadMessages(s), promotedAnswers(s))
+	return prompts.ReviewDigest(s.Plan, threadMessages(s), promotedAnswers(s), reviewxml.Handoff(s))
 }
 
 func DraftFromState(s session.Session) session.Digest {
