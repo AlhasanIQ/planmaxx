@@ -152,11 +152,19 @@
 .plan-row-with-comments {
   min-width: 0;
 }
-.plan-row-with-comments.is-alongside {
+.plan-with-comment-rail.is-alongside {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
   gap: 12px;
   align-items: start;
+}
+.plan-markdown {
+  min-width: 0;
+}
+.plan-comment-rail {
+  position: relative;
+  min-width: 0;
+  min-height: 100%;
 }
 .plan-row-main {
   min-width: 0;
@@ -170,8 +178,9 @@
   margin: 8px 12px 12px 84px;
 }
 .plan-thread-stack.is-alongside {
-  align-self: start;
-  padding: 8px 0;
+  position: absolute;
+  right: 0;
+  left: 0;
 }
 .thread.is-flow {
   width: 100%;
@@ -561,12 +570,22 @@
   padding: 7px 8px;
 }
 @media (max-width: 1180px) {
-  .plan-row-with-comments.is-alongside {
+  .plan-with-comment-rail.is-alongside {
     grid-template-columns: minmax(0, 1fr);
   }
-  .plan-thread-stack.is-alongside {
+  .plan-comment-rail {
+    display: grid;
+    gap: 10px;
     margin: 8px 12px 12px 84px;
-    padding: 0;
+    min-height: 0;
+  }
+  .plan-comment-rail .plan-thread-stack.is-alongside {
+    position: static;
+    visibility: visible !important;
+    margin: 0;
+  }
+  .plan-row-main {
+    min-height: 0 !important;
   }
 }
 
@@ -576,8 +595,12 @@
     flex-direction: column;
   }
   .plan-thread-stack.is-inline,
-  .plan-thread-stack.is-alongside {
+  .plan-comment-rail {
     margin-left: 12px;
+  }
+  .plan-comment-rail .plan-thread-stack.is-alongside {
+    margin-right: 0;
+    margin-left: 0;
   }
 }
 

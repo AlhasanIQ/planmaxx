@@ -56,6 +56,11 @@ interface CommentDraft {
   body: string;
 }
 
+interface CommentRailMetric {
+  top: number;
+  height: number;
+}
+
 export const Plan = memo(function Plan({
   plan,
   theme,
@@ -94,6 +99,7 @@ export const Plan = memo(function Plan({
   sideQuestionsEnabled,
 }: PlanProps) {
   const articleRef = useRef<HTMLElement>(null);
+  const commentRailRef = useRef<HTMLElement>(null);
   const lines = useMemo(() => renderPlanLines(plan), [plan]);
   const highlightedCode = useHighlightedCode(plan, theme);
   const proposalLines = useMemo(
@@ -128,6 +134,8 @@ export const Plan = memo(function Plan({
     [commentFilter, focusedThreadId, sideAnswers, threads],
   );
   const threadsAtLine = useMemo(() => threadsByAnchorEnd(displayedThreads), [displayedThreads]);
+  const commentRailLines = useMemo(() => [...threadsAtLine.keys()].sort((a, b) => a - b), [threadsAtLine]);
+  const commentRailMetrics = useCommentRailMetrics(articleRef, commentRailRef, commentView, commentRailLines);
 
   const hoveredAnchor = useMemo(() => {
     if (!hoveredThreadId) return null;
@@ -254,9 +262,10 @@ export const Plan = memo(function Plan({
     : null;
 
   return (
+    <div className={`plan-with-comment-rail is-${commentView}`}>
     <article
       ref={articleRef}
-      className="relative overflow-hidden rounded-[var(--radius-card)] border border-border bg-surface-elevated shadow-[var(--shadow-soft)]"
+      className="plan-markdown relative overflow-hidden rounded-[var(--radius-card)] border border-border bg-surface-elevated shadow-[var(--shadow-soft)]"
       onPointerUp={handlePointerUp}
     >
       <header className="plan-comment-toolbar">
@@ -304,8 +313,15 @@ export const Plan = memo(function Plan({
           const inHoverAnchor = !isProposedLine && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
           const anchoredThreadId = isProposedLine ? undefined : lineToThread.get(lineNumber);
           return (
-            <div key={`${row.diffKind}-${lineNumber}-${idx}`} className={`plan-row-with-comments is-${commentView}`}>
-              <div className="plan-row-main">
+            <div key={`${row.diffKind}-${lineNumber}-${idx}`} className="plan-row-with-comments">
+              <div
+                className="plan-row-main"
+                style={
+                  commentView === "alongside" && !isProposedLine
+                    ? { minHeight: commentRailMetrics.get(lineNumber)?.height }
+                    : undefined
+                }
+              >
                 <div
                   data-line={isProposedLine ? undefined : lineNumber}
                   className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
@@ -392,26 +408,6 @@ export const Plan = memo(function Plan({
                   />
                 ) : null}
               </div>
-              {commentView === "alongside" && lineThreads.length > 0 ? (
-                <PlanThreadStack
-                  threads={lineThreads}
-                  sideAnswersByThread={sideAnswersByThread}
-                  focusedThreadId={focusedThreadId}
-                  onHover={onHoverThread}
-                  onSetKind={onSetThreadKind}
-                  onReply={onReplyThread}
-                  onDelete={onDeleteThread}
-                  onEdit={onEditThread}
-                  onAskSide={onAskSide}
-                  onIterate={onIterateThread}
-                  onPromote={onPromoteAnswer}
-                  onUnpromote={onUnpromoteAnswer}
-                  agentActions={threadAgentActions}
-                  disabled={disabled}
-                  sideQuestionsEnabled={sideQuestionsEnabled}
-                  placement="alongside"
-                />
-              ) : null}
             </div>
           );
         })}
@@ -422,6 +418,38 @@ export const Plan = memo(function Plan({
         onChange={updateDraftAnchor}
       />
     </article>
+    {commentView === "alongside" ? (
+      <aside ref={commentRailRef} className="plan-comment-rail" aria-label="Comments alongside plan lines">
+        {commentRailLines.map((lineNumber) => {
+          const metric = commentRailMetrics.get(lineNumber);
+          return (
+            <PlanThreadStack
+              key={lineNumber}
+              threads={threadsAtLine.get(lineNumber) ?? []}
+              sideAnswersByThread={sideAnswersByThread}
+              focusedThreadId={focusedThreadId}
+              onHover={onHoverThread}
+              onSetKind={onSetThreadKind}
+              onReply={onReplyThread}
+              onDelete={onDeleteThread}
+              onEdit={onEditThread}
+              onAskSide={onAskSide}
+              onIterate={onIterateThread}
+              onPromote={onPromoteAnswer}
+              onUnpromote={onUnpromoteAnswer}
+              agentActions={threadAgentActions}
+              disabled={disabled}
+              sideQuestionsEnabled={sideQuestionsEnabled}
+              placement="alongside"
+              anchorLine={lineNumber}
+              top={metric?.top}
+              hidden={!metric}
+            />
+          );
+        })}
+      </aside>
+    ) : null}
+    </div>
   );
 });
 
@@ -442,6 +470,9 @@ function PlanThreadStack({
   disabled,
   sideQuestionsEnabled,
   placement,
+  anchorLine,
+  top,
+  hidden,
 }: {
   threads: Thread[];
   sideAnswersByThread: Map<string, SideAnswer[]>;
@@ -459,9 +490,17 @@ function PlanThreadStack({
   disabled: boolean;
   sideQuestionsEnabled: boolean;
   placement: CommentView;
+  anchorLine?: number;
+  top?: number;
+  hidden?: boolean;
 }) {
   return (
-    <section className={`plan-thread-stack is-${placement}`} aria-label="Comments">
+    <section
+      className={`plan-thread-stack is-${placement}`}
+      aria-label="Comments"
+      data-anchor-line={anchorLine}
+      style={placement === "alongside" ? { top, visibility: hidden ? "hidden" : undefined } : undefined}
+    >
       {threads.map((thread) => (
         <ThreadCard
           key={thread.id}
@@ -485,6 +524,70 @@ function PlanThreadStack({
       ))}
     </section>
   );
+}
+
+function useCommentRailMetrics(
+  articleRef: React.RefObject<HTMLElement>,
+  railRef: React.RefObject<HTMLElement>,
+  commentView: CommentView,
+  lines: number[],
+) {
+  const [metrics, setMetrics] = useState<Map<number, CommentRailMetric>>(new Map());
+  const lineKey = lines.join(",");
+
+  useLayoutEffect(() => {
+    if (commentView !== "alongside") {
+      setMetrics(new Map());
+      return;
+    }
+    const article = articleRef.current;
+    const rail = railRef.current;
+    if (!article || !rail) return;
+
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const articleRect = article.getBoundingClientRect();
+        const next = new Map<number, CommentRailMetric>();
+        for (const line of lines) {
+          const row = article.querySelector<HTMLElement>(`.line-row[data-line="${line}"]`);
+          const stack = rail.querySelector<HTMLElement>(`[data-anchor-line="${line}"]`);
+          if (!row || !stack) continue;
+          next.set(line, {
+            top: Math.round(row.getBoundingClientRect().top - articleRect.top),
+            height: Math.ceil(stack.getBoundingClientRect().height),
+          });
+        }
+        setMetrics((current) => (sameCommentRailMetrics(current, next) ? current : next));
+      });
+    };
+
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(article);
+    for (const line of lines) {
+      const stack = rail.querySelector<HTMLElement>(`[data-anchor-line="${line}"]`);
+      if (stack) observer?.observe(stack);
+    }
+    update();
+    window.addEventListener("resize", update);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [articleRef, commentView, lineKey, railRef, lines]);
+
+  return metrics;
+}
+
+function sameCommentRailMetrics(a: Map<number, CommentRailMetric>, b: Map<number, CommentRailMetric>) {
+  if (a.size !== b.size) return false;
+  for (const [line, metric] of a) {
+    const next = b.get(line);
+    if (!next || next.top !== metric.top || next.height !== metric.height) return false;
+  }
+  return true;
 }
 
 function useHighlightedCode(plan: string, theme: "light" | "dark") {

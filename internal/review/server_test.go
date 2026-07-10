@@ -488,6 +488,9 @@ func TestReviewCSSReflowsAlongsideCommentStacksOnNarrowScreens(t *testing.T) {
 	if !bytes.Contains(css, []byte(".plan-thread-stack")) {
 		t.Fatal("expected bundled CSS to contain flow comment stack selector")
 	}
+	if !bytes.Contains(css, []byte(".plan-comment-rail")) {
+		t.Fatal("expected bundled CSS to contain the external comment rail selector")
+	}
 	if !bytes.Contains(css, []byte("grid-template-columns:minmax(0,1fr)")) {
 		t.Fatal("expected narrow layout to collapse alongside comments below their plan row")
 	}

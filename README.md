@@ -90,7 +90,8 @@ command itself.
 
 The review workspace keeps the plan, anchored comments, and revision history
 in one local browser session. Comments can be shown beneath their relevant
-range or alongside its final line, including any `/btw` question and answer.
+range or in an external rail alongside its final line, including any `/btw`
+question and answer.
 
 <p>
   <img src="docs/screenshots/thread-card.png" alt="PlanMaxx annotated thread card with btw answer" width="320">
