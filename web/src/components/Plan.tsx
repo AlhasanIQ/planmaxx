@@ -177,6 +177,21 @@ export const Plan = memo(function Plan({
     });
   }, [editingThread]);
 
+  // Selecting text opens a convenience composer, but it remains a draft until
+  // the reviewer explicitly submits it. A click away drops only an untouched
+  // new draft, leaving native selection behavior (copy, lookup, and so on)
+  // entirely under browser control.
+  useEffect(() => {
+    if (!draft || draft.threadId || draft.body.trim() || submittingDraft) return;
+    const dismissEmptyDraft = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(".inline-comment-composer, .draft-boundary-handle")) return;
+      setDraft(null);
+    };
+    document.addEventListener("pointerdown", dismissEmptyDraft);
+    return () => document.removeEventListener("pointerdown", dismissEmptyDraft);
+  }, [draft, submittingDraft]);
+
   // Map line -> first thread id anchored to it (for "go to thread" affordance).
   const lineToThread = useMemo(() => {
     const map = new Map<number, string>();
@@ -206,7 +221,7 @@ export const Plan = memo(function Plan({
     const next = draftFromSelection(selection);
     if (!next) return;
     setDraft(next);
-    selection?.removeAllRanges();
+    requestAnimationFrame(() => restoreNativeSelection(articleRef.current, next.anchor));
   }
 
   function currentSelectedText(current: CommentDraft): string {
@@ -1102,6 +1117,20 @@ function selectedTextForAnchorInArticle(root: HTMLElement | null, anchor: Anchor
   const endContent = lineContent(root, anchor.endLine);
   if (!startContent || !endContent) return "";
   return textForAnchorContents(startContent, endContent, anchor);
+}
+
+function restoreNativeSelection(root: HTMLElement | null, anchor: Anchor) {
+  if (!root) return;
+  const start = lineContent(root, anchor.startLine);
+  const end = lineContent(root, anchor.endLine);
+  if (!start || !end) return;
+  const range = document.createRange();
+  setBoundary(range, "start", start, anchor.startChar ?? 0);
+  setBoundary(range, "end", end, anchor.endChar ?? 0);
+  const selection = window.getSelection();
+  if (!selection) return;
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function lineContentForNode(node: Node): HTMLElement | null {

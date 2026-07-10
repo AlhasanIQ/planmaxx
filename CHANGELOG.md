@@ -38,6 +38,9 @@
 - Clearly group resolved and stale feedback as historical, disable further
   agent actions for it, and exclude any promoted `/btw` answers attached to it
   from future handoffs.
+- Preserve native text selection when opening the convenience comment composer;
+  an untouched new composer now disappears on click-away without saving a
+  comment.
 
 ## v0.1.0
 
