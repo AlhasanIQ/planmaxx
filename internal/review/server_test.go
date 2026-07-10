@@ -477,19 +477,19 @@ func TestReviewAppSupportsInlineCharacterCommentPrompt(t *testing.T) {
 	}
 }
 
-func TestReviewCSSStacksPositionedThreadsOnMobile(t *testing.T) {
+func TestReviewCSSReflowsAlongsideCommentStacksOnNarrowScreens(t *testing.T) {
 	css, err := staticFiles.ReadFile("static/assets/app.css")
 	if err != nil {
 		t.Fatalf("review UI not built (run ./scripts/build-web.sh): %v", err)
 	}
-	if !bytesContainsAny(css, []string{"@media (max-width: 820px)", "@media (max-width:820px)", "@media(max-width:820px)"}) {
-		t.Fatal("expected bundled CSS to contain @media (max-width: 820px) rule")
+	if !bytesContainsAny(css, []string{"@media (max-width: 1180px)", "@media (max-width:1180px)", "@media(max-width:1180px)"}) {
+		t.Fatal("expected bundled CSS to contain @media (max-width: 1180px) rule")
 	}
-	if !bytes.Contains(css, []byte(".thread.is-positioned")) {
-		t.Fatal("expected bundled CSS to contain .thread.is-positioned selector")
+	if !bytes.Contains(css, []byte(".plan-thread-stack")) {
+		t.Fatal("expected bundled CSS to contain flow comment stack selector")
 	}
-	if !bytesContainsAny(css, []string{"position: static", "position:static"}) {
-		t.Fatal("expected bundled CSS to contain position: static rule")
+	if !bytes.Contains(css, []byte("grid-template-columns:minmax(0,1fr)")) {
+		t.Fatal("expected narrow layout to collapse alongside comments below their plan row")
 	}
 }
 

@@ -1,20 +1,29 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, MessageSquarePlus, RotateCcw, Sparkles, Trash2 } from "lucide-react";
+import { CheckCircle2, Columns2, ListTree, MessageSquarePlus, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
 import { renderPlanLines } from "../lib/markdown";
-import type { Anchor, SectionProposal, Thread } from "../types";
+import type { Anchor, SectionProposal, SideAnswer, Thread, ThreadKind } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
 import { lineDiff } from "../lib/diff";
 import { highlightCodeBlocks, type HighlightToken } from "../lib/codeHighlight";
+import { groupSideAnswersByThread, threadsByAnchorEnd, visibleThreads } from "../lib/threadPlacement";
+import { ThreadCard } from "./ThreadCard";
+
+export type CommentView = "inline" | "alongside";
 
 interface PlanProps {
   plan: string;
   theme: "light" | "dark";
   proposal?: SectionProposal | null;
   threads: Thread[];
+  sideAnswers: SideAnswer[];
   hoveredThreadId: string | null;
   focusedThreadId: string | null;
   editingThread: Thread | null;
+  commentView: CommentView;
+  commentFilter: string;
+  onCommentViewChange: (view: CommentView) => void;
+  onCommentFilterChange: (filter: string) => void;
   onCreateComment: (anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
   onUpdateComment: (threadId: string, anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
   onAskSideFromDraft: (anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
@@ -27,6 +36,17 @@ interface PlanProps {
   onIterateProposal: (anchor: Anchor, instruction: string) => Promise<boolean>;
   onEditDone: () => void;
   onFocusThread: (threadId: string) => void;
+  onHoverThread: (threadId: string | null) => void;
+  onSetThreadKind: (threadId: string, kind: ThreadKind) => void | Promise<void>;
+  onReplyThread: (threadId: string) => void;
+  onDeleteThread: (threadId: string) => void;
+  onEditThread: (threadId: string) => void;
+  onAskSide: (thread: Thread) => void;
+  onIterateThread: (thread: Thread) => void | Promise<void>;
+  onPromoteAnswer: (answerId: string) => void;
+  onUnpromoteAnswer: (answerId: string) => void;
+  threadAgentActions: Record<string, "asking" | "iterating">;
+  sideQuestionsEnabled: boolean;
 }
 
 interface CommentDraft {
@@ -41,9 +61,14 @@ export const Plan = memo(function Plan({
   theme,
   proposal,
   threads,
+  sideAnswers,
   hoveredThreadId,
   focusedThreadId,
   editingThread,
+  commentView,
+  commentFilter,
+  onCommentViewChange,
+  onCommentFilterChange,
   onCreateComment,
   onUpdateComment,
   onAskSideFromDraft,
@@ -56,6 +81,17 @@ export const Plan = memo(function Plan({
   onIterateProposal,
   onEditDone,
   onFocusThread,
+  onHoverThread,
+  onSetThreadKind,
+  onReplyThread,
+  onDeleteThread,
+  onEditThread,
+  onAskSide,
+  onIterateThread,
+  onPromoteAnswer,
+  onUnpromoteAnswer,
+  threadAgentActions,
+  sideQuestionsEnabled,
 }: PlanProps) {
   const articleRef = useRef<HTMLElement>(null);
   const lines = useMemo(() => renderPlanLines(plan), [plan]);
@@ -86,6 +122,12 @@ export const Plan = memo(function Plan({
   const [draft, setDraft] = useState<CommentDraft | null>(null);
   const [submittingDraft, setSubmittingDraft] = useState(false);
   const [draftAgentAction, setDraftAgentAction] = useState<"asking" | "iterating" | null>(null);
+  const sideAnswersByThread = useMemo(() => groupSideAnswersByThread(sideAnswers), [sideAnswers]);
+  const displayedThreads = useMemo(
+    () => visibleThreads(threads, sideAnswers, commentFilter, focusedThreadId),
+    [commentFilter, focusedThreadId, sideAnswers, threads],
+  );
+  const threadsAtLine = useMemo(() => threadsByAnchorEnd(displayedThreads), [displayedThreads]);
 
   const hoveredAnchor = useMemo(() => {
     if (!hoveredThreadId) return null;
@@ -217,79 +259,157 @@ export const Plan = memo(function Plan({
       className="relative overflow-hidden rounded-[var(--radius-card)] border border-border bg-surface-elevated shadow-[var(--shadow-soft)]"
       onPointerUp={handlePointerUp}
     >
+      <header className="plan-comment-toolbar">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-semibold text-foreground-muted">Comments</span>
+          <button
+            type="button"
+            className={`btn btn-sm${commentView === "inline" ? " btn-primary" : " btn-ghost"}`}
+            onClick={() => onCommentViewChange("inline")}
+            aria-pressed={commentView === "inline"}
+            title="Show threads directly below their anchored range"
+          >
+            <ListTree size={13} /> In place
+          </button>
+          <button
+            type="button"
+            className={`btn btn-sm${commentView === "alongside" ? " btn-primary" : " btn-ghost"}`}
+            onClick={() => onCommentViewChange("alongside")}
+            aria-pressed={commentView === "alongside"}
+            title="Show threads beside their final anchored line"
+          >
+            <Columns2 size={13} /> Alongside
+          </button>
+        </div>
+        <label className="relative block min-w-48">
+          <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-foreground-muted" />
+          <input
+            id="thread-filter"
+            type="search"
+            className="field h-8 py-1 pl-7 text-xs"
+            placeholder="Filter comments"
+            value={commentFilter}
+            onChange={(event) => onCommentFilterChange(event.target.value)}
+            autoComplete="off"
+          />
+        </label>
+      </header>
       <div className="plan-body py-2">
         {displayRows.map((row, idx) => {
           const lineNumber = row.lineNumber;
           const line = row.line;
           const isProposedLine = row.diffKind === "add";
+          const lineThreads = isProposedLine ? [] : threadsAtLine.get(lineNumber) ?? [];
           const inDraft = !isProposedLine && draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
           const inHoverAnchor = !isProposedLine && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
           const anchoredThreadId = isProposedLine ? undefined : lineToThread.get(lineNumber);
           return (
-            <div key={`${row.diffKind}-${lineNumber}-${idx}`}>
-              <div
-                data-line={isProposedLine ? undefined : lineNumber}
-                className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
-                  line.kind === "table-header" ? " is-table-header" : ""
-                }${line.kind === "table-divider" ? " is-table-divider" : ""}${
-                  line.kind === "table-row" ? " is-table-row" : ""
-                }${
-                  inDraft ? " is-anchored" : ""
-                }${inHoverAnchor ? " is-hover-anchor" : ""}${
-                  row.diffKind === "remove" ? " is-proposal-remove" : ""
-                }${row.diffKind === "add" ? " is-proposal-add" : ""}`}
-              >
-                <div className="line-number">{lineNumber}</div>
-                <div className="pin-cell">
-                  {!isProposedLine ? (
-                    <button
-                      type="button"
-                      className={`pin-btn${anchoredThreadId ? " has-anchor" : ""}`}
-                      title={anchoredThreadId ? "Open existing thread" : `Comment on line ${lineNumber}`}
-                      aria-label={anchoredThreadId ? "Open existing thread" : `Comment on line ${lineNumber}`}
-                      onMouseDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (anchoredThreadId) onFocusThread(anchoredThreadId);
-                        else openFullLineDraft(lineNumber);
-                      }}
-                      disabled={disabled}
-                    >
-                      <MessageSquarePlus size={14} />
-                    </button>
-                  ) : null}
+            <div key={`${row.diffKind}-${lineNumber}-${idx}`} className={`plan-row-with-comments is-${commentView}`}>
+              <div className="plan-row-main">
+                <div
+                  data-line={isProposedLine ? undefined : lineNumber}
+                  className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
+                    line.kind === "table-header" ? " is-table-header" : ""
+                  }${line.kind === "table-divider" ? " is-table-divider" : ""}${
+                    line.kind === "table-row" ? " is-table-row" : ""
+                  }${
+                    inDraft ? " is-anchored" : ""
+                  }${inHoverAnchor ? " is-hover-anchor" : ""}${
+                    row.diffKind === "remove" ? " is-proposal-remove" : ""
+                  }${row.diffKind === "add" ? " is-proposal-add" : ""}`}
+                >
+                  <div className="line-number">{lineNumber}</div>
+                  <div className="pin-cell">
+                    {!isProposedLine ? (
+                      <button
+                        type="button"
+                        className={`pin-btn${anchoredThreadId ? " has-anchor" : ""}`}
+                        title={anchoredThreadId ? "Open existing thread" : `Comment on line ${lineNumber}`}
+                        aria-label={anchoredThreadId ? "Open existing thread" : `Comment on line ${lineNumber}`}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (anchoredThreadId) onFocusThread(anchoredThreadId);
+                          else openFullLineDraft(lineNumber);
+                        }}
+                        disabled={disabled}
+                      >
+                        <MessageSquarePlus size={14} />
+                      </button>
+                    ) : null}
+                  </div>
+                  <PlanLineContent
+                    html={line.html}
+                    lineNumber={lineNumber}
+                    anchoredThreadId={anchoredThreadId}
+                    codeTokens={isProposedLine ? undefined : highlightedCode.get(lineNumber)}
+                    onFocusThread={onFocusThread}
+                  />
                 </div>
-                <PlanLineContent
-                  html={line.html}
-                  lineNumber={lineNumber}
-                  anchoredThreadId={anchoredThreadId}
-                  codeTokens={isProposedLine ? undefined : highlightedCode.get(lineNumber)}
-                  onFocusThread={onFocusThread}
-                />
-              </div>
 
-              {draft && draftComposerPlacement?.afterLine === lineNumber ? (
-                <InlineCommentComposer
-                  draft={draft}
-                  spacerLines={draftComposerPlacement.spacerLines}
-                  submitting={submittingDraft}
-                  agentAction={draftAgentAction}
+                {draft && draftComposerPlacement?.afterLine === lineNumber ? (
+                  <InlineCommentComposer
+                    draft={draft}
+                    spacerLines={draftComposerPlacement.spacerLines}
+                    submitting={submittingDraft}
+                    agentAction={draftAgentAction}
+                    disabled={disabled}
+                    setDraft={setDraft}
+                    onCancel={cancelDraft}
+                    onSubmit={submitDraft}
+                    onAskSide={askSideFromDraft}
+                    onIterate={iterateDraft}
+                  />
+                ) : null}
+                {commentView === "inline" && lineThreads.length > 0 ? (
+                  <PlanThreadStack
+                    threads={lineThreads}
+                    sideAnswersByThread={sideAnswersByThread}
+                    focusedThreadId={focusedThreadId}
+                    onHover={onHoverThread}
+                    onSetKind={onSetThreadKind}
+                    onReply={onReplyThread}
+                    onDelete={onDeleteThread}
+                    onEdit={onEditThread}
+                    onAskSide={onAskSide}
+                    onIterate={onIterateThread}
+                    onPromote={onPromoteAnswer}
+                    onUnpromote={onUnpromoteAnswer}
+                    agentActions={threadAgentActions}
+                    disabled={disabled}
+                    sideQuestionsEnabled={sideQuestionsEnabled}
+                    placement="inline"
+                  />
+                ) : null}
+                {proposal && idx === lastProposalChangeIndex ? (
+                  <InlineProposalControls
+                    proposal={proposal}
+                    disabled={proposalDisabled}
+                    iterating={proposalIterating}
+                    onApply={onApplyProposal}
+                    onDiscard={onDiscardProposal}
+                    onIterate={onIterateProposal}
+                  />
+                ) : null}
+              </div>
+              {commentView === "alongside" && lineThreads.length > 0 ? (
+                <PlanThreadStack
+                  threads={lineThreads}
+                  sideAnswersByThread={sideAnswersByThread}
+                  focusedThreadId={focusedThreadId}
+                  onHover={onHoverThread}
+                  onSetKind={onSetThreadKind}
+                  onReply={onReplyThread}
+                  onDelete={onDeleteThread}
+                  onEdit={onEditThread}
+                  onAskSide={onAskSide}
+                  onIterate={onIterateThread}
+                  onPromote={onPromoteAnswer}
+                  onUnpromote={onUnpromoteAnswer}
+                  agentActions={threadAgentActions}
                   disabled={disabled}
-                  setDraft={setDraft}
-                  onCancel={cancelDraft}
-                  onSubmit={submitDraft}
-                  onAskSide={askSideFromDraft}
-                  onIterate={iterateDraft}
-                />
-              ) : null}
-              {proposal && idx === lastProposalChangeIndex ? (
-                <InlineProposalControls
-                  proposal={proposal}
-                  disabled={proposalDisabled}
-                  iterating={proposalIterating}
-                  onApply={onApplyProposal}
-                  onDiscard={onDiscardProposal}
-                  onIterate={onIterateProposal}
+                  sideQuestionsEnabled={sideQuestionsEnabled}
+                  placement="alongside"
                 />
               ) : null}
             </div>
@@ -304,6 +424,68 @@ export const Plan = memo(function Plan({
     </article>
   );
 });
+
+function PlanThreadStack({
+  threads,
+  sideAnswersByThread,
+  focusedThreadId,
+  onHover,
+  onSetKind,
+  onReply,
+  onDelete,
+  onEdit,
+  onAskSide,
+  onIterate,
+  onPromote,
+  onUnpromote,
+  agentActions,
+  disabled,
+  sideQuestionsEnabled,
+  placement,
+}: {
+  threads: Thread[];
+  sideAnswersByThread: Map<string, SideAnswer[]>;
+  focusedThreadId: string | null;
+  onHover: (threadId: string | null) => void;
+  onSetKind: (threadId: string, kind: ThreadKind) => void | Promise<void>;
+  onReply: (threadId: string) => void;
+  onDelete: (threadId: string) => void;
+  onEdit: (threadId: string) => void;
+  onAskSide: (thread: Thread) => void;
+  onIterate: (thread: Thread) => void | Promise<void>;
+  onPromote: (answerId: string) => void;
+  onUnpromote: (answerId: string) => void;
+  agentActions: Record<string, "asking" | "iterating">;
+  disabled: boolean;
+  sideQuestionsEnabled: boolean;
+  placement: CommentView;
+}) {
+  return (
+    <section className={`plan-thread-stack is-${placement}`} aria-label="Comments">
+      {threads.map((thread) => (
+        <ThreadCard
+          key={thread.id}
+          thread={thread}
+          kind={thread.kind ?? "decision"}
+          sideAnswers={sideAnswersByThread.get(thread.id) ?? []}
+          isFocused={focusedThreadId === thread.id}
+          onHover={onHover}
+          onSetKind={onSetKind}
+          onReply={onReply}
+          onDelete={onDelete}
+          onEdit={onEdit}
+          onAskSide={onAskSide}
+          onIterate={onIterate}
+          onPromote={onPromote}
+          onUnpromote={onUnpromote}
+          agentAction={agentActions[thread.id]}
+          disabled={disabled}
+          sideQuestionsEnabled={sideQuestionsEnabled}
+        />
+      ))}
+    </section>
+  );
+}
 
 function useHighlightedCode(plan: string, theme: "light" | "dark") {
   const [highlighted, setHighlighted] = useState<Map<number, HighlightToken[]>>(new Map());

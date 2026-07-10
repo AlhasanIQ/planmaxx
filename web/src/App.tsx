@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search } from "lucide-react";
 import { ApiError, api } from "./api";
 import { TopBar } from "./components/TopBar";
-import { Plan } from "./components/Plan";
-import { Threads } from "./components/Threads";
-import { HandoffPanel } from "./components/HandoffPanel";
+import { Plan, type CommentView } from "./components/Plan";
 import { RevisionPanel } from "./components/RevisionPanel";
 import { ToastStack, type Toast } from "./components/Toasts";
 import { CompletedScreen } from "./components/CompletedScreen";
@@ -54,7 +51,6 @@ function useReviewController() {
   const [sideQuestionsEnabled, setSideQuestionsEnabled] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const theme = useTheme();
-  const [handoffCollapsed, setHandoffCollapsed] = useState(false);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [threadAgentActions, setThreadAgentActions] = useState<Record<string, ThreadAgentAction>>({});
   const [iteratingSection, setIteratingSection] = useState(false);
@@ -279,18 +275,6 @@ function useReviewController() {
     }
   }
 
-  async function handleMove(threadId: string, x: number, y: number) {
-    const ok = await withBusy("Moving comment…", () => api.moveThread(threadId, x, y));
-    if (ok && session) {
-      setSession({
-        ...session,
-        threads: session.threads.map((t) =>
-          t.id === threadId ? { ...t, position: { x, y } } : t,
-        ),
-      });
-    }
-  }
-
   async function handleAsk(thread: Thread, question: string) {
     setDialog(null);
     return askSideQuestion(thread, question, session);
@@ -455,13 +439,11 @@ function useReviewController() {
     handleFinalize,
     handleIterateSection,
     handleIterateThread,
-    handleMove,
     handlePromote,
     handleReject,
     handleReply,
     handleUnpromote,
     handleUpdateThread,
-    handoffCollapsed,
     hoveredThreadId,
     liveDigest,
     loadError,
@@ -476,7 +458,6 @@ function useReviewController() {
     setEditingThreadId,
     setFilter,
     setFocusedThreadId,
-    setHandoffCollapsed,
     setHoveredThreadId,
     sideQuestionsEnabled,
     status,
@@ -525,13 +506,11 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleFinalize,
     handleIterateSection,
     handleIterateThread,
-    handleMove,
     handlePromote,
     handleReject,
     handleReply,
     handleUnpromote,
     handleUpdateThread,
-    handoffCollapsed,
     hoveredThreadId,
     liveDigest,
     loadError,
@@ -546,7 +525,6 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     setEditingThreadId,
     setFilter,
     setFocusedThreadId,
-    setHandoffCollapsed,
     setHoveredThreadId,
     sideQuestionsEnabled,
     status,
@@ -569,9 +547,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     },
     [setFocusedThreadId, setHoveredThreadId],
   );
-  const toggleHandoffCollapsed = useCallback(() => {
-    setHandoffCollapsed((value) => !value);
-  }, [setHandoffCollapsed]);
+  const [commentView, setCommentView] = useState<CommentView>("inline");
 
   if (completion) {
     return <CompletedScreen state={completion} />;
@@ -612,15 +588,20 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         finalizeDisabled={Boolean(session.pendingProposal)}
       />
 
-      <main className="mx-auto grid w-full max-w-[1240px] grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <main className="mx-auto grid w-full max-w-[1600px] grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Plan
           plan={session.plan}
           theme={theme.resolved}
           proposal={session.pendingProposal}
           threads={session.threads}
+          sideAnswers={session.sideAnswers}
           hoveredThreadId={hoveredThreadId}
           focusedThreadId={focusedThreadId}
           editingThread={session.threads.find((t) => t.id === editingThreadId) ?? null}
+          commentView={commentView}
+          commentFilter={filter}
+          onCommentViewChange={setCommentView}
+          onCommentFilterChange={setFilter}
           onCreateComment={handleCreateThread}
           onUpdateComment={handleUpdateThread}
           onAskSideFromDraft={handleCreateThreadAndAsk}
@@ -633,22 +614,23 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           onIterateProposal={(anchor, instruction) => handleIterateSection(anchor, instruction)}
           onEditDone={clearEditingThread}
           onFocusThread={focusThreadTemporarily}
+          onHoverThread={setHoveredThreadId}
+          onSetThreadKind={updateThreadKind}
+          onReplyThread={(id) => setDialog({ kind: "reply", threadId: id })}
+          onDeleteThread={(id) => setDialog({ kind: "delete", threadId: id })}
+          onEditThread={(id) => {
+            setEditingThreadId(id);
+            setFocusedThreadId(id);
+          }}
+          onAskSide={(thread) => setDialog({ kind: "ask", thread })}
+          onIterateThread={handleIterateThread}
+          onPromoteAnswer={handlePromote}
+          onUnpromoteAnswer={handleUnpromote}
+          threadAgentActions={threadAgentActions}
+          sideQuestionsEnabled={sideQuestionsEnabled}
         />
 
-        <aside className="min-w-0 space-y-3">
-          {liveDigest ? (
-            <HandoffPanel
-              digest={liveDigest}
-              decisionCount={counts.decisions}
-              noteCount={counts.notes}
-              promotedCount={counts.promoted}
-              ephemeralCount={counts.ephemeral}
-              collapsed={handoffCollapsed}
-              onToggle={toggleHandoffCollapsed}
-              onFinalize={openFinalize}
-              disabled={busy || Boolean(session.pendingProposal)}
-            />
-          ) : null}
+        <aside className="min-w-0">
           <RevisionPanel
             currentRevisionId={session.currentRevisionId}
             theme={theme.resolved}
@@ -660,47 +642,6 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
             onCompare={handleCompareRevision}
             onClearCompare={handleClearRevisionDiff}
             onRestore={handleRestoreRevision}
-          />
-          <label
-            htmlFor="thread-filter"
-            className="block text-xs font-semibold uppercase tracking-wide text-foreground-muted"
-          >
-            Threads
-          </label>
-          <div className="relative">
-            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-foreground-muted" />
-            <input
-              id="thread-filter"
-              type="search"
-              className="field pl-8"
-              placeholder="Filter threads (⌘/Ctrl+K)"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              autoComplete="off"
-            />
-          </div>
-          <Threads
-            threads={session.threads}
-            sideAnswers={session.sideAnswers}
-            filter={filter}
-            focusedThreadId={focusedThreadId}
-            hoveredThreadId={hoveredThreadId}
-            onHover={setHoveredThreadId}
-            onMove={handleMove}
-            onSetKind={updateThreadKind}
-            onReply={(id) => setDialog({ kind: "reply", threadId: id })}
-            onDelete={(id) => setDialog({ kind: "delete", threadId: id })}
-            onEdit={(id) => {
-              setEditingThreadId(id);
-              setFocusedThreadId(id);
-            }}
-            onAskSide={(t) => setDialog({ kind: "ask", thread: t })}
-            onIterate={handleIterateThread}
-            onPromote={handlePromote}
-            onUnpromote={handleUnpromote}
-            agentActions={threadAgentActions}
-            disabled={busy}
-            sideQuestionsEnabled={sideQuestionsEnabled}
           />
         </aside>
       </main>

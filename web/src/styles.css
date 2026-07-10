@@ -115,10 +115,6 @@
   .chip {
     @apply inline-flex items-center gap-1 rounded-full bg-surface-muted px-2 py-0.5 text-xs font-medium text-foreground-muted;
   }
-  /* Pinned-content marker so server tests don't accidentally drift. */
-  .thread.is-positioned {
-    position: absolute;
-  }
   /* Pills express handoff intent: "go" means → next Codex turn; "stay" means
      stays in this review and never leaves. Used in topbar, side answers, and
      handoff stats so the vocabulary is consistent across the UI. */
@@ -144,6 +140,42 @@
 }
 
 /* Plan markdown body */
+.plan-comment-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface-muted) 44%, var(--color-surface-elevated));
+}
+.plan-row-with-comments {
+  min-width: 0;
+}
+.plan-row-with-comments.is-alongside {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 12px;
+  align-items: start;
+}
+.plan-row-main {
+  min-width: 0;
+}
+.plan-thread-stack {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+.plan-thread-stack.is-inline {
+  margin: 8px 12px 12px 84px;
+}
+.plan-thread-stack.is-alongside {
+  align-self: start;
+  padding: 8px 0;
+}
+.thread.is-flow {
+  width: 100%;
+}
 .plan-body h1 {
   @apply mt-3 mb-2 text-2xl font-semibold tracking-tight;
 }
@@ -528,24 +560,25 @@
   font-weight: 600;
   padding: 7px 8px;
 }
-.thread .drag-handle {
-  cursor: grab;
-  color: var(--color-foreground-muted);
-}
-.thread .drag-handle:active {
-  cursor: grabbing;
-}
-
-@media (max-width: 820px) {
-  .thread.is-positioned {
-    position: static;
-    width: 100%;
+@media (max-width: 1180px) {
+  .plan-row-with-comments.is-alongside {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plan-thread-stack.is-alongside {
+    margin: 8px 12px 12px 84px;
+    padding: 0;
   }
 }
 
-/* Drag visual */
-.thread.is-dragging {
-  opacity: 0.6;
+@media (max-width: 640px) {
+  .plan-comment-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .plan-thread-stack.is-inline,
+  .plan-thread-stack.is-alongside {
+    margin-left: 12px;
+  }
 }
 
 /* Thread kind: "note" threads are de-emphasized so the eye picks up which
@@ -621,17 +654,6 @@
   color: var(--color-warning);
 }
 
-/* Handoff preview panel — sticky at the top of the right column. */
-.handoff-panel {
-  position: sticky;
-  top: 72px;
-  background: var(--color-surface-elevated);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  padding: 12px;
-  box-shadow: var(--shadow-soft);
-  z-index: 2;
-}
 .handoff-arrow {
   display: inline-grid;
   place-items: center;
@@ -641,26 +663,6 @@
   background: color-mix(in srgb, var(--color-accent) 14%, transparent);
   color: var(--color-accent);
 }
-.handoff-stat {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-weight: 500;
-  border: 1px solid transparent;
-}
-.handoff-stat-go {
-  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
-  color: var(--color-accent);
-  border-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
-}
-.handoff-stat-stay {
-  background: var(--color-surface-muted);
-  color: var(--color-foreground-muted);
-  border-color: var(--color-border);
-}
-
 .proposal-panel,
 .revision-panel {
   background: var(--color-surface-elevated);

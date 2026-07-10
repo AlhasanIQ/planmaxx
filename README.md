@@ -88,17 +88,17 @@ command itself.
 
 ![PlanMaxx desktop review workspace](docs/screenshots/review-desktop.png)
 
-The review workspace keeps the plan, anchored comments, revision history, and
-handoff preview visible in one local browser session.
+The review workspace keeps the plan, anchored comments, and revision history
+in one local browser session. Comments can be shown beneath their relevant
+range or alongside its final line, including any `/btw` question and answer.
 
 <p>
-  <img src="docs/screenshots/handoff-preview.png" alt="PlanMaxx handoff preview" width="360">
   <img src="docs/screenshots/thread-card.png" alt="PlanMaxx annotated thread card with btw answer" width="320">
 </p>
 
-The live handoff preview shows what will be sent back to Codex, while thread
-cards can include ephemeral `/btw` answers that can be promoted into the next
-handoff.
+Thread cards can include ephemeral `/btw` answers that can be promoted into the
+next handoff. The final review action presents the authoritative handoff before
+it is sent to Codex.
 
 ## What It Does
 

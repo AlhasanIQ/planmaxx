@@ -19,6 +19,11 @@
 - Render GitHub-Flavored Markdown tables in review plans with preserved
   line-level comment anchors, alignment, inline formatting, and narrow-view
   scrolling.
+- Show complete comment threads, including `/btw` Q+A, directly below their
+  anchors or alongside their final anchored line; stacked flow prevents long,
+  overlapping, and same-line comments from covering plan content.
+- Removed the redundant sticky handoff preview panel; finalization retains the
+  authoritative handoff review.
 
 ## v0.1.0
 

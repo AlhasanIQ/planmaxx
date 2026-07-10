@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
   EyeOff,
-  GripVertical,
   MessageCircleQuestion,
   Pencil,
   Reply,
@@ -21,7 +20,6 @@ interface ThreadCardProps {
   sideAnswers: SideAnswer[];
   isFocused: boolean;
   onHover: (id: string | null) => void;
-  onMove: (id: string, x: number, y: number) => void;
   onSetKind: (id: string, kind: ThreadKind) => void;
   onReply: (id: string) => void;
   onDelete: (id: string) => void;
@@ -42,7 +40,6 @@ export function ThreadCard(props: ThreadCardProps) {
     sideAnswers,
     isFocused,
     onHover,
-    onMove,
     onSetKind,
     onReply,
     onDelete,
@@ -55,65 +52,6 @@ export function ThreadCard(props: ThreadCardProps) {
     disabled,
     sideQuestionsEnabled,
   } = props;
-  const ref = useRef<HTMLDivElement>(null);
-  const [dragging, setDragging] = useState(false);
-  const dragMoveRef = useRef({
-    id: thread.id,
-    onMove,
-    position: thread.position,
-  });
-
-  useEffect(() => {
-    dragMoveRef.current = {
-      id: thread.id,
-      onMove,
-      position: thread.position,
-    };
-  }, [onMove, thread.id, thread.position]);
-
-  // HTML5 drag is finicky and easy to get wrong; we drive a simple pointer-drag.
-  useEffect(() => {
-    if (!dragging) return;
-    const handle = ref.current;
-    if (!handle) return;
-    const container = handle.parentElement as HTMLElement | null;
-    if (!container) return;
-    const containerRect = container.getBoundingClientRect();
-    const offset = {
-      x: dragOffsetRef.current.x,
-      y: dragOffsetRef.current.y,
-    };
-    const onMoveDoc = (e: PointerEvent) => {
-      const { position } = dragMoveRef.current;
-      const x = Math.round(e.clientX - containerRect.left - offset.x);
-      const y = Math.round(e.clientY - containerRect.top - offset.y);
-      handle.style.transform = `translate(${x - position.x}px, ${y - position.y}px)`;
-    };
-    const onUp = (e: PointerEvent) => {
-      const { id, onMove: moveThread } = dragMoveRef.current;
-      const x = Math.round(e.clientX - containerRect.left - offset.x);
-      const y = Math.round(e.clientY - containerRect.top - offset.y);
-      handle.style.transform = "";
-      setDragging(false);
-      moveThread(id, Math.max(0, x), Math.max(0, y));
-    };
-    document.addEventListener("pointermove", onMoveDoc);
-    document.addEventListener("pointerup", onUp);
-    return () => {
-      document.removeEventListener("pointermove", onMoveDoc);
-      document.removeEventListener("pointerup", onUp);
-    };
-  }, [dragging]);
-
-  const dragOffsetRef = useRef({ x: 0, y: 0 });
-
-  function onHandleDown(e: React.PointerEvent) {
-    if (!ref.current) return;
-    const rect = ref.current.getBoundingClientRect();
-    dragOffsetRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-    setDragging(true);
-    e.preventDefault();
-  }
 
   const status = thread.status ?? "open";
   const isOpen = status === "open";
@@ -128,24 +66,13 @@ export function ThreadCard(props: ThreadCardProps) {
 
   return (
     <section
-      ref={ref}
-      className={`thread is-positioned${isFocused ? " is-focus" : ""}${dragging ? " is-dragging" : ""}${isDecisionIntent ? " is-decision" : " is-note"}${!isOpen ? " is-closed" : ""}`}
+      className={`thread is-flow${isFocused ? " is-focus" : ""}${isDecisionIntent ? " is-decision" : " is-note"}${!isOpen ? " is-closed" : ""}`}
       data-thread-id={thread.id}
       data-thread-kind={kind}
       onMouseEnter={() => onHover(thread.id)}
       onMouseLeave={() => onHover(null)}
     >
       <header className="flex items-center gap-1.5">
-        <button
-          type="button"
-          className="drag-handle -ml-1 inline-flex h-6 w-5 items-center justify-center rounded hover:bg-surface-muted"
-          onPointerDown={onHandleDown}
-          disabled={isProcessing}
-          aria-label="Drag thread"
-          title="Drag to move"
-        >
-          <GripVertical size={14} />
-        </button>
         <h3 className="flex-1 truncate text-[13px] font-semibold">
           <span className="text-foreground-muted">
             {anchorLabel(thread.anchor)}
