@@ -90,12 +90,12 @@ export const Plan = memo(function Plan({
   const hoveredAnchor = useMemo(() => {
     if (!hoveredThreadId) return null;
     const t = threads.find((x) => x.id === hoveredThreadId);
-    return t?.anchor ?? null;
+    return t?.status === "open" ? t.anchor : null;
   }, [hoveredThreadId, threads]);
   const focusedAnchor = useMemo(() => {
     if (!focusedThreadId) return null;
     const t = threads.find((x) => x.id === focusedThreadId);
-    return t?.anchor ?? null;
+    return t?.status === "open" ? t.anchor : null;
   }, [focusedThreadId, threads]);
   const activeAnchor = hoveredAnchor ?? focusedAnchor;
 
@@ -986,7 +986,9 @@ function usePlanHighlights(
     if (!root || !highlights || !HighlightClass) return;
     ensureHighlightStyles();
 
-    const threadRanges = threads.flatMap((thread) => rangesForAnchor(root, thread.anchor));
+    const threadRanges = threads
+      .filter((thread) => thread.status === "open")
+      .flatMap((thread) => rangesForAnchor(root, thread.anchor));
     const draftRanges = draftAnchor ? rangesForAnchor(root, draftAnchor) : [];
     const hoverRanges = hoveredAnchor ? rangesForAnchor(root, hoveredAnchor) : [];
 

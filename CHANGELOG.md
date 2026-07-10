@@ -14,6 +14,8 @@
   atomically while preserving unmanaged custom skills.
 - Added clear, per-comment in-progress states for /btw and section iteration,
   with duplicate-run guards and automatic cleanup after success or failure.
+- Clear obsolete character selections when an iterate proposal resolves a
+  comment, and keep the accepted revision comparison available to show or hide.
 
 ## v0.1.0
 

@@ -21,6 +21,7 @@ interface Props {
   error: string | null;
   disabled: boolean;
   onCompare: (from: string, to: string) => void;
+  onClearCompare: () => void;
   onRestore: (revisionId: string) => void;
 }
 
@@ -33,6 +34,7 @@ export function RevisionPanel({
   error,
   disabled,
   onCompare,
+  onClearCompare,
   onRestore,
 }: Props) {
   const orderedRevisions = useMemo(() => [...revisions].reverse(), [revisions]);
@@ -117,6 +119,12 @@ export function RevisionPanel({
       {error ? <p className="mt-2 text-[12px] text-danger">{error}</p> : null}
       {diff ? (
         <div className="mt-3">
+          <div className="mb-2 flex items-center justify-between gap-2 text-[11px] text-foreground-muted">
+            <span>Changes: {diff.from} → {diff.to}</span>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onClearCompare} disabled={disabled}>
+              Hide changes
+            </button>
+          </div>
           {pierreDiff ? (
             <FileDiff
               fileDiff={pierreDiff}

@@ -357,8 +357,12 @@ function useReviewController() {
   async function handleApplyProposal(proposalId: string) {
     const revision = await withBusy("Applying proposal…", () => api.applyProposal(proposalId));
     if (!revision) return;
-    setRevisionDiff(null);
     await refresh();
+    if (revision.parentId) {
+      await handleCompareRevision(revision.parentId, revision.id);
+    } else {
+      setRevisionDiff(null);
+    }
     pushToast("success", "Proposal applied");
   }
 
@@ -370,6 +374,10 @@ function useReviewController() {
   }
 
   async function handleCompareRevision(from: string, to: string) {
+    if (revisionDiff?.from === from && revisionDiff.to === to) {
+      setRevisionDiff(null);
+      return;
+    }
     setRevisionDiffLoading(true);
     setRevisionDiffError(null);
     try {
@@ -382,6 +390,11 @@ function useReviewController() {
     } finally {
       setRevisionDiffLoading(false);
     }
+  }
+
+  function handleClearRevisionDiff() {
+    setRevisionDiff(null);
+    setRevisionDiffError(null);
   }
 
   async function handleRestoreRevision(revisionId: string) {
@@ -433,7 +446,8 @@ function useReviewController() {
     handleAsk,
     handleCancel,
     handleCompareRevision,
-	    handleRestoreRevision,
+    handleClearRevisionDiff,
+    handleRestoreRevision,
     handleCreateThread,
     handleCreateThreadAndAsk,
     handleDelete,
@@ -502,7 +516,8 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleAsk,
     handleCancel,
     handleCompareRevision,
-	    handleRestoreRevision,
+    handleClearRevisionDiff,
+    handleRestoreRevision,
     handleCreateThread,
     handleCreateThreadAndAsk,
     handleDelete,
@@ -643,6 +658,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
             error={revisionDiffError}
             disabled={busy}
             onCompare={handleCompareRevision}
+            onClearCompare={handleClearRevisionDiff}
             onRestore={handleRestoreRevision}
           />
           <label

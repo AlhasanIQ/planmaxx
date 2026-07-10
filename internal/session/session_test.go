@@ -325,6 +325,27 @@ func TestApplyProposalPreservesDisjointCharacterThreadOnSameLine(t *testing.T) {
 	}
 }
 
+func TestApplyProposalClearsResolvedCharacterSelection(t *testing.T) {
+	s := New("plan-1", "- Name: old")
+	thread := s.AddThreadWithSelectedText(Anchor{StartLine: 1, StartChar: 8, EndLine: 1, EndChar: 11}, "Rename old", "old")
+	p := s.CreateSectionProposal(SectionProposalInput{
+		ThreadID: thread.ID, Anchor: thread.Anchor, AppliedAnchor: thread.Anchor,
+		AppliedHunks:      []AppliedHunk{{Anchor: thread.Anchor, Result: Anchor{StartLine: 1, StartChar: 8, EndLine: 1, EndChar: 15}}},
+		ReplacementAnchor: Anchor{StartLine: 1, StartChar: 8, EndLine: 1, EndChar: 15},
+		ProposedPlan:      "- Name: renamed", ProposedSection: "renamed", IncludedThreadIDs: []string{thread.ID},
+	})
+	if _, ok := s.ApplyProposal(p.ID); !ok {
+		t.Fatal("apply")
+	}
+	got := s.Threads[0]
+	if got.Status != ThreadStatusResolved {
+		t.Fatalf("expected resolved thread, got %+v", got)
+	}
+	if got.SelectedText != "" || got.Anchor != (Anchor{StartLine: 1, EndLine: 1}) {
+		t.Fatalf("expected old character selection to be cleared, got %+v", got)
+	}
+}
+
 func TestReconcileExternalPlanReanchorsMultilineCharacterSelection(t *testing.T) {
 	s := New("plan-1", "before\nalpha one\nbeta two\nafter")
 	thread := s.AddThread(Anchor{StartLine: 2, StartChar: 6, EndLine: 3, EndChar: 4}, "Keep this together")

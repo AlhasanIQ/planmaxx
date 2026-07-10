@@ -1807,6 +1807,10 @@ func TestApplyProposalRouteUpdatesPlanAndRevision(t *testing.T) {
 	if s.PendingProposal != nil {
 		t.Fatalf("expected proposal to clear, got %+v", s.PendingProposal)
 	}
+	diff := serveRevisionDiff(server, "rev-1", "rev-2")
+	if diff.Code != http.StatusOK || !strings.Contains(diff.Body.String(), "- New") {
+		t.Fatalf("expected accepted proposal to remain comparable, got %d: %s", diff.Code, diff.Body.String())
+	}
 }
 
 func TestDiscardProposalRouteLeavesPlanUnchanged(t *testing.T) {

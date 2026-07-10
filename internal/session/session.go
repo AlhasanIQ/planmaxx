@@ -518,7 +518,7 @@ func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delt
 		case thread.Anchor.StartLine > applied.EndLine:
 			thread.Anchor = shiftAnchor(thread.Anchor, delta)
 		case included[thread.ID]:
-			thread.Status = ThreadStatusResolved
+			resolveThreadAfterProposal(thread, proposal.ReplacementAnchor)
 		default:
 			thread.Status = ThreadStatusStale
 		}
@@ -541,7 +541,7 @@ func (s *Session) adjustThreadsForAppliedHunks(proposal SectionProposal) {
 		}
 		if affected {
 			if included[thread.ID] {
-				thread.Status = ThreadStatusResolved
+				resolveThreadAfterProposal(thread, replacementAnchorForThread(thread.Anchor, proposal))
 			} else {
 				thread.Status = ThreadStatusStale
 			}
@@ -549,6 +549,30 @@ func (s *Session) adjustThreadsForAppliedHunks(proposal SectionProposal) {
 		}
 		thread.Anchor = reanchorAfterHunks(thread.Anchor, proposal.AppliedHunks)
 	}
+}
+
+// resolveThreadAfterProposal removes the old character selection because it
+// described text in the parent revision. The thread remains as resolved review
+// history, anchored only to the resulting lines for a useful location label.
+func resolveThreadAfterProposal(thread *Thread, replacement Anchor) {
+	thread.Status = ThreadStatusResolved
+	thread.SelectedText = ""
+	if replacement.StartLine > 0 {
+		thread.Anchor = lineAnchor(replacement)
+	}
+}
+
+func replacementAnchorForThread(anchor Anchor, proposal SectionProposal) Anchor {
+	for _, hunk := range proposal.AppliedHunks {
+		if anchorsOverlap(anchor, hunk.Anchor) {
+			return hunk.Result
+		}
+	}
+	return proposal.ReplacementAnchor
+}
+
+func lineAnchor(anchor Anchor) Anchor {
+	return Anchor{StartLine: anchor.StartLine, EndLine: anchor.EndLine}
 }
 
 func anchorsOverlap(left, right Anchor) bool {
