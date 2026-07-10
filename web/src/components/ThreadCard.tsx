@@ -31,6 +31,7 @@ interface ThreadCardProps {
   agentAction?: "asking" | "iterating";
   disabled: boolean;
   sideQuestionsEnabled: boolean;
+  presentation?: "inline" | "rail";
 }
 
 export function ThreadCard(props: ThreadCardProps) {
@@ -51,6 +52,7 @@ export function ThreadCard(props: ThreadCardProps) {
     agentAction,
     disabled,
     sideQuestionsEnabled,
+    presentation = "rail",
   } = props;
 
   const status = thread.status ?? "open";
@@ -66,7 +68,7 @@ export function ThreadCard(props: ThreadCardProps) {
 
   return (
     <section
-      className={`thread is-flow${isFocused ? " is-focus" : ""}${isDecisionIntent ? " is-decision" : " is-note"}${!isOpen ? " is-closed" : ""}`}
+      className={`thread is-flow${presentation === "inline" ? " is-inline-comment" : ""}${isFocused ? " is-focus" : ""}${isDecisionIntent ? " is-decision" : " is-note"}${!isOpen ? " is-closed" : ""}`}
       data-thread-id={thread.id}
       data-thread-kind={kind}
       onMouseEnter={() => onHover(thread.id)}

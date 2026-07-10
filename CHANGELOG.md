@@ -25,6 +25,8 @@
   comment filter searches thread and `/btw` Q+A text.
 - Moved alongside comment cards out of the Markdown render surface into a
   dedicated rail while preserving line alignment and expanded anchor rows.
+- Redesigned in-place comments as connected, lightweight discussion blocks
+  beneath their anchors, with clearer grouping for multiple threads.
 - Removed the redundant sticky handoff preview panel; finalization retains the
   authoritative handoff review.
 - Replaced rejection with whole-plan iteration from the final-review dialog.

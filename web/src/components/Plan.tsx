@@ -501,6 +501,11 @@ function PlanThreadStack({
       data-anchor-line={anchorLine}
       style={placement === "alongside" ? { top, visibility: hidden ? "hidden" : undefined } : undefined}
     >
+      {placement === "inline" ? (
+        <div className="inline-thread-stack-label">
+          {threads.length === 1 ? "Comment" : `${threads.length} comments`}
+        </div>
+      ) : null}
       {threads.map((thread) => (
         <ThreadCard
           key={thread.id}
@@ -520,6 +525,7 @@ function PlanThreadStack({
           agentAction={agentActions[thread.id]}
           disabled={disabled}
           sideQuestionsEnabled={sideQuestionsEnabled}
+          presentation={placement === "inline" ? "inline" : "rail"}
         />
       ))}
     </section>
