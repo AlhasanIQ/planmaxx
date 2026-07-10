@@ -51,6 +51,9 @@
   responses, bounded fast line diffing with precise small-hunk refinement,
   immutable comparison caches, concurrent post-apply refreshes, and a visible
   in-editor loading state.
+- Reworked in-place and alongside comment styling into clean, standalone cards;
+  removed the colored side-rail treatment and made active, note, resolved,
+  stale, and `/btw` states distinct through restrained surfaces and labels.
 
 ## v0.1.0
 
