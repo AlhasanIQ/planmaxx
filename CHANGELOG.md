@@ -21,7 +21,8 @@
   scrolling.
 - Show complete comment threads, including `/btw` Q+A, directly below their
   anchors or alongside their final anchored line; stacked flow prevents long,
-  overlapping, and same-line comments from covering plan content.
+  overlapping, and same-line comments from covering plan content, and the
+  comment filter searches thread and `/btw` Q+A text.
 - Removed the redundant sticky handoff preview panel; finalization retains the
   authoritative handoff review.
 

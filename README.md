@@ -103,7 +103,8 @@ it is sent to Codex.
 ## What It Does
 
 - Renders long plans in a readable local review UI.
-- Adds threaded comments anchored to lines or text ranges.
+- Adds searchable threaded comments anchored to lines or text ranges, shown
+  beneath the range or alongside its final line.
 - Keeps private notes out of the final handoff.
 - Lets you promote useful side-question answers into the handoff.
 - Supports focused section rewrites and proposal diffs before final approval.
