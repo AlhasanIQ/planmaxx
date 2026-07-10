@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Columns2, GitCompareArrows, ListTree, MessageSquarePlus, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
+import { CheckCircle2, Columns2, GitCompareArrows, ListTree, MessageSquarePlus, MessageSquareText, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
 import { renderPlanLines } from "../lib/markdown";
-import type { Anchor, RevisionComparison, SectionProposal, SideAnswer, Thread, ThreadKind } from "../types";
+import type { Anchor, RevisionComparison, RevisionFeedback, SectionProposal, SideAnswer, Thread, ThreadKind } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
 import { lineDiff } from "../lib/diff";
@@ -136,6 +136,18 @@ export const Plan = memo(function Plan({
       };
     });
   }, [comparison, comparisonAfterLines, comparisonBeforeLines, lines, plan, proposal, proposalLines]);
+  const feedbackByResultLine = useMemo(() => {
+    const byLine = new Map<number, RevisionFeedback[]>();
+    if (!comparison?.isDirect) return byLine;
+    for (const feedback of comparison.feedback) {
+      const line = feedback.resultAnchor?.endLine;
+      if (!line) continue;
+      const entries = byLine.get(line) ?? [];
+      entries.push(feedback);
+      byLine.set(line, entries);
+    }
+    return byLine;
+  }, [comparison]);
   const lastProposalChangeIndex = useMemo(
     () => displayRows.reduce((last, row, index) => (row.diffKind === "context" ? last : index), -1),
     [displayRows],
@@ -339,6 +351,9 @@ export const Plan = memo(function Plan({
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClearComparison}>Hide changes</button>
         </div>
       ) : null}
+      {comparison && !comparison.isDirect && comparison.feedback.length > 0 ? (
+        <ComparisonFeedbackSummary feedback={comparison.feedback} />
+      ) : null}
       <div className="plan-body py-2">
         {displayRows.map((row, idx) => {
           const lineNumber = row.lineNumber;
@@ -399,6 +414,10 @@ export const Plan = memo(function Plan({
                     onFocusThread={onFocusThread}
                   />
                 </div>
+
+                {comparison && row.diffKind === "add" && feedbackByResultLine.get(lineNumber)?.length ? (
+                  <ComparisonFeedbackList feedback={feedbackByResultLine.get(lineNumber) ?? []} />
+                ) : null}
 
                 {draft && draftComposerPlacement?.afterLine === lineNumber ? (
                   <InlineCommentComposer
@@ -489,6 +508,42 @@ export const Plan = memo(function Plan({
     </div>
   );
 });
+
+function ComparisonFeedbackSummary({ feedback }: { feedback: RevisionFeedback[] }) {
+  const byRevision = new Map<string, RevisionFeedback[]>();
+  for (const entry of feedback) {
+    const entries = byRevision.get(entry.revisionId) ?? [];
+    entries.push(entry);
+    byRevision.set(entry.revisionId, entries);
+  }
+  return (
+    <section className="comparison-feedback-summary" aria-label="Feedback behind compared revisions">
+      <div className="comparison-feedback-title"><MessageSquareText size={14} /> Feedback behind these changes</div>
+      {[...byRevision].map(([revisionId, entries]) => (
+        <div key={revisionId} className="comparison-feedback-revision">
+          <span>{revisionId}</span>
+          <ComparisonFeedbackList feedback={entries} />
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function ComparisonFeedbackList({ feedback }: { feedback: RevisionFeedback[] }) {
+  return (
+    <section className="comparison-feedback-list" aria-label="Feedback that led to this change">
+      <div className="comparison-feedback-title"><MessageSquareText size={13} /> Feedback applied to this change</div>
+      {feedback.map((entry) => (
+        <article key={`${entry.revisionId}-${entry.threadId}`} className="comparison-feedback-card">
+          {entry.selectedText ? <p className="comparison-feedback-selection">“{entry.selectedText}”</p> : null}
+          {entry.messages.map((message) => (
+            <p key={message.id} className="comparison-feedback-message">{message.body}</p>
+          ))}
+        </article>
+      ))}
+    </section>
+  );
+}
 
 function PlanThreadStack({
   threads,

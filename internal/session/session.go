@@ -61,14 +61,28 @@ type Thread struct {
 }
 
 type Revision struct {
-	ID        string    `json:"id"`
-	CommitID  string    `json:"commitId,omitempty"`
-	ParentID  string    `json:"parentId,omitempty"`
-	Source    string    `json:"source"`
-	CreatedAt time.Time `json:"createdAt"`
-	Plan      string    `json:"plan"`
-	Anchor    Anchor    `json:"anchor,omitempty"`
-	Summary   string    `json:"summary,omitempty"`
+	ID        string             `json:"id"`
+	CommitID  string             `json:"commitId,omitempty"`
+	ParentID  string             `json:"parentId,omitempty"`
+	Source    string             `json:"source"`
+	CreatedAt time.Time          `json:"createdAt"`
+	Plan      string             `json:"plan"`
+	Anchor    Anchor             `json:"anchor,omitempty"`
+	Summary   string             `json:"summary,omitempty"`
+	Feedback  []RevisionFeedback `json:"feedback,omitempty"`
+}
+
+// RevisionFeedback is an immutable snapshot of the review thread that was
+// supplied when a proposal became an accepted revision. Thread state later
+// changes as plans evolve, so comparisons must not depend on mutable threads.
+type RevisionFeedback struct {
+	RevisionID   string    `json:"revisionId"`
+	ThreadID     string    `json:"threadId"`
+	Anchor       Anchor    `json:"anchor"`
+	ResultAnchor Anchor    `json:"resultAnchor"`
+	SelectedText string    `json:"selectedText,omitempty"`
+	Kind         string    `json:"kind"`
+	Messages     []Message `json:"messages"`
 }
 
 type SectionProposal struct {
@@ -366,7 +380,8 @@ func (s *Session) ApplyProposal(proposalID string) (Revision, bool) {
 		return Revision{}, false
 	}
 	delta := lineCount(proposal.ProposedPlan) - lineCount(s.Plan)
-	revision := s.addRevision(proposal.ParentID, RevisionSourceImmediate, proposal.ProposedPlan, proposal.Anchor, proposal.Summary)
+	feedback := s.feedbackForProposal(proposal)
+	revision := s.addRevisionWithFeedback(proposal.ParentID, RevisionSourceImmediate, proposal.ProposedPlan, proposal.Anchor, proposal.Summary, feedback)
 	s.adjustThreadsForAppliedProposal(proposal, delta)
 	s.PendingProposal = nil
 	return revision, true
@@ -479,6 +494,10 @@ func (s *Session) setThreadStatus(threadID string, status string) bool {
 }
 
 func (s *Session) addRevision(parentID string, source string, plan string, anchor Anchor, summary string) Revision {
+	return s.addRevisionWithFeedback(parentID, source, plan, anchor, summary, nil)
+}
+
+func (s *Session) addRevisionWithFeedback(parentID string, source string, plan string, anchor Anchor, summary string, feedback []RevisionFeedback) Revision {
 	s.nextRevision++
 	revision := Revision{
 		ID:        fmt.Sprintf("rev-%d", s.nextRevision),
@@ -489,10 +508,35 @@ func (s *Session) addRevision(parentID string, source string, plan string, ancho
 		Anchor:    anchor,
 		Summary:   summary,
 	}
+	for i := range feedback {
+		feedback[i].RevisionID = revision.ID
+	}
+	revision.Feedback = feedback
 	s.Revisions = append(s.Revisions, revision)
 	s.CurrentRevisionID = revision.ID
 	s.Plan = plan
 	return revision
+}
+
+func (s *Session) feedbackForProposal(proposal SectionProposal) []RevisionFeedback {
+	feedback := make([]RevisionFeedback, 0, len(proposal.IncludedThreadIDs))
+	for _, threadID := range proposal.IncludedThreadIDs {
+		for _, thread := range s.Threads {
+			if thread.ID != threadID {
+				continue
+			}
+			feedback = append(feedback, RevisionFeedback{
+				ThreadID:     thread.ID,
+				Anchor:       thread.Anchor,
+				ResultAnchor: replacementAnchorForThread(thread.Anchor, proposal),
+				SelectedText: thread.SelectedText,
+				Kind:         thread.Kind,
+				Messages:     append([]Message(nil), thread.Messages...),
+			})
+			break
+		}
+	}
+	return feedback
 }
 
 func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delta int) {

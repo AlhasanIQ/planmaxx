@@ -1,5 +1,5 @@
 import type { SideQuestionContext } from "./lib/selectionContext";
-import type { Anchor, DiffLine, Digest, Revision, SectionProposal, Session, SideAnswer, Thread, ThreadKind } from "./types";
+import type { Anchor, DiffLine, Digest, Revision, RevisionFeedback, SectionProposal, Session, SideAnswer, Thread, ThreadKind } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
@@ -114,7 +114,7 @@ export const api = {
   revisions: () =>
     request<{ currentRevisionId: string; revisions: Revision[]; pendingProposal?: SectionProposal | null }>("/api/revisions"),
   revisionDiff: (from: string, to: string) =>
-    request<{ from: string; to: string; lines: DiffLine[] }>(
+    request<{ from: string; to: string; lines: DiffLine[]; feedback?: RevisionFeedback[] }>(
       `/api/revisions/${encodeURIComponent(from)}/diff/${encodeURIComponent(to)}`,
     ),
   restoreRevision: (revisionId: string) =>

@@ -44,6 +44,9 @@
 - Refined active comment cards into a compact feedback workflow and restyled
   resolved or stale threads as a distinct archival section with no active
   iteration controls.
+- Preserve immutable snapshots of feedback used for accepted proposals and
+  display that feedback next to direct revision changes; multi-revision
+  comparisons group feedback by the intervening accepted revision.
 
 ## v0.1.0
 

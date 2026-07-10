@@ -1573,6 +1573,56 @@ func TestRevisionRoutesListAndDiffAppliedRevisions(t *testing.T) {
 	}
 }
 
+func TestRevisionDiffIncludesFeedbackFromAcceptedProposal(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Old")
+	thread := s.AddThreadWithSelectedText(session.Anchor{StartLine: 3, StartChar: 2, EndLine: 3, EndChar: 5}, "Make this clearer.", "Old")
+	proposal := s.CreateSectionProposal(session.SectionProposalInput{
+		ThreadID:          thread.ID,
+		Anchor:            thread.Anchor,
+		AppliedAnchor:     thread.Anchor,
+		ReplacementAnchor: session.Anchor{StartLine: 3, EndLine: 3},
+		OriginalSection:   "- Old",
+		ProposedSection:   "- New",
+		ProposedPlan:      "# Plan\n\n- New",
+		Summary:           "Clarified the item.",
+		Instruction:       "Make this clearer.",
+		IncludedThreadIDs: []string{thread.ID},
+	})
+	if _, ok := s.ApplyProposal(proposal.ID); !ok {
+		t.Fatal("expected proposal to apply")
+	}
+
+	server := NewServer(s)
+	res := serveRevisionDiff(server, "rev-1", "rev-2")
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected diff 200, got %d: %s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Feedback []session.RevisionFeedback `json:"feedback"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Feedback) != 1 || body.Feedback[0].ThreadID != thread.ID || body.Feedback[0].Messages[0].Body != "Make this clearer." {
+		t.Fatalf("expected linked feedback in revision diff, got %+v", body.Feedback)
+	}
+}
+
+func TestRevisionFeedbackBetweenOrdersInterveningRevisions(t *testing.T) {
+	s := session.Session{Revisions: []session.Revision{
+		{ID: "rev-1"},
+		{ID: "rev-2", ParentID: "rev-1", Feedback: []session.RevisionFeedback{{RevisionID: "rev-2", ThreadID: "thread-1"}}},
+		{ID: "rev-3", ParentID: "rev-2", Feedback: []session.RevisionFeedback{{RevisionID: "rev-3", ThreadID: "thread-2"}}},
+	}}
+	feedback := revisionFeedbackBetween(s, "rev-1", "rev-3")
+	if len(feedback) != 2 || feedback[0].ThreadID != "thread-1" || feedback[1].ThreadID != "thread-2" {
+		t.Fatalf("expected chronological intervening feedback, got %+v", feedback)
+	}
+	if got := revisionFeedbackBetween(s, "rev-3", "rev-1"); got != nil {
+		t.Fatalf("expected unrelated direction to return no feedback, got %+v", got)
+	}
+}
+
 func TestProposeSectionRouteCreatesPendingProposal(t *testing.T) {
 	s := session.New("plan-1", "# Plan\n\n- Old\n- Keep")
 	thread := s.AddThread(session.Anchor{StartLine: 3, EndLine: 3}, "Clarify this")

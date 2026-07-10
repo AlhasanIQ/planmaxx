@@ -201,6 +201,15 @@ func TestApplySectionProposalCreatesImmediateRevision(t *testing.T) {
 	if rev.ID != "rev-2" || rev.ParentID != "rev-1" || rev.Source != RevisionSourceImmediate {
 		t.Fatalf("unexpected applied revision %+v", rev)
 	}
+	if len(rev.Feedback) != 1 || rev.Feedback[0].ThreadID != thread.ID || rev.Feedback[0].RevisionID != rev.ID {
+		t.Fatalf("expected immutable feedback snapshot on applied revision, got %+v", rev.Feedback)
+	}
+	if len(rev.Feedback[0].Messages) != 1 || rev.Feedback[0].Messages[0].Body != "Update this" {
+		t.Fatalf("expected feedback message snapshot, got %+v", rev.Feedback[0])
+	}
+	if rev.Feedback[0].ResultAnchor.StartLine != 3 || rev.Feedback[0].ResultAnchor.EndLine != 3 {
+		t.Fatalf("expected result anchor on feedback snapshot, got %+v", rev.Feedback[0].ResultAnchor)
+	}
 	if s.Plan != "# Plan\n\n- New" {
 		t.Fatalf("expected session plan to update, got %q", s.Plan)
 	}

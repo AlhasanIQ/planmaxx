@@ -166,6 +166,66 @@
   gap: 6px;
   min-width: 0;
 }
+.comparison-feedback-summary {
+  display: grid;
+  gap: 10px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface-muted) 46%, var(--color-surface-elevated));
+}
+.comparison-feedback-revision {
+  display: grid;
+  gap: 6px;
+}
+.comparison-feedback-revision > span {
+  color: var(--color-foreground-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+.comparison-feedback-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 14px 10px 58px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  border-left: 3px solid color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-accent) 5%, var(--color-surface-elevated));
+}
+.comparison-feedback-summary .comparison-feedback-list {
+  margin: 0;
+}
+.comparison-feedback-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-foreground-muted);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.comparison-feedback-card {
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-surface-elevated) 88%, transparent);
+}
+.comparison-feedback-selection {
+  color: var(--color-foreground-muted);
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.4;
+}
+.comparison-feedback-message {
+  margin-top: 3px;
+  color: var(--color-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
 .plan-row-with-comments {
   min-width: 0;
 }

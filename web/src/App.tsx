@@ -8,7 +8,7 @@ import { CompletedScreen } from "./components/CompletedScreen";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
 import { FinalizeDialog } from "./components/dialogs/FinalizeDialog";
-import type { Anchor, DiffLine, Digest, RevisionComparison, Session, Thread, ThreadKind } from "./types";
+import type { Anchor, DiffLine, Digest, RevisionComparison, RevisionFeedback, Session, Thread, ThreadKind } from "./types";
 import { buildDigestDraft, countHandoff } from "./lib/digest";
 import { anchorLabel } from "./lib/anchors";
 import { sideQuestionContext } from "./lib/selectionContext";
@@ -24,7 +24,7 @@ import {
 } from "./lib/theme";
 
 type CompletionState = null | "finalized" | "canceled";
-type RevisionDiffState = { from: string; to: string; lines: DiffLine[] };
+type RevisionDiffState = { from: string; to: string; lines: DiffLine[]; feedback?: RevisionFeedback[] };
 type ThreadAgentAction = "asking" | "iterating";
 
 type DialogState =
@@ -558,7 +558,13 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     const before = session.revisions.find((revision) => revision.id === revisionDiff.from);
     const after = session.revisions.find((revision) => revision.id === revisionDiff.to);
     if (!before || !after) return null;
-    return { ...revisionDiff, beforePlan: before.plan, afterPlan: after.plan };
+    return {
+      ...revisionDiff,
+      beforePlan: before.plan,
+      afterPlan: after.plan,
+      feedback: revisionDiff.feedback ?? [],
+      isDirect: after.parentId === before.id,
+    };
   }, [revisionDiff, session]);
 
   if (completion) {

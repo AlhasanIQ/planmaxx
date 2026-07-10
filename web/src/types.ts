@@ -51,6 +51,17 @@ export interface Revision {
   plan: string;
   anchor?: Anchor;
   summary?: string;
+  feedback?: RevisionFeedback[];
+}
+
+export interface RevisionFeedback {
+  revisionId: string;
+  threadId: string;
+  anchor: Anchor;
+  resultAnchor: Anchor;
+  selectedText?: string;
+  kind: ThreadKind;
+  messages: Message[];
 }
 
 export interface SectionProposal {
@@ -84,6 +95,8 @@ export interface RevisionComparison {
   lines: DiffLine[];
   beforePlan: string;
   afterPlan: string;
+  feedback: RevisionFeedback[];
+  isDirect: boolean;
 }
 
 export interface Session {

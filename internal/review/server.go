@@ -593,6 +593,7 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	fromRevision, fromOK := findRevision(*s.session, from)
 	toRevision, toOK := findRevision(*s.session, to)
+	feedback := revisionFeedbackBetween(*s.session, from, to)
 	store := s.revisionStore
 	s.mu.Unlock()
 	if !fromOK || !toOK {
@@ -613,9 +614,10 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 		fromRevision.Plan, toRevision.Plan = fromPlan, toPlan
 	}
 	writeJSON(w, map[string]any{
-		"from":  from,
-		"to":    to,
-		"lines": plandiff.Lines(fromRevision.Plan, toRevision.Plan),
+		"from":     from,
+		"to":       to,
+		"lines":    plandiff.Lines(fromRevision.Plan, toRevision.Plan),
+		"feedback": feedback,
 	})
 }
 
@@ -1312,6 +1314,31 @@ func findRevision(s session.Session, revisionID string) (session.Revision, bool)
 		}
 	}
 	return session.Revision{}, false
+}
+
+// revisionFeedbackBetween returns immutable feedback snapshots in the order
+// their accepted revisions occurred. A comparison may span several revisions;
+// walking the parent chain avoids treating comments from unrelated history as
+// causes of the displayed changes.
+func revisionFeedbackBetween(s session.Session, fromID, toID string) []session.RevisionFeedback {
+	byID := make(map[string]session.Revision, len(s.Revisions))
+	for _, revision := range s.Revisions {
+		byID[revision.ID] = revision
+	}
+	var reverse []session.Revision
+	current, ok := byID[toID]
+	for ok && current.ID != fromID {
+		reverse = append(reverse, current)
+		current, ok = byID[current.ParentID]
+	}
+	if !ok || current.ID != fromID {
+		return nil
+	}
+	feedback := make([]session.RevisionFeedback, 0)
+	for index := len(reverse) - 1; index >= 0; index-- {
+		feedback = append(feedback, reverse[index].Feedback...)
+	}
+	return feedback
 }
 
 func includedThreadIDs(s session.Session, requestedThreadID string, anchor session.Anchor) []string {
