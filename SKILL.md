@@ -1,6 +1,6 @@
 ---
 name: planmaxx
-description: Use when you have drafted a plan, design, spec, or implementation plan and need user review before proceeding. Also use when the user asks to review, approve, reject, or iterate on an agent-written plan. Run PlanMaxx as the blocking review gate instead of asking the user to manually inspect pasted markdown.
+description: Use when you have drafted a plan, design, spec, or implementation plan and need user review before proceeding. Also use when the user asks to review, approve, or iterate on an agent-written plan. Run PlanMaxx as the blocking review gate instead of asking the user to manually inspect pasted markdown.
 ---
 
 <!-- planmaxx-managed-skill -->
@@ -20,10 +20,10 @@ Use PlanMaxx after drafting a plan that needs user review before implementation.
 ## Outcomes
 
 - Approved: continue from the final plan and approved review digest.
-- Rejected: revise the plan using the rejection digest, then run PlanMaxx again for review.
+- Iterated: review the proposal, then approve, discard, or iterate again.
 - Canceled: stop. No handoff was produced.
 
-Do not continue implementation after a rejected or canceled review.
+Do not continue implementation after a canceled review.
 
 ## Useful Flags
 
@@ -36,4 +36,4 @@ Do not continue implementation after a rejected or canceled review.
 
 ## Codex Side Actions
 
-When `CODEX_THREAD_ID` is available, PlanMaxx may use Codex app-server for side questions and section iteration. Do not fake this context manually. If unavailable, PlanMaxx still supports normal review, comments, approval, rejection, and handoff.
+When `CODEX_THREAD_ID` is available, PlanMaxx may use Codex app-server for side questions and section iteration. Do not fake this context manually. If unavailable, PlanMaxx still supports normal review, comments, approval, iteration, and handoff.

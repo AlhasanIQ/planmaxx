@@ -27,7 +27,6 @@ func TestPromptTemplatesAreReviewableFiles(t *testing.T) {
 	want := []string{
 		"approved_handoff.gotmpl",
 		"protocol.gotmpl",
-		"rejected_handoff.gotmpl",
 		"review_digest.gotmpl",
 		"section_iteration.gotmpl",
 		"side_question.gotmpl",
@@ -50,8 +49,6 @@ func TestAgentPromptTextStaysInTemplates(t *testing.T) {
 		},
 		"internal/handoff/handoff.go": {
 			"Continue from this approved PlanMaxx review.",
-			"PlanMaxx review rejected.",
-			"The user rejected this plan with comments.",
 		},
 	}
 
@@ -147,7 +144,6 @@ func TestSideQuestionRendersTemplate(t *testing.T) {
 func TestEveryModelFacingPromptIncludesProtocolDocumentation(t *testing.T) {
 	prompts := []string{
 		ApprovedHandoff("# Plan", "{}", "<planmaxx_review version=\"1\"/>", false),
-		RejectedHandoff("# Plan", "{}", "<planmaxx_review version=\"1\"/>"),
 		ReviewDigest("# Plan", []string{"Decision"}, nil, "<planmaxx_review version=\"1\"/>"),
 		SideQuestion("Why?", "/repo/plan.md", "/repo/plan.md:1", "Plan", "# Plan"),
 		SectionIteration(SectionIterationInput{Protocol: `<planmaxx_iteration version="1" revision="rev-1"/>`}),

@@ -11,7 +11,7 @@ Do not weaken these rules without an explicit migration and tests.
   If that cannot be written, use the deterministic user-cache fallback for the
   same canonical plan path.
 - Browser storage is non-authoritative and may contain preferences only.
-- Do not delete review records automatically on cancel, approval, or rejection.
+- Do not delete review records automatically on cancel or approval.
 
 ## Document identity
 

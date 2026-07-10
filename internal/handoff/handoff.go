@@ -19,15 +19,6 @@ func Format(s session.Session) (string, error) {
 	return prompts.ApprovedHandoff(s.Plan, digest, reviewxml.Handoff(s), noReviewItems(s.Digest)), nil
 }
 
-func FormatRejected(s session.Session) (string, error) {
-	digest, err := encodeDigest(s.Digest)
-	if err != nil {
-		return "", err
-	}
-
-	return prompts.RejectedHandoff(s.Plan, digest, reviewxml.Handoff(s)), nil
-}
-
 func encodeDigest(d session.Digest) (string, error) {
 	var digest bytes.Buffer
 	encoder := json.NewEncoder(&digest)

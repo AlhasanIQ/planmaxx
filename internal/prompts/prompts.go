@@ -59,15 +59,6 @@ func ApprovedHandoff(plan string, digest string, reviewContext string, noReviewI
 	})
 }
 
-func RejectedHandoff(plan string, digest string, reviewContext string) string {
-	return render("rejected_handoff.gotmpl", handoffTemplateData{
-		PlanBlock:             fencedBlock("markdown", plan),
-		DigestBlock:           fencedBlock("json", digest),
-		ReviewContext:         reviewContext,
-		ProtocolDocumentation: protocolDocumentation("handoff"),
-	})
-}
-
 func ReviewDigest(plan string, reviewerDecisions []string, promotedSideAnswers []string, reviewContext string) string {
 	return render("review_digest.gotmpl", reviewDigestTemplateData{
 		Plan:                  plan,

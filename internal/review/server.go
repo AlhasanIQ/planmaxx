@@ -54,7 +54,6 @@ type Server struct {
 type Result struct {
 	Session  session.Session
 	Canceled bool
-	Rejected bool
 }
 
 func NewServer(s *session.Session) *Server {
@@ -78,7 +77,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/revisions/", s.handleRevisionAction)
 	mux.HandleFunc("/api/revisions", s.handleRevisions)
 	mux.HandleFunc("/api/finalize", s.handleFinalize)
-	mux.HandleFunc("/api/reject", s.handleReject)
 	mux.HandleFunc("/api/cancel", s.handleCancel)
 	mux.Handle("/", http.FileServer(http.FS(staticSubFS())))
 	return mux
@@ -230,25 +228,6 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	}
 	s.done <- result
 	writeJSON(w, map[string]string{"status": "finalized"})
-}
-
-func (s *Server) handleReject(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	var digest session.Digest
-	if err := decodeJSON(r.Body, &digest); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid digest json")
-		return
-	}
-	result, err := s.reject(digest)
-	if err != nil {
-		writeError(w, http.StatusConflict, err.Error())
-		return
-	}
-	s.done <- result
-	writeJSON(w, map[string]string{"status": "rejected"})
 }
 
 type createThreadRequest struct {
@@ -919,31 +898,6 @@ func (s *Server) cancel() (Result, error) {
 		}
 	}
 	return Result{Session: *s.session, Canceled: true}, nil
-}
-
-func (s *Server) reject(digest session.Digest) (Result, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.finished {
-		return Result{}, errors.New("review already completed")
-	}
-	if err := s.syncExternalSourceLocked(); err != nil {
-		return Result{}, err
-	}
-	before := cloneSession(*s.session)
-	previousStatus := s.autosaveStatus
-	s.session.SetDigest(digest)
-	s.finished = true
-	s.autosaveStatus = "rejected"
-	if err := s.persistLocked(); err != nil {
-		if !autosaveWasCommitted(err) {
-			*s.session = before
-			s.finished = false
-			s.autosaveStatus = previousStatus
-			return Result{}, err
-		}
-	}
-	return Result{Session: *s.session, Rejected: true}, nil
 }
 
 func (s *Server) persistLocked() error {

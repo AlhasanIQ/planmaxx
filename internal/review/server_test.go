@@ -1906,36 +1906,6 @@ func TestFinalizeCompletesServer(t *testing.T) {
 	}
 }
 
-func TestRejectCompletesServerWithRejectionResult(t *testing.T) {
-	s := session.New("plan-1", "# Plan")
-	server := NewServer(s)
-
-	body := bytes.NewBufferString(`{"summary":"Rejected: migration order is unsafe","reviewerDecisions":["Revise before implementation"],"promotedSideAnswers":[]}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/reject", body)
-	res := httptest.NewRecorder()
-	server.Handler().ServeHTTP(res, req)
-
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", res.Code)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	result, err := server.Wait(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Canceled {
-		t.Fatal("expected reject not to mark review canceled")
-	}
-	if !result.Rejected {
-		t.Fatal("expected rejected result")
-	}
-	if result.Session.Digest.Summary != "Rejected: migration order is unsafe" {
-		t.Fatalf("unexpected digest summary %q", result.Session.Digest.Summary)
-	}
-}
-
 func TestStateRouteWrongMethodReturnsJSONError(t *testing.T) {
 	s := session.New("plan-1", "# Plan")
 	server := NewServer(s)
@@ -1962,6 +1932,19 @@ func TestFinalizeInvalidJSONReturnsJSONError(t *testing.T) {
 		t.Fatalf("expected 400, got %d", res.Code)
 	}
 	assertJSONContentType(t, res)
+}
+
+func TestRejectRouteIsNotAvailable(t *testing.T) {
+	s := session.New("plan-1", "# Plan")
+	server := NewServer(s)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/reject", strings.NewReader(`{"summary":"No longer supported"}`))
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("expected removed reject route to return 404, got %d", res.Code)
+	}
 }
 
 func TestFinalizeTrailingGarbageReturnsJSONError(t *testing.T) {
@@ -2000,7 +1983,7 @@ func TestDoubleFinalizeReturnsJSONError(t *testing.T) {
 	assertJSONContentType(t, res)
 }
 
-func TestRejectedSecondFinalizeDoesNotMutateState(t *testing.T) {
+func TestSecondFinalizeDoesNotMutateState(t *testing.T) {
 	s := session.New("plan-1", "# Plan")
 	server := NewServer(s)
 
@@ -2038,39 +2021,12 @@ func TestFinalizeAfterCancelDoesNotMutateState(t *testing.T) {
 
 	got := getState(t, server)
 	if got.Digest.Summary == "After cancel" {
-		t.Fatal("expected rejected finalize after cancel not to mutate digest summary")
-	}
-}
-
-func TestFinalizeAfterRejectDoesNotMutateState(t *testing.T) {
-	s := session.New("plan-1", "# Plan")
-	server := NewServer(s)
-
-	res := serveReject(server, `{"summary":"Rejected","reviewerDecisions":[],"promotedSideAnswers":[]}`)
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected reject 200, got %d", res.Code)
-	}
-
-	res = serveFinalize(server, `{"summary":"After reject","reviewerDecisions":[],"promotedSideAnswers":[]}`)
-	if res.Code != http.StatusConflict {
-		t.Fatalf("expected finalize after reject 409, got %d", res.Code)
-	}
-
-	got := getState(t, server)
-	if got.Digest.Summary != "Rejected" {
-		t.Fatalf("expected digest summary to stay Rejected, got %q", got.Digest.Summary)
+		t.Fatal("expected finalize after cancel not to mutate digest summary")
 	}
 }
 
 func serveFinalize(server *Server, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/finalize", strings.NewReader(body))
-	res := httptest.NewRecorder()
-	server.Handler().ServeHTTP(res, req)
-	return res
-}
-
-func serveReject(server *Server, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/reject", strings.NewReader(body))
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, req)
 	return res

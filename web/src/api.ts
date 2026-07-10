@@ -142,11 +142,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(digest),
     }),
-  reject: (digest: Digest) =>
-    request<{ status: string }>("/api/reject", {
-      method: "POST",
-      body: JSON.stringify(digest),
-    }),
   cancel: () =>
     request<{ status: string }>("/api/cancel", { method: "POST", body: "{}" }),
 };

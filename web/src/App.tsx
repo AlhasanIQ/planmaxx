@@ -12,6 +12,7 @@ import type { Anchor, DiffLine, Digest, Session, Thread, ThreadKind } from "./ty
 import { buildDigestDraft, countHandoff } from "./lib/digest";
 import { anchorLabel } from "./lib/anchors";
 import { sideQuestionContext } from "./lib/selectionContext";
+import { finalizeIterationInstruction, wholePlanAnchor } from "./lib/finalizeIteration";
 import {
   nextThemeMode,
   prefersDarkFromMatcher,
@@ -22,7 +23,7 @@ import {
   type ThemeMode,
 } from "./lib/theme";
 
-type CompletionState = null | "finalized" | "rejected" | "canceled";
+type CompletionState = null | "finalized" | "canceled";
 type RevisionDiffState = { from: string; to: string; lines: DiffLine[] };
 type ThreadAgentAction = "asking" | "iterating";
 
@@ -32,6 +33,7 @@ type DialogState =
   | { kind: "delete"; threadId: string }
   | { kind: "ask"; thread: Thread }
   | { kind: "finalize"; digest: Digest }
+  | { kind: "iteratePlan"; digest: Digest }
   | { kind: "confirmCancel" };
 
 function useReviewController() {
@@ -398,13 +400,14 @@ function useReviewController() {
     }
   }
 
-  async function handleReject(digest: Digest) {
+  function openPlanIteration(digest: Digest) {
+    setDialog({ kind: "iteratePlan", digest });
+  }
+
+  async function handlePlanIteration(digest: Digest) {
+    if (!session) return;
     setDialog(null);
-    const ok = await withBusy("Rejecting…", () => api.reject(digest));
-    if (ok) {
-      setCompletion("rejected");
-      setStatus({ label: "Rejected — handoff sent", kind: "success" });
-    }
+    await handleIterateSection(wholePlanAnchor(session.plan), finalizeIterationInstruction(digest));
   }
 
   async function handleCancel() {
@@ -440,7 +443,7 @@ function useReviewController() {
     handleIterateSection,
     handleIterateThread,
     handlePromote,
-    handleReject,
+    handlePlanIteration,
     handleReply,
     handleUnpromote,
     handleUpdateThread,
@@ -448,6 +451,7 @@ function useReviewController() {
     liveDigest,
     loadError,
     openFinalize,
+    openPlanIteration,
     refresh,
     revisionDiff,
     revisionDiffError,
@@ -507,7 +511,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleIterateSection,
     handleIterateThread,
     handlePromote,
-    handleReject,
+    handlePlanIteration,
     handleReply,
     handleUnpromote,
     handleUpdateThread,
@@ -515,6 +519,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     liveDigest,
     loadError,
     openFinalize,
+    openPlanIteration,
     refresh,
     revisionDiff,
     revisionDiffError,
@@ -679,8 +684,17 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         <FinalizeDialog
           initial={dialog.digest}
           onCancel={() => setDialog(null)}
-          onReject={handleReject}
+          onIterate={openPlanIteration}
           onSubmit={handleFinalize}
+        />
+      )}
+      {dialog?.kind === "iteratePlan" && (
+        <ConfirmDialog
+          title="Iterate the complete plan?"
+          body="PlanMaxx will ask Codex for one whole-plan proposal using the feedback shown in the final review. You can approve, discard, or iterate again after reviewing that proposal."
+          confirmLabel="Iterate plan"
+          onCancel={() => setDialog(null)}
+          onConfirm={() => handlePlanIteration(dialog.digest)}
         />
       )}
       {dialog?.kind === "confirmCancel" && (

@@ -25,6 +25,9 @@
   comment filter searches thread and `/btw` Q+A text.
 - Removed the redundant sticky handoff preview panel; finalization retains the
   authoritative handoff review.
+- Replaced rejection with whole-plan iteration from the final-review dialog.
+  Iteration creates a proposal to review; only approval ends the review and
+  sends a handoff.
 
 ## v0.1.0
 

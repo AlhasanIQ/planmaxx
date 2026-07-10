@@ -161,12 +161,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 				return fmt.Errorf("review canceled")
 			}
 
-			var output string
-			if result.Rejected {
-				output, err = handoff.FormatRejected(result.Session)
-			} else {
-				output, err = handoff.Format(result.Session)
-			}
+			output, err := handoff.Format(result.Session)
 			if err != nil {
 				return err
 			}

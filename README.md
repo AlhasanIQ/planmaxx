@@ -78,9 +78,9 @@ planmaxx review path/to/plan.md
 ```
 
 PlanMaxx starts a local server on `127.0.0.1`, opens your browser, and blocks
-until you approve, reject, or cancel the review.
+until you approve, iterate, or cancel the review.
 
-On approval or rejection, the command prints the reviewed plan and review digest
+On approval, the command prints the reviewed plan and review digest
 to stdout. Return that output to your agent if it is not already running the
 command itself.
 
@@ -108,6 +108,8 @@ it is sent to Codex.
 - Keeps private notes out of the final handoff.
 - Lets you promote useful side-question answers into the handoff.
 - Supports focused section rewrites and proposal diffs before final approval.
+- Lets the final review iterate the complete plan from its edited feedback,
+  returning a proposal for review instead of ending the session.
 - Autosaves review state next to the plan file as
   `<plan-file>.planmaxx-review.json`, with a cache-directory fallback if that
   location is not writable. Review state survives server restarts and concurrent
