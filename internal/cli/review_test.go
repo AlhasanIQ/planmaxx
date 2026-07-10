@@ -164,7 +164,7 @@ func TestReviewServesPlanAndWritesHandoffOnFinalize(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "Continue from this approved PlanMaxx review.") {
+	if !strings.Contains(output, "Continue the user's approved plan work.") {
 		t.Fatalf("expected handoff output, got %q", output)
 	}
 	if !strings.Contains(output, `"summary": "Approved"`) {
@@ -217,9 +217,8 @@ func TestReviewWritesRejectionHandoffOnReject(t *testing.T) {
 
 	output := stdout.String()
 	for _, want := range []string{
-		"PlanMaxx review rejected.",
 		"The user rejected this plan with comments.",
-		"Address the comments in the rejection digest, then reiterate the plan until the user is satisfied.",
+		"Address the comments in the rejection digest, then provide a revised plan.",
 		`"summary": "Rejected because migration order is unsafe"`,
 		"Revise before implementation",
 	} {
@@ -227,7 +226,7 @@ func TestReviewWritesRejectionHandoffOnReject(t *testing.T) {
 			t.Fatalf("expected rejection handoff to contain %q, got %q", want, output)
 		}
 	}
-	if strings.Contains(output, "Continue from this approved PlanMaxx review.") {
+	if strings.Contains(output, "Continue the user's approved plan work.") {
 		t.Fatalf("expected rejection handoff not to approve continuation, got %q", output)
 	}
 	if strings.Contains(output, "Do not continue implementation") {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search } from "lucide-react";
 import { ApiError, api } from "./api";
 import { TopBar } from "./components/TopBar";
@@ -27,6 +27,7 @@ import {
 
 type CompletionState = null | "finalized" | "rejected" | "canceled";
 type RevisionDiffState = { from: string; to: string; lines: DiffLine[] };
+type ThreadAgentAction = "asking" | "iterating";
 
 type DialogState =
   | null
@@ -45,6 +46,7 @@ function useReviewController() {
   });
   const [completion, setCompletion] = useState<CompletionState>(null);
   const [busy, setBusy] = useState(false);
+  const operationInFlightRef = useRef(false);
   const [filter, setFilter] = useState("");
   const [dialog, setDialog] = useState<DialogState>(null);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
@@ -54,7 +56,9 @@ function useReviewController() {
   const theme = useTheme();
   const [handoffCollapsed, setHandoffCollapsed] = useState(false);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
-  const [askingThreadIds, setAskingThreadIds] = useState<Record<string, boolean>>({});
+  const [threadAgentActions, setThreadAgentActions] = useState<Record<string, ThreadAgentAction>>({});
+  const [iteratingSection, setIteratingSection] = useState(false);
+  const iteratingSectionRef = useRef(false);
   const [revisionDiff, setRevisionDiff] = useState<RevisionDiffState | null>(null);
   const [revisionDiffLoading, setRevisionDiffLoading] = useState(false);
   const [revisionDiffError, setRevisionDiffError] = useState<string | null>(null);
@@ -146,6 +150,8 @@ function useReviewController() {
   }, [completion, openFinalize]);
 
   async function withBusy<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
+    if (operationInFlightRef.current) return null;
+    operationInFlightRef.current = true;
     setBusy(true);
     setStatus({ label, kind: "busy" });
     try {
@@ -165,6 +171,7 @@ function useReviewController() {
       pushToast("error", msg);
       return null;
     } finally {
+      operationInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -197,19 +204,36 @@ function useReviewController() {
   }
 
   async function handleIterateSection(anchor: Anchor, instruction: string, threadId?: string): Promise<boolean> {
-    const result = await withBusy("Iterating section…", () =>
-      api.proposeSection(threadId, anchor, instruction),
-    );
-    if (!result) return false;
-    setSession((current) => (current ? { ...current, pendingProposal: result } : current));
-    setRevisionDiff(null);
-    pushToast("success", "Proposal ready");
-    return true;
+    if (iteratingSectionRef.current) return false;
+    iteratingSectionRef.current = true;
+    setIteratingSection(true);
+    try {
+      const result = await withBusy("Iterating section…", () =>
+        api.proposeSection(threadId, anchor, instruction),
+      );
+      if (!result) return false;
+      setSession((current) => (current ? { ...current, pendingProposal: result } : current));
+      setRevisionDiff(null);
+      pushToast("success", "Proposal ready");
+      return true;
+    } finally {
+      iteratingSectionRef.current = false;
+      setIteratingSection(false);
+    }
   }
 
-  function handleIterateThread(thread: Thread) {
+  async function handleIterateThread(thread: Thread) {
     const instruction = thread.messages.at(-1)?.body.trim() || "Revise this section according to this thread.";
-    void handleIterateSection(thread.anchor, instruction, thread.id);
+    setThreadAgentActions((prev) => ({ ...prev, [thread.id]: "iterating" }));
+    try {
+      await handleIterateSection(thread.anchor, instruction, thread.id);
+    } finally {
+      setThreadAgentActions((prev) => {
+        const next = { ...prev };
+        delete next[thread.id];
+        return next;
+      });
+    }
   }
 
   async function handleUpdateThread(threadId: string, anchor: Anchor, body: string, selectedText: string): Promise<boolean> {
@@ -274,10 +298,12 @@ function useReviewController() {
 
   async function askSideQuestion(thread: Thread, question: string, sourceSession: Session | null): Promise<boolean> {
     if (!sourceSession) return false;
+    if (operationInFlightRef.current) return false;
+    operationInFlightRef.current = true;
     setBusy(true);
     setStatus({ label: "Asking Codex (ephemeral /btw)…", kind: "busy" });
     setFocusedThreadId(thread.id);
-    setAskingThreadIds((prev) => ({ ...prev, [thread.id]: true }));
+    setThreadAgentActions((prev) => ({ ...prev, [thread.id]: "asking" }));
     try {
       const answer = await api.sideQuestion(thread.id, question, sideQuestionContext(sourceSession, thread));
       setSession((current) =>
@@ -303,11 +329,12 @@ function useReviewController() {
       }
       return false;
     } finally {
-      setAskingThreadIds((prev) => {
+      setThreadAgentActions((prev) => {
         const next = { ...prev };
         delete next[thread.id];
         return next;
       });
+      operationInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -393,7 +420,7 @@ function useReviewController() {
   }
 
   return {
-    askingThreadIds,
+    threadAgentActions,
     busy,
     completion,
     counts,
@@ -429,6 +456,7 @@ function useReviewController() {
     revisionDiff,
     revisionDiffError,
     revisionDiffLoading,
+    iteratingSection,
     session,
     setDialog,
     setEditingThreadId,
@@ -461,7 +489,7 @@ export default function App() {
 
 function ReviewScreen({ controller }: { controller: ReviewController }) {
   const {
-    askingThreadIds,
+    threadAgentActions,
     busy,
     completion,
     counts,
@@ -497,6 +525,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     revisionDiff,
     revisionDiffError,
     revisionDiffLoading,
+    iteratingSection,
     session,
     setDialog,
     setEditingThreadId,
@@ -581,7 +610,9 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           onUpdateComment={handleUpdateThread}
           onAskSideFromDraft={handleCreateThreadAndAsk}
           onIterateDraft={(anchor, instruction) => handleIterateSection(anchor, instruction)}
+          disabled={busy}
           proposalDisabled={busy}
+          proposalIterating={iteratingSection}
           onApplyProposal={handleApplyProposal}
           onDiscardProposal={handleDiscardProposal}
           onIterateProposal={(anchor, instruction) => handleIterateSection(anchor, instruction)}
@@ -651,7 +682,8 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
             onIterate={handleIterateThread}
             onPromote={handlePromote}
             onUnpromote={handleUnpromote}
-            askingThreadIds={askingThreadIds}
+            agentActions={threadAgentActions}
+            disabled={busy}
             sideQuestionsEnabled={sideQuestionsEnabled}
           />
         </aside>

@@ -155,14 +155,14 @@ func TestBuildSideQuestionPromptIncludesProvenance(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"PlanMaxx side question",
+		"Question about the plan",
 		"What should move first?",
 		"/repo/plan.md",
 		"/repo/plan.md:10:4-10:7",
 		"CLI",
 		"1. CLI",
 		"2. UI",
-		"selected plan text",
+		"marked plan text and excerpt",
 		"planmaxx_side_question",
 		"<selected_text>CLI</selected_text>",
 	} {

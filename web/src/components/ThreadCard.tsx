@@ -27,10 +27,11 @@ interface ThreadCardProps {
   onDelete: (id: string) => void;
   onEdit: (id: string) => void;
   onAskSide: (thread: Thread) => void;
-  onIterate: (thread: Thread) => void;
+  onIterate: (thread: Thread) => void | Promise<void>;
   onPromote: (answerId: string) => void;
   onUnpromote: (answerId: string) => void;
-  isAskingSide: boolean;
+  agentAction?: "asking" | "iterating";
+  disabled: boolean;
   sideQuestionsEnabled: boolean;
 }
 
@@ -50,7 +51,8 @@ export function ThreadCard(props: ThreadCardProps) {
     onIterate,
     onPromote,
     onUnpromote,
-    isAskingSide,
+    agentAction,
+    disabled,
     sideQuestionsEnabled,
   } = props;
   const ref = useRef<HTMLDivElement>(null);
@@ -116,6 +118,7 @@ export function ThreadCard(props: ThreadCardProps) {
   const status = thread.status ?? "open";
   const isOpen = status === "open";
   const isDecisionIntent = kind === "decision";
+  const isProcessing = Boolean(agentAction) || disabled;
   const replyLabel = !isOpen ? "Add note" : isDecisionIntent ? "Add to next turn" : "Add private note";
   const replyTitle = !isOpen
     ? `This thread is ${status} and stays out of the handoff`
@@ -137,6 +140,7 @@ export function ThreadCard(props: ThreadCardProps) {
           type="button"
           className="drag-handle -ml-1 inline-flex h-6 w-5 items-center justify-center rounded hover:bg-surface-muted"
           onPointerDown={onHandleDown}
+          disabled={isProcessing}
           aria-label="Drag thread"
           title="Drag to move"
         >
@@ -151,6 +155,7 @@ export function ThreadCard(props: ThreadCardProps) {
           type="button"
           className="btn btn-ghost btn-sm"
           onClick={() => onEdit(thread.id)}
+          disabled={isProcessing}
           aria-label="Edit comment"
           title="Edit comment and selected text"
         >
@@ -160,6 +165,7 @@ export function ThreadCard(props: ThreadCardProps) {
           type="button"
           className="btn btn-ghost btn-sm btn-danger"
           onClick={() => onDelete(thread.id)}
+          disabled={isProcessing}
           aria-label="Delete thread"
           title="Delete"
         >
@@ -168,7 +174,7 @@ export function ThreadCard(props: ThreadCardProps) {
       </header>
 
       <div className="mt-2 flex items-center gap-1.5">
-        <KindToggle kind={kind} onChange={(k) => onSetKind(thread.id, k)} />
+        <KindToggle kind={kind} onChange={(k) => onSetKind(thread.id, k)} disabled={isProcessing} />
         {!isOpen ? <ThreadStatusPill status={status} /> : null}
       </div>
 
@@ -217,6 +223,7 @@ export function ThreadCard(props: ThreadCardProps) {
                     type="button"
                     className="btn btn-ghost btn-sm"
                     onClick={() => onUnpromote(ans.id)}
+                    disabled={isProcessing}
                     title="Drop this /btw Q+A from the next Codex turn"
                   >
                     Remove from handoff
@@ -226,6 +233,7 @@ export function ThreadCard(props: ThreadCardProps) {
                     type="button"
                     className="btn btn-sm"
                     onClick={() => onPromote(ans.id)}
+                    disabled={isProcessing}
                     title="Include the /btw question and answer in the next Codex turn"
                   >
                     <ArrowRight size={12} /> Send Q+A to next turn
@@ -237,10 +245,10 @@ export function ThreadCard(props: ThreadCardProps) {
         </ul>
       ) : null}
 
-      {isAskingSide ? (
-        <div className="btw-thinking mt-3">
+      {agentAction ? (
+        <div className="btw-thinking mt-3" role="status" aria-live="polite">
           <Sparkles size={13} />
-          <span>Codex is thinking about this /btw…</span>
+          <span>{agentAction === "asking" ? "Codex is thinking about this /btw…" : "Codex is iterating on this comment…"}</span>
         </div>
       ) : null}
 
@@ -249,6 +257,7 @@ export function ThreadCard(props: ThreadCardProps) {
           type="button"
           className="btn btn-sm flex-1"
           onClick={() => onReply(thread.id)}
+          disabled={isProcessing}
           title={replyTitle}
         >
           <Reply size={13} /> {replyLabel}
@@ -258,20 +267,20 @@ export function ThreadCard(props: ThreadCardProps) {
             type="button"
             className="btn btn-sm"
             onClick={() => onAskSide(thread)}
-            disabled={isAskingSide}
+            disabled={isProcessing}
             title="Ask Codex an ephemeral /btw question; stays out of the handoff unless you opt in"
           >
-            <MessageCircleQuestion size={13} /> {isAskingSide ? "Asking…" : "Ask /btw"}
+            <MessageCircleQuestion size={13} /> {agentAction === "asking" ? "Asking…" : "Ask /btw"}
           </button>
         ) : null}
         <button
           type="button"
           className="btn btn-sm"
           onClick={() => onIterate(thread)}
-          disabled={isAskingSide}
+          disabled={isProcessing}
           title="Ask Codex to rewrite this anchored section now"
         >
-          <Sparkles size={13} /> Iterate
+          <Sparkles size={13} /> {agentAction === "iterating" ? "Iterating…" : "Iterate"}
         </button>
       </div>
     </section>
@@ -291,9 +300,11 @@ function ThreadStatusPill({ status }: { status: string }) {
 function KindToggle({
   kind,
   onChange,
+  disabled,
 }: {
   kind: ThreadKind;
   onChange: (kind: ThreadKind) => void;
+  disabled: boolean;
 }) {
   const isDecision = kind === "decision";
   return (
@@ -302,6 +313,7 @@ function KindToggle({
         type="button"
         className={`kind-pill ${isDecision ? "is-active is-go" : ""}`}
         onClick={() => onChange("decision")}
+        disabled={disabled}
         title="This comment goes to Codex in the next turn"
         aria-pressed={isDecision}
       >
@@ -311,6 +323,7 @@ function KindToggle({
         type="button"
         className={`kind-pill ${!isDecision ? "is-active is-stay" : ""}`}
         onClick={() => onChange("note")}
+        disabled={disabled}
         title="Keep private; this comment stays out of the handoff"
         aria-pressed={!isDecision}
       >

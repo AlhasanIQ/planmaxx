@@ -15,10 +15,11 @@ interface ThreadsProps {
   onDelete: (id: string) => void;
   onEdit: (id: string) => void;
   onAskSide: (t: Thread) => void;
-  onIterate: (t: Thread) => void;
+  onIterate: (t: Thread) => void | Promise<void>;
   onPromote: (id: string) => void;
   onUnpromote: (id: string) => void;
-  askingThreadIds: Record<string, boolean>;
+  agentActions: Record<string, "asking" | "iterating">;
+  disabled: boolean;
   sideQuestionsEnabled: boolean;
 }
 
@@ -41,7 +42,8 @@ export function Threads(props: ThreadsProps) {
     onIterate,
     onPromote,
     onUnpromote,
-    askingThreadIds,
+    agentActions,
+    disabled,
     sideQuestionsEnabled,
   } = props;
   const containerRef = useRef<HTMLDivElement>(null);
@@ -62,7 +64,7 @@ export function Threads(props: ThreadsProps) {
 
   useLayoutEffect(() => {
     layoutCards(containerRef.current, visible, focusedThreadId);
-  }, [askingThreadIds, focusedThreadId, sideQuestionsEnabled, visible]);
+  }, [agentActions, focusedThreadId, sideQuestionsEnabled, visible]);
 
   useEffect(() => {
     function onResize() {
@@ -114,7 +116,8 @@ export function Threads(props: ThreadsProps) {
           onIterate={onIterate}
           onPromote={onPromote}
           onUnpromote={onUnpromote}
-          isAskingSide={Boolean(askingThreadIds[thread.id])}
+          agentAction={agentActions[thread.id]}
+          disabled={disabled}
           sideQuestionsEnabled={sideQuestionsEnabled}
         />
       ))}

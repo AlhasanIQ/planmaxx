@@ -20,7 +20,7 @@ func TestFormatIncludesPromptPlanAndDigest(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Continue from this approved PlanMaxx review.",
+		"Continue the user's approved plan work.",
 		"```markdown",
 		"# Final Plan",
 		"```json",
@@ -85,9 +85,9 @@ func TestFormatRejectedIncludesReiterationInstructionPlanAndDigest(t *testing.T)
 	}
 
 	for _, want := range []string{
-		"PlanMaxx review rejected.",
 		"The user rejected this plan with comments.",
-		"Address the comments in the rejection digest, then reiterate the plan until the user is satisfied.",
+		"The user rejected this plan with comments.",
+		"Address the comments in the rejection digest, then provide a revised plan.",
 		"Rejected plan:",
 		"```markdown",
 		"# Rejected Plan",
@@ -100,7 +100,7 @@ func TestFormatRejectedIncludesReiterationInstructionPlanAndDigest(t *testing.T)
 			t.Fatalf("expected rejection handoff to contain %q\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "Continue from this approved PlanMaxx review.") {
+	if strings.Contains(out, "Continue the user's approved plan work.") {
 		t.Fatalf("expected rejection handoff not to approve continuation\n%s", out)
 	}
 	if strings.Contains(out, "Do not continue implementation") {

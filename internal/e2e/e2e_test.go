@@ -53,7 +53,7 @@ func TestFinalizeSimplePlanWritesHandoff(t *testing.T) {
 	waitSuccess(t, review)
 
 	output := review.stdout.String()
-	assertContains(t, output, "Continue from this approved PlanMaxx review.")
+	assertContains(t, output, "Continue the user's approved plan work.")
 	assertContains(t, output, "Approved simple review")
 }
 
@@ -65,7 +65,7 @@ func TestCancelReviewExitsNonZeroWithoutHandoff(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exit status 1") {
 		t.Fatalf("expected non-zero cancel exit, got %v", err)
 	}
-	if strings.Contains(review.stdout.String(), "Continue from this approved PlanMaxx review.") {
+	if strings.Contains(review.stdout.String(), "Continue the user's approved plan work.") {
 		t.Fatalf("expected no handoff on cancel, got %q", review.stdout.String())
 	}
 }
@@ -83,6 +83,35 @@ func TestThreadRepliesBecomeReviewerDecisions(t *testing.T) {
 	finalize(t, review.url, draft)
 	waitSuccess(t, review)
 	assertContains(t, review.stdout.String(), "Ship CLI before UI polish.")
+}
+
+func TestAgentProposalApplyAndRestoreUseDurableRevisionHistory(t *testing.T) {
+	fake := installFakeCodex(t, `<planmaxx_proposal version="1" revision="{{REVISION}}"><summary>Clarified the first step.</summary><replacement target="lines"><expected>1. Verify the CLI contract and localhost server behavior.</expected><content>1. Verify the CLI contract, localhost server behavior, and recovery path.</content></replacement></planmaxx_proposal>`)
+	review := startReview(t, realisticPlan("Revision history"), map[string]string{
+		"PATH":            fake.pathEnv,
+		"CODEX_THREAD_ID": "current-thread",
+	})
+
+	var proposal struct {
+		ID string `json:"id"`
+	}
+	postJSONInto(t, review.url+"/api/revisions/propose-section", `{"anchor":{"startLine":10,"endLine":10},"instruction":"Clarify the first step."}`, http.StatusOK, &proposal)
+	if proposal.ID == "" {
+		t.Fatal("expected agent proposal")
+	}
+	postJSON(t, review.url+"/api/revisions/proposals/"+proposal.ID+"/apply", `{}`, http.StatusOK)
+
+	state := getState(t, review.url)
+	if state.CurrentRevisionID != "rev-2" || !strings.Contains(state.Plan, "recovery path") {
+		t.Fatalf("expected applied Git-backed revision, got %+v", state)
+	}
+	postJSON(t, review.url+"/api/revisions/rev-1/restore", `{}`, http.StatusOK)
+	state = getState(t, review.url)
+	if state.CurrentRevisionID != "rev-3" || strings.Contains(state.Plan, "recovery path") {
+		t.Fatalf("expected append-only restore to initial content, got %+v", state)
+	}
+	finalize(t, review.url, digest("Revision history approved", nil, nil))
+	waitSuccess(t, review)
 }
 
 func TestMoveAndReanchorPersistUntilFinalize(t *testing.T) {
@@ -534,7 +563,9 @@ func askSideQuestion(t *testing.T, url string, threadID string, question string,
 }
 
 type stateResponse struct {
-	Threads []struct {
+	Plan              string `json:"plan"`
+	CurrentRevisionID string `json:"currentRevisionId"`
+	Threads           []struct {
 		ID     string `json:"id"`
 		Anchor struct {
 			StartLine int `json:"startLine"`
@@ -738,7 +769,16 @@ if sys.argv[1:] == ["app-server", "--listen", "stdio://"]:
             if slow:
                 time.sleep(2)
             send({"id": request_id, "result": {"turn": {"id": "turn-1", "status": "inProgress"}}})
-            send({"method": "item/completed", "params": {"threadId": "fork-1", "turnId": "turn-1", "item": {"type": "agentMessage", "text": answer}}})
+            reply = answer
+            if "{{REVISION}}" in reply:
+                import re
+                prompt = request["params"]["input"][0]["text"]
+                match = re.search(r'<planmaxx_iteration version="1" revision="([^"]+)"', prompt)
+                if not match:
+                    print("missing iteration revision", file=sys.stderr, flush=True)
+                    sys.exit(2)
+                reply = reply.replace("{{REVISION}}", match.group(1))
+            send({"method": "item/completed", "params": {"threadId": "fork-1", "turnId": "turn-1", "item": {"type": "agentMessage", "text": reply}}})
             send({"method": "turn/completed", "params": {"threadId": "fork-1", "turn": {"id": "turn-1", "status": "completed"}}})
         else:
             print(f"unexpected method: {method}", file=sys.stderr, flush=True)

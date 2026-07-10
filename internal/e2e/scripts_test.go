@@ -11,6 +11,7 @@ func TestSmokeAndRenderScriptsAreDocumented(t *testing.T) {
 	root := repoRoot(t)
 	for _, path := range []string{
 		"scripts/e2e-smoke.sh",
+		"scripts/install-local.sh",
 		"scripts/render-review.mjs",
 	} {
 		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
@@ -22,7 +23,7 @@ func TestSmokeAndRenderScriptsAreDocumented(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"scripts/e2e-smoke.sh", "scripts/render-review.mjs"} {
+	for _, want := range []string{"scripts/e2e-smoke.sh", "scripts/install-local.sh", "scripts/render-review.mjs"} {
 		if !strings.Contains(string(readme), want) {
 			t.Fatalf("expected README to mention %s", want)
 		}

@@ -19,7 +19,9 @@ interface PlanProps {
   onUpdateComment: (threadId: string, anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
   onAskSideFromDraft: (anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
   onIterateDraft: (anchor: Anchor, instruction: string) => Promise<boolean>;
+  disabled: boolean;
   proposalDisabled: boolean;
+  proposalIterating: boolean;
   onApplyProposal: (proposalId: string) => void;
   onDiscardProposal: (proposalId: string) => void;
   onIterateProposal: (anchor: Anchor, instruction: string) => Promise<boolean>;
@@ -46,7 +48,9 @@ export const Plan = memo(function Plan({
   onUpdateComment,
   onAskSideFromDraft,
   onIterateDraft,
+  disabled,
   proposalDisabled,
+  proposalIterating,
   onApplyProposal,
   onDiscardProposal,
   onIterateProposal,
@@ -81,6 +85,7 @@ export const Plan = memo(function Plan({
   );
   const [draft, setDraft] = useState<CommentDraft | null>(null);
   const [submittingDraft, setSubmittingDraft] = useState(false);
+  const [draftAgentAction, setDraftAgentAction] = useState<"asking" | "iterating" | null>(null);
 
   const hoveredAnchor = useMemo(() => {
     if (!hoveredThreadId) return null;
@@ -119,6 +124,7 @@ export const Plan = memo(function Plan({
   }, [threads]);
 
   function openFullLineDraft(lineNumber: number) {
+    if (disabled) return;
     const anchor = { startLine: lineNumber, endLine: lineNumber };
     setDraft({
       anchor,
@@ -128,6 +134,7 @@ export const Plan = memo(function Plan({
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLElement>) {
+    if (disabled) return;
     if ((e.target as HTMLElement | null)?.closest(".inline-comment-composer")) return;
     if ((e.target as HTMLElement | null)?.closest(".draft-boundary-handle")) return;
     const selection = window.getSelection();
@@ -142,7 +149,7 @@ export const Plan = memo(function Plan({
   }
 
   async function submitDraft() {
-    if (!draft || !draft.body.trim()) return;
+    if (submittingDraft || !draft || !draft.body.trim()) return;
     setSubmittingDraft(true);
     try {
       const ok = draft.threadId
@@ -157,25 +164,29 @@ export const Plan = memo(function Plan({
   }
 
   async function askSideFromDraft() {
-    if (!draft || draft.threadId || !draft.body.trim()) return;
+    if (submittingDraft || !draft || draft.threadId || !draft.body.trim()) return;
     setSubmittingDraft(true);
+    setDraftAgentAction("asking");
     try {
       const ok = await onAskSideFromDraft(draft.anchor, draft.body.trim(), currentSelectedText(draft));
       if (!ok) return;
       setDraft(null);
     } finally {
+      setDraftAgentAction(null);
       setSubmittingDraft(false);
     }
   }
 
   async function iterateDraft() {
-    if (!draft || draft.threadId || !draft.body.trim()) return;
+    if (submittingDraft || !draft || draft.threadId || !draft.body.trim()) return;
     setSubmittingDraft(true);
+    setDraftAgentAction("iterating");
     try {
       const ok = await onIterateDraft(draft.anchor, draft.body.trim());
       if (!ok) return;
       setDraft(null);
     } finally {
+      setDraftAgentAction(null);
       setSubmittingDraft(false);
     }
   }
@@ -238,6 +249,7 @@ export const Plan = memo(function Plan({
                         if (anchoredThreadId) onFocusThread(anchoredThreadId);
                         else openFullLineDraft(lineNumber);
                       }}
+                      disabled={disabled}
                     >
                       <MessageSquarePlus size={14} />
                     </button>
@@ -257,6 +269,8 @@ export const Plan = memo(function Plan({
                   draft={draft}
                   spacerLines={draftComposerPlacement.spacerLines}
                   submitting={submittingDraft}
+                  agentAction={draftAgentAction}
+                  disabled={disabled}
                   setDraft={setDraft}
                   onCancel={cancelDraft}
                   onSubmit={submitDraft}
@@ -268,6 +282,7 @@ export const Plan = memo(function Plan({
                 <InlineProposalControls
                   proposal={proposal}
                   disabled={proposalDisabled}
+                  iterating={proposalIterating}
                   onApply={onApplyProposal}
                   onDiscard={onDiscardProposal}
                   onIterate={onIterateProposal}
@@ -305,12 +320,14 @@ function useHighlightedCode(plan: string, theme: "light" | "dark") {
 function InlineProposalControls({
   proposal,
   disabled,
+  iterating,
   onApply,
   onDiscard,
   onIterate,
 }: {
   proposal: SectionProposal;
   disabled: boolean;
+  iterating: boolean;
   onApply: (proposalId: string) => void;
   onDiscard: (proposalId: string) => void;
   onIterate: (anchor: Anchor, instruction: string) => Promise<boolean>;
@@ -340,12 +357,13 @@ function InlineProposalControls({
           className="field mt-1 min-h-20 resize-y font-sans"
           value={instruction}
           onChange={(event) => setInstruction(event.target.value)}
+          disabled={disabled}
           placeholder="Ask for a narrower, clearer, or more specific version..."
         />
       </label>
       <div className="mt-3 flex flex-wrap justify-end gap-2">
         <button type="button" className="btn btn-sm" onClick={iterateAgain} disabled={!canIterate}>
-          <RotateCcw size={13} /> Iterate again
+          <RotateCcw size={13} /> {iterating ? "Iterating…" : "Iterate again"}
         </button>
         <button type="button" className="btn btn-ghost btn-sm btn-danger" onClick={() => onDiscard(proposal.id)} disabled={disabled}>
           <Trash2 size={13} /> Discard
@@ -362,6 +380,8 @@ function InlineCommentComposer({
   draft,
   spacerLines,
   submitting,
+  agentAction,
+  disabled,
   setDraft,
   onCancel,
   onSubmit,
@@ -371,6 +391,8 @@ function InlineCommentComposer({
   draft: CommentDraft;
   spacerLines: number;
   submitting: boolean;
+  agentAction: "asking" | "iterating" | null;
+  disabled: boolean;
   setDraft: (draft: CommentDraft) => void;
   onCancel: () => void;
   onSubmit: () => void;
@@ -414,29 +436,36 @@ function InlineCommentComposer({
           rows={3}
           placeholder="Leave a comment for this selection..."
           className="field mt-1 resize-y font-sans"
+          disabled={submitting || disabled}
         />
       </label>
+      {agentAction ? (
+        <div className="btw-thinking mt-2" role="status" aria-live="polite">
+          <Sparkles size={13} />
+          <span>{agentAction === "asking" ? "Codex is thinking about this /btw…" : "Codex is iterating on this selection…"}</span>
+        </div>
+      ) : null}
       <div className="flex justify-end gap-2">
-        <button type="button" className="btn" onClick={onCancel}>
+        <button type="button" className="btn" onClick={onCancel} disabled={submitting || disabled}>
           Cancel
         </button>
         <button
           type="button"
           className="btn btn-primary"
           onClick={onSubmit}
-          disabled={!canSubmit || submitting}
+          disabled={!canSubmit || submitting || disabled}
         >
-          {submitting ? "Saving..." : isEditing ? "Save comment" : "Add comment"}
+          {submitting ? (agentAction ? "Processing…" : "Saving…") : isEditing ? "Save comment" : "Add comment"}
         </button>
         {!isEditing ? (
           <button
             type="button"
             className="btn"
             onClick={onAskSide}
-            disabled={!canSubmit || submitting}
+            disabled={!canSubmit || submitting || disabled}
             title="Save this comment and ask Codex about the selected text on the side"
           >
-            /btw
+            {agentAction === "asking" ? "Asking…" : "/btw"}
           </button>
         ) : null}
         {!isEditing ? (
@@ -444,10 +473,10 @@ function InlineCommentComposer({
             type="button"
             className="btn"
             onClick={onIterate}
-            disabled={!canSubmit || submitting}
+            disabled={!canSubmit || submitting || disabled}
             title="Ask Codex to rewrite only the selected section"
           >
-            <Sparkles size={13} /> Iterate section
+            <Sparkles size={13} /> {agentAction === "iterating" ? "Iterating…" : "Iterate section"}
           </button>
         ) : null}
       </div>

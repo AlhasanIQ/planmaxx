@@ -10,6 +10,10 @@
   cache-backed histories on demand.
 - Serialized multi-process revision writes with per-plan transactions and
   compare-and-swap Git heads.
+- Made release and local reinstalls refresh an existing managed Codex skill
+  atomically while preserving unmanaged custom skills.
+- Added clear, per-comment in-progress states for /btw and section iteration,
+  with duplicate-run guards and automatic cleanup after success or failure.
 
 ## v0.1.0
 

@@ -146,15 +146,32 @@ install_binary() {
   bin_src="${tmp_extract}/${bin_name}"
   [[ -f "$bin_src" ]] || die "archive does not contain ${bin_name}"
 
-  mkdir -p "$install_dir"
   bin_dst="${install_dir}/${bin_name}"
-  if command -v install >/dev/null 2>&1; then
-    install -m 0755 "$bin_src" "$bin_dst"
-  else
-    cp "$bin_src" "$bin_dst"
-    chmod 0755 "$bin_dst"
-  fi
+  install_file_atomically "$bin_src" "$bin_dst" 0755
   printf '%s\n' "$bin_dst"
+}
+
+install_file_atomically() {
+  local source="$1"
+  local destination="$2"
+  local mode="$3"
+  local destination_dir temp
+
+  destination_dir="$(dirname "$destination")"
+  mkdir -p "$destination_dir"
+  temp="$(mktemp "$destination_dir/.${destination##*/}.XXXXXX")"
+  if ! cp "$source" "$temp"; then
+    rm -f "$temp"
+    return 1
+  fi
+  if ! chmod "$mode" "$temp"; then
+    rm -f "$temp"
+    return 1
+  fi
+  if ! mv -f "$temp" "$destination"; then
+    rm -f "$temp"
+    return 1
+  fi
 }
 
 install_codex_skill() {
@@ -169,16 +186,15 @@ install_codex_skill() {
   skill_file="${skill_dir}/SKILL.md"
   skill_url="${BASE_URL}/SKILL.md"
 
-  mkdir -p "$skill_dir"
   download_to_file "$skill_url" "${TMPDIR_PLANMAXX}/SKILL.md"
   verify_checksum "${TMPDIR_PLANMAXX}/SKILL.md" "$CHECKSUMS"
-  if command -v install >/dev/null 2>&1; then
-    install -m 0644 "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_file"
-  else
-    cp "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_file"
-    chmod 0644 "$skill_file"
-  fi
+  install_file_atomically "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_file" 0644
   log "Installed ${skill_file}"
+}
+
+has_managed_codex_skill() {
+  local skill_file="${HOME}/.agents/skills/planmaxx/SKILL.md"
+  [[ -f "$skill_file" ]] && grep -Fq '<!-- planmaxx-managed-skill -->' "$skill_file"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -253,7 +269,12 @@ case "$INSTALL_CODEX_SKILL" in
     install_codex_skill
     ;;
   0|false|FALSE|no|NO|"")
-    log "Optional Codex skill not installed. To enable automatic plan review later, run: ${BIN_PATH} skill install --target codex"
+    if has_managed_codex_skill; then
+      log "Refreshing existing managed Codex skill..."
+      install_codex_skill
+    else
+      log "Optional Codex skill not installed. To enable automatic plan review later, run: ${BIN_PATH} skill install --target codex"
+    fi
     ;;
   *)
     die "invalid PLANMAXX_INSTALL_CODEX_SKILL value: ${INSTALL_CODEX_SKILL} (expected 1/0, true/false, yes/no)"

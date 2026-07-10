@@ -54,7 +54,15 @@ planmaxx skill remove --target codex
 
 The skill is installed under `$HOME/.agents/skills/planmaxx` by default. Use
 `--repo /path/to/repo` with either command to install it under that
-repository's `.agents/skills/planmaxx` directory.
+repository's `.agents/skills/planmaxx` directory. Future reinstalls refresh an
+existing PlanMaxx-managed skill automatically; they leave an unmanaged custom
+skill alone unless you explicitly pass `--install-codex-skill`.
+
+### Local development install
+
+From a checkout, run `./scripts/install-local.sh`. It rebuilds the web assets,
+atomically replaces the local binary, and refreshes the managed Codex skill so
+the installed workflow always matches the binary under test.
 
 ## Quick Start
 

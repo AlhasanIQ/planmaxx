@@ -241,7 +241,7 @@ func loadSkillSource(sourceRaw string) ([]byte, string, string, error) {
 	if readErr == nil {
 		status = "updated from embedded template"
 	}
-	if err := os.WriteFile(managedPath, skillTemplateEmbedded, 0o644); err != nil {
+	if _, err := writeFilePreservingMode(managedPath, skillTemplateEmbedded); err != nil {
 		return nil, "", "", err
 	}
 	return skillTemplateEmbedded, managedPath, fmt.Sprintf("%s (%s)", managedPath, status), nil
@@ -305,24 +305,42 @@ func installSkillFile(destinationDir string, sourceBytes []byte, sourcePath stri
 		if err != nil {
 			return "", err
 		}
-		if err := os.Remove(targetFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", err
-		}
-		if err := os.Symlink(absSourcePath, targetFile); err != nil {
+		if err := replaceWithSymlink(targetFile, absSourcePath); err != nil {
 			return "", err
 		}
 		return targetFile, nil
 	}
 
-	tmpFile := targetFile + ".tmp"
-	if err := os.WriteFile(tmpFile, sourceBytes, 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmpFile, targetFile); err != nil {
-		_ = os.Remove(tmpFile)
+	if _, err := writeFilePreservingMode(targetFile, sourceBytes); err != nil {
 		return "", err
 	}
 	return targetFile, nil
+}
+
+// replaceWithSymlink creates the new link beside the old one and atomically
+// swaps it into place. A reader therefore observes either the old complete
+// skill or the new complete skill, never a removed path.
+func replaceWithSymlink(path string, target string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Remove(tmpPath); err != nil {
+		return err
+	}
+	if err := os.Symlink(target, tmpPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func removeManagedSkillFile(targetFile string, managedSource string) (removed bool, skipped bool, err error) {
@@ -457,12 +475,32 @@ func writeFilePreservingMode(path string, content []byte) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, mode); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".")
+	if err != nil {
 		return false, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	tmpPath := tmp.Name()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
 		return false, err
 	}
 	return true, nil

@@ -96,6 +96,59 @@ func TestSkillInstallCopyModeWritesRegularFile(t *testing.T) {
 	}
 }
 
+func TestSkillReinstallRefreshesManagedSourceAndAtomicallyReplacesSkill(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	install := func() {
+		t.Helper()
+		cmd := NewRootCommand(&stdout, &stderr)
+		cmd.SetArgs([]string{"skill", "install", "--target", "codex"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("skill install failed: %v", err)
+		}
+	}
+	install()
+
+	updated := "---\nname: planmaxx\ndescription: refreshed skill\n---\n\n<!-- planmaxx-managed-skill -->\n"
+	SetEmbeddedSkillTemplate([]byte(updated))
+	install()
+
+	managedPath := filepath.Join(configDir, "planmaxx", "SKILL.md")
+	managedBytes, err := os.ReadFile(managedPath)
+	if err != nil {
+		t.Fatalf("read refreshed managed skill: %v", err)
+	}
+	if string(managedBytes) != updated {
+		t.Fatalf("managed source was not refreshed: %q", managedBytes)
+	}
+
+	installedPath := filepath.Join(home, ".agents", "skills", "planmaxx", "SKILL.md")
+	installedBytes, err := os.ReadFile(installedPath)
+	if err != nil {
+		t.Fatalf("read refreshed installed skill: %v", err)
+	}
+	if string(installedBytes) != updated {
+		t.Fatalf("installed skill did not resolve to refreshed source: %q", installedBytes)
+	}
+
+	for _, directory := range []string{filepath.Dir(managedPath), filepath.Dir(installedPath)} {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			t.Fatalf("read %s: %v", directory, err)
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".SKILL.md.") {
+				t.Fatalf("temporary skill file was left behind: %s", filepath.Join(directory, entry.Name()))
+			}
+		}
+	}
+}
+
 func TestSkillRemoveDeletesManagedInstallAndReminder(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(t.TempDir(), "config")
@@ -221,6 +274,7 @@ func TestREADMEDocumentsSetupAndHowToUseModes(t *testing.T) {
 		"--install-codex-skill",
 		"planmaxx skill install --target codex",
 		"planmaxx skill remove --target codex",
+		"scripts/install-local.sh",
 	} {
 		if !strings.Contains(install, want) {
 			t.Fatalf("expected Install section to mention %q", want)
@@ -258,6 +312,9 @@ func TestInstallerDocumentsOptionalSkillInstall(t *testing.T) {
 		"skill install --target codex",
 		"${BASE_URL}/SKILL.md",
 		"verify_checksum \"${TMPDIR_PLANMAXX}/SKILL.md\" \"$CHECKSUMS\"",
+		"Refreshing existing managed Codex skill",
+		"install_file_atomically",
+		"has_managed_codex_skill",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected installer to mention %q", want)
