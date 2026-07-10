@@ -95,3 +95,27 @@ func TestDraftFromStateUsesOnlyOpenDecisionThreads(t *testing.T) {
 		t.Fatalf("expected reviewer decision %q, got %+v", decision.Messages[0].Body, got.ReviewerDecisions)
 	}
 }
+
+func TestDraftFromStateOmitsPromotedAnswersFromNonOpenThreads(t *testing.T) {
+	s := session.New("plan-1", "# Plan")
+	open := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Current feedback.")
+	resolved := s.AddThread(session.Anchor{StartLine: 2, EndLine: 2}, "Handled feedback.")
+	stale := s.AddThread(session.Anchor{StartLine: 3, EndLine: 3}, "Changed feedback.")
+	if !s.ResolveThread(resolved.ID) || !s.MarkThreadStale(stale.ID) {
+		t.Fatal("expected thread status updates to succeed")
+	}
+
+	openAnswer := s.AddSideAnswer(open.ID, "Open?", "Include this.")
+	resolvedAnswer := s.AddSideAnswer(resolved.ID, "Resolved?", "Do not include this.")
+	staleAnswer := s.AddSideAnswer(stale.ID, "Stale?", "Do not include this either.")
+	for _, answer := range []session.SideAnswer{openAnswer, resolvedAnswer, staleAnswer} {
+		if !s.PromoteSideAnswer(answer.ID) {
+			t.Fatalf("expected promotion for %s", answer.ID)
+		}
+	}
+
+	got := DraftFromState(*s)
+	if len(got.PromotedSideAnswers) != 1 || !strings.Contains(got.PromotedSideAnswers[0], openAnswer.Answer) {
+		t.Fatalf("expected only the open thread answer, got %+v", got.PromotedSideAnswers)
+	}
+}

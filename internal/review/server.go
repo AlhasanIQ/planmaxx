@@ -26,9 +26,8 @@ import (
 )
 
 // The web UI is built separately into static/ (see scripts/build-web.sh).
-// Embed the complete generated directory: @pierre/diffs lazily loads its
-// language and theme assets in addition to the application shell. Referencing
-// static still makes `go build` fail loudly until the UI has been built.
+// Embed its complete generated directory. Referencing static makes `go build`
+// fail loudly until the UI has been built.
 //
 //go:embed static
 var staticFiles embed.FS

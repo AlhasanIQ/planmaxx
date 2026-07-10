@@ -91,7 +91,10 @@ command itself.
 The review workspace keeps the plan, anchored comments, and revision history
 in one local browser session. Comments can be shown beneath their relevant
 range or in an external rail alongside its final line, including any `/btw`
-question and answer.
+question and answer. Accepted changes and revision comparisons appear directly
+in the plan, so Markdown—including tables—remains readable in its final
+context. Resolved or stale comments are labeled as historical and never enter
+the next Codex handoff.
 
 <p>
   <img src="docs/screenshots/thread-card.png" alt="PlanMaxx annotated thread card with btw answer" width="320">

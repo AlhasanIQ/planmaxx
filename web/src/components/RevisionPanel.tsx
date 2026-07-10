@@ -1,10 +1,7 @@
 import { GitCompareArrows, History, Loader2, RotateCcw } from "lucide-react";
 import { useMemo } from "react";
-import { FileDiff } from "@pierre/diffs/react";
-import { parseDiffFromFile } from "@pierre/diffs";
 import type { DiffLine, Revision } from "../types";
 import { anchorLabel } from "../lib/anchors";
-import { DiffView } from "./DiffView";
 
 interface RevisionDiffState {
   from: string;
@@ -14,7 +11,6 @@ interface RevisionDiffState {
 
 interface Props {
   currentRevisionId: string;
-  theme: "light" | "dark";
   revisions: Revision[];
   diff: RevisionDiffState | null;
   loading: boolean;
@@ -27,7 +23,6 @@ interface Props {
 
 export function RevisionPanel({
   currentRevisionId,
-  theme,
   revisions,
   diff,
   loading,
@@ -38,16 +33,6 @@ export function RevisionPanel({
   onRestore,
 }: Props) {
   const orderedRevisions = useMemo(() => [...revisions].reverse(), [revisions]);
-  const pierreDiff = useMemo(() => {
-    if (!diff) return null;
-    const from = revisions.find((revision) => revision.id === diff.from);
-    const to = revisions.find((revision) => revision.id === diff.to);
-    if (!from || !to) return null;
-    return parseDiffFromFile(
-      { name: "plan.md", contents: from.plan },
-      { name: "plan.md", contents: to.plan },
-    );
-  }, [diff, revisions]);
 
   return (
     <section className="revision-panel">
@@ -118,32 +103,13 @@ export function RevisionPanel({
 
       {error ? <p className="mt-2 text-[12px] text-danger">{error}</p> : null}
       {diff ? (
-        <div className="mt-3">
-          <div className="mb-2 flex items-center justify-between gap-2 text-[11px] text-foreground-muted">
-            <span>Changes: {diff.from} → {diff.to}</span>
+        <div className="revision-comparison-summary mt-3">
+          <div className="flex items-center justify-between gap-2 text-[11px] text-foreground-muted">
+            <span>Showing {diff.from} → {diff.to} in the plan.</span>
             <button type="button" className="btn btn-ghost btn-sm" onClick={onClearCompare} disabled={disabled}>
               Hide changes
             </button>
           </div>
-          {pierreDiff ? (
-            <FileDiff
-              fileDiff={pierreDiff}
-              disableWorkerPool
-              options={{
-                diffStyle: "unified",
-                diffIndicators: "bars",
-                disableFileHeader: true,
-                disableVirtualizationBuffers: true,
-                expandUnchanged: true,
-                hunkSeparators: "line-info-basic",
-                lineDiffType: "word-alt",
-                overflow: "scroll",
-                themeType: theme,
-              }}
-            />
-          ) : (
-            <DiffView lines={diff.lines} />
-          )}
         </div>
       ) : null}
     </section>

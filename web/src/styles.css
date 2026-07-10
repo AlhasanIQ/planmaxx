@@ -149,6 +149,23 @@
   border-bottom: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--color-surface-muted) 44%, var(--color-surface-elevated));
 }
+.plan-comparison-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 7%, var(--color-surface-elevated));
+  color: var(--color-foreground-muted);
+  font-size: 12px;
+}
+.plan-comparison-banner span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .plan-row-with-comments {
   min-width: 0;
 }
@@ -209,6 +226,20 @@
 }
 .plan-thread-stack.is-inline .thread.is-inline-comment + .thread.is-inline-comment {
   border-top: 1px solid var(--color-border);
+}
+.historical-thread-group {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-border-strong);
+}
+.historical-thread-label {
+  color: var(--color-foreground-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .plan-thread-stack.is-inline .thread.is-inline-comment:hover {
   box-shadow: none;
@@ -661,6 +692,21 @@
   border-style: dashed;
   background: color-mix(in srgb, var(--color-surface-muted) 62%, var(--color-surface-elevated));
 }
+.thread.is-historical {
+  opacity: 0.78;
+}
+.thread-history-note {
+  margin-top: 8px;
+  padding: 7px 8px;
+  border-left: 2px solid var(--color-border-strong);
+  background: color-mix(in srgb, var(--color-surface-muted) 72%, transparent);
+  color: var(--color-foreground-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.thread.is-historical .kind-toggle {
+  opacity: 0.72;
+}
 
 /* Decision/Note toggle inside the thread card. */
 .kind-toggle {
@@ -818,69 +864,6 @@
   color: var(--color-foreground-muted);
   font-size: 10px;
   line-height: 1.3;
-}
-.diff-empty {
-  border: 1px dashed var(--color-border-strong);
-  border-radius: 8px;
-  padding: 10px;
-  color: var(--color-foreground-muted);
-  font-size: 12px;
-}
-.diff-view {
-  display: block;
-  width: 100%;
-  max-height: 320px;
-  overflow: auto;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-surface-muted) 42%, var(--color-surface-elevated));
-  border-collapse: collapse;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.55;
-}
-.diff-view tbody {
-  display: block;
-}
-.diff-row {
-  display: grid;
-  grid-template-columns: 34px 34px 18px minmax(0, 1fr);
-  min-width: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
-}
-.diff-row:last-child {
-  border-bottom: 0;
-}
-.diff-row.is-add {
-  background: color-mix(in srgb, var(--color-success) 10%, transparent);
-}
-.diff-row.is-remove {
-  background: color-mix(in srgb, var(--color-danger) 9%, transparent);
-}
-.diff-num,
-.diff-mark {
-  user-select: none;
-  color: var(--color-foreground-muted);
-  text-align: right;
-  padding: 2px 6px;
-}
-.diff-mark {
-  text-align: center;
-  font-weight: 700;
-}
-.diff-row.is-add .diff-mark {
-  color: var(--color-success);
-}
-.diff-row.is-remove .diff-mark {
-  color: var(--color-danger);
-}
-.diff-text {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-  background: transparent;
-  padding: 2px 8px;
-  color: var(--color-foreground);
 }
 
 /* Tiny shimmer for loading */

@@ -8,7 +8,7 @@ import { CompletedScreen } from "./components/CompletedScreen";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
 import { FinalizeDialog } from "./components/dialogs/FinalizeDialog";
-import type { Anchor, DiffLine, Digest, Session, Thread, ThreadKind } from "./types";
+import type { Anchor, DiffLine, Digest, RevisionComparison, Session, Thread, ThreadKind } from "./types";
 import { buildDigestDraft, countHandoff } from "./lib/digest";
 import { anchorLabel } from "./lib/anchors";
 import { sideQuestionContext } from "./lib/selectionContext";
@@ -553,6 +553,13 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     [setFocusedThreadId, setHoveredThreadId],
   );
   const [commentView, setCommentView] = useState<CommentView>("inline");
+  const revisionComparison = useMemo<RevisionComparison | null>(() => {
+    if (!session || !revisionDiff) return null;
+    const before = session.revisions.find((revision) => revision.id === revisionDiff.from);
+    const after = session.revisions.find((revision) => revision.id === revisionDiff.to);
+    if (!before || !after) return null;
+    return { ...revisionDiff, beforePlan: before.plan, afterPlan: after.plan };
+  }, [revisionDiff, session]);
 
   if (completion) {
     return <CompletedScreen state={completion} />;
@@ -598,6 +605,8 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           plan={session.plan}
           theme={theme.resolved}
           proposal={session.pendingProposal}
+          comparison={revisionComparison}
+          onClearComparison={handleClearRevisionDiff}
           threads={session.threads}
           sideAnswers={session.sideAnswers}
           hoveredThreadId={hoveredThreadId}
@@ -638,7 +647,6 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         <aside className="min-w-0">
           <RevisionPanel
             currentRevisionId={session.currentRevisionId}
-            theme={theme.resolved}
             revisions={session.revisions}
             diff={revisionDiff}
             loading={revisionDiffLoading}

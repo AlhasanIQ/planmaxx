@@ -32,6 +32,12 @@
 - Replaced rejection with whole-plan iteration from the final-review dialog.
   Iteration creates a proposal to review; only approval ends the review and
   sends a handoff.
+- Show accepted-proposal and historical-revision diffs in the main Markdown
+  editor, including rendered table rows; the revision rail is now only the
+  comparison selector.
+- Clearly group resolved and stale feedback as historical, disable further
+  agent actions for it, and exclude any promoted `/btw` answers attached to it
+  from future handoffs.
 
 ## v0.1.0
 

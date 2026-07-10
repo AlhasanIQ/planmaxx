@@ -46,7 +46,8 @@ func threadMessages(s session.Session) []string {
 func promotedAnswers(s session.Session) []string {
 	var out []string
 	for _, answer := range s.SideAnswers {
-		if answer.Promoted {
+		thread, ok := findThread(s, answer.ThreadID)
+		if answer.Promoted && ok && (thread.Status == "" || thread.Status == session.ThreadStatusOpen) {
 			out = append(out, promotedAnswerContext(s, answer))
 		}
 	}

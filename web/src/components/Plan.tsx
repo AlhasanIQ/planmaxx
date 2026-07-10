@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Columns2, ListTree, MessageSquarePlus, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
+import { CheckCircle2, Columns2, GitCompareArrows, ListTree, MessageSquarePlus, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
 import { renderPlanLines } from "../lib/markdown";
-import type { Anchor, SectionProposal, SideAnswer, Thread, ThreadKind } from "../types";
+import type { Anchor, RevisionComparison, SectionProposal, SideAnswer, Thread, ThreadKind } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
 import { lineDiff } from "../lib/diff";
@@ -15,6 +15,8 @@ interface PlanProps {
   plan: string;
   theme: "light" | "dark";
   proposal?: SectionProposal | null;
+  comparison?: RevisionComparison | null;
+  onClearComparison: () => void;
   threads: Thread[];
   sideAnswers: SideAnswer[];
   hoveredThreadId: string | null;
@@ -65,6 +67,8 @@ export const Plan = memo(function Plan({
   plan,
   theme,
   proposal,
+  comparison,
+  onClearComparison,
   threads,
   sideAnswers,
   hoveredThreadId,
@@ -106,13 +110,24 @@ export const Plan = memo(function Plan({
     () => (proposal ? renderPlanLines(proposal.proposedPlan) : []),
     [proposal],
   );
+  const comparisonBeforeLines = useMemo(
+    () => (comparison ? renderPlanLines(comparison.beforePlan) : []),
+    [comparison],
+  );
+  const comparisonAfterLines = useMemo(
+    () => (comparison ? renderPlanLines(comparison.afterPlan) : []),
+    [comparison],
+  );
   const displayRows = useMemo(() => {
-    if (!proposal) {
+    if (!proposal && !comparison) {
       return lines.map((line, index) => ({ diffKind: "context" as const, line, lineNumber: index + 1 }));
     }
-    return lineDiff(plan, proposal.proposedPlan).map((diffLine) => {
+    const diffLines = proposal ? lineDiff(plan, proposal.proposedPlan) : comparison!.lines;
+    return diffLines.map((diffLine) => {
       const lineNumber = diffLine.before ?? diffLine.after ?? 0;
-      const sourceLines = diffLine.kind === "add" ? proposalLines : lines;
+      const sourceLines = proposal
+        ? (diffLine.kind === "add" ? proposalLines : lines)
+        : (diffLine.kind === "add" ? comparisonAfterLines : comparisonBeforeLines);
       const sourceIndex = ((diffLine.kind === "add" ? diffLine.after : diffLine.before) ?? 0) - 1;
       return {
         diffKind: diffLine.kind,
@@ -120,7 +135,7 @@ export const Plan = memo(function Plan({
         lineNumber,
       };
     });
-  }, [lines, plan, proposal, proposalLines]);
+  }, [comparison, comparisonAfterLines, comparisonBeforeLines, lines, plan, proposal, proposalLines]);
   const lastProposalChangeIndex = useMemo(
     () => displayRows.reduce((last, row, index) => (row.diffKind === "context" ? last : index), -1),
     [displayRows],
@@ -303,27 +318,34 @@ export const Plan = memo(function Plan({
           />
         </label>
       </header>
+      {comparison ? (
+        <div className="plan-comparison-banner">
+          <span><GitCompareArrows size={14} /> Showing changes: {comparison.from} → {comparison.to}</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onClearComparison}>Hide changes</button>
+        </div>
+      ) : null}
       <div className="plan-body py-2">
         {displayRows.map((row, idx) => {
           const lineNumber = row.lineNumber;
           const line = row.line;
           const isProposedLine = row.diffKind === "add";
-          const lineThreads = isProposedLine ? [] : threadsAtLine.get(lineNumber) ?? [];
-          const inDraft = !isProposedLine && draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
-          const inHoverAnchor = !isProposedLine && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
-          const anchoredThreadId = isProposedLine ? undefined : lineToThread.get(lineNumber);
+          const isHistoricalLine = Boolean(comparison && row.diffKind === "remove");
+          const lineThreads = isProposedLine || isHistoricalLine ? [] : threadsAtLine.get(lineNumber) ?? [];
+          const inDraft = !isProposedLine && !isHistoricalLine && draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
+          const inHoverAnchor = !isProposedLine && !isHistoricalLine && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
+          const anchoredThreadId = isProposedLine || isHistoricalLine ? undefined : lineToThread.get(lineNumber);
           return (
             <div key={`${row.diffKind}-${lineNumber}-${idx}`} className="plan-row-with-comments">
               <div
                 className="plan-row-main"
                 style={
-                  commentView === "alongside" && !isProposedLine
+                  commentView === "alongside" && !isProposedLine && !isHistoricalLine
                     ? { minHeight: commentRailMetrics.get(lineNumber)?.height }
                     : undefined
                 }
               >
                 <div
-                  data-line={isProposedLine ? undefined : lineNumber}
+                  data-line={isProposedLine || isHistoricalLine ? undefined : lineNumber}
                   className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
                     line.kind === "table-header" ? " is-table-header" : ""
                   }${line.kind === "table-divider" ? " is-table-divider" : ""}${
@@ -336,7 +358,7 @@ export const Plan = memo(function Plan({
                 >
                   <div className="line-number">{lineNumber}</div>
                   <div className="pin-cell">
-                    {!isProposedLine ? (
+                    {!isProposedLine && !isHistoricalLine ? (
                       <button
                         type="button"
                         className={`pin-btn${anchoredThreadId ? " has-anchor" : ""}`}
@@ -494,6 +516,30 @@ function PlanThreadStack({
   top?: number;
   hidden?: boolean;
 }) {
+  const activeThreads = threads.filter((thread) => (thread.status ?? "open") === "open");
+  const historicalThreads = threads.filter((thread) => (thread.status ?? "open") !== "open");
+  const renderThread = (thread: Thread) => (
+    <ThreadCard
+      key={thread.id}
+      thread={thread}
+      kind={thread.kind ?? "decision"}
+      sideAnswers={sideAnswersByThread.get(thread.id) ?? []}
+      isFocused={focusedThreadId === thread.id}
+      onHover={onHover}
+      onSetKind={onSetKind}
+      onReply={onReply}
+      onDelete={onDelete}
+      onEdit={onEdit}
+      onAskSide={onAskSide}
+      onIterate={onIterate}
+      onPromote={onPromote}
+      onUnpromote={onUnpromote}
+      agentAction={agentActions[thread.id]}
+      disabled={disabled}
+      sideQuestionsEnabled={sideQuestionsEnabled}
+      presentation={placement === "inline" ? "inline" : "rail"}
+    />
+  );
   return (
     <section
       className={`plan-thread-stack is-${placement}`}
@@ -501,33 +547,18 @@ function PlanThreadStack({
       data-anchor-line={anchorLine}
       style={placement === "alongside" ? { top, visibility: hidden ? "hidden" : undefined } : undefined}
     >
-      {placement === "inline" ? (
+      {placement === "inline" && activeThreads.length > 0 ? (
         <div className="inline-thread-stack-label">
-          {threads.length === 1 ? "Comment" : `${threads.length} comments`}
+          {activeThreads.length === 1 ? "Comment" : `${activeThreads.length} comments`}
         </div>
       ) : null}
-      {threads.map((thread) => (
-        <ThreadCard
-          key={thread.id}
-          thread={thread}
-          kind={thread.kind ?? "decision"}
-          sideAnswers={sideAnswersByThread.get(thread.id) ?? []}
-          isFocused={focusedThreadId === thread.id}
-          onHover={onHover}
-          onSetKind={onSetKind}
-          onReply={onReply}
-          onDelete={onDelete}
-          onEdit={onEdit}
-          onAskSide={onAskSide}
-          onIterate={onIterate}
-          onPromote={onPromote}
-          onUnpromote={onUnpromote}
-          agentAction={agentActions[thread.id]}
-          disabled={disabled}
-          sideQuestionsEnabled={sideQuestionsEnabled}
-          presentation={placement === "inline" ? "inline" : "rail"}
-        />
-      ))}
+      {activeThreads.map(renderThread)}
+      {historicalThreads.length > 0 ? (
+        <div className="historical-thread-group">
+          <div className="historical-thread-label">Earlier feedback · not sent to Codex</div>
+          {historicalThreads.map(renderThread)}
+        </div>
+      ) : null}
     </section>
   );
 }

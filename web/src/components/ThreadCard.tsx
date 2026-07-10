@@ -68,7 +68,7 @@ export function ThreadCard(props: ThreadCardProps) {
 
   return (
     <section
-      className={`thread is-flow${presentation === "inline" ? " is-inline-comment" : ""}${isFocused ? " is-focus" : ""}${isDecisionIntent ? " is-decision" : " is-note"}${!isOpen ? " is-closed" : ""}`}
+      className={`thread is-flow${presentation === "inline" ? " is-inline-comment" : ""}${isFocused ? " is-focus" : ""}${isDecisionIntent ? " is-decision" : " is-note"}${!isOpen ? " is-closed is-historical" : ""}`}
       data-thread-id={thread.id}
       data-thread-kind={kind}
       onMouseEnter={() => onHover(thread.id)}
@@ -103,9 +103,17 @@ export function ThreadCard(props: ThreadCardProps) {
       </header>
 
       <div className="mt-2 flex items-center gap-1.5">
-        <KindToggle kind={kind} onChange={(k) => onSetKind(thread.id, k)} disabled={isProcessing} />
+        <KindToggle kind={kind} onChange={(k) => onSetKind(thread.id, k)} disabled={isProcessing || !isOpen} />
         {!isOpen ? <ThreadStatusPill status={status} /> : null}
       </div>
+
+      {!isOpen ? (
+        <p className="thread-history-note">
+          {status === "resolved"
+            ? "Handled in a newer revision. This is history and is not sent to Codex."
+            : "The anchored text changed. This is history and is not sent to Codex."}
+        </p>
+      ) : null}
 
       <ul className="mt-2.5 space-y-2.5">
         {thread.messages.map((m) => (
@@ -134,7 +142,11 @@ export function ThreadCard(props: ThreadCardProps) {
                 <span className="chip">
                   <Sparkles size={11} /> /btw
                 </span>
-                {ans.promoted ? (
+                {!isOpen ? (
+                  <span className="pill pill-stay">
+                    <EyeOff size={10} /> archived with this thread
+                  </span>
+                ) : ans.promoted ? (
                   <span className="pill pill-go">
                     <ArrowRight size={10} /> Q+A in handoff
                   </span>
@@ -146,7 +158,7 @@ export function ThreadCard(props: ThreadCardProps) {
               </div>
               <p className="mt-1 font-medium text-foreground">{ans.question}</p>
               <p className="mt-1 whitespace-pre-wrap text-foreground-muted">{ans.answer}</p>
-              <div className="mt-2 flex justify-end">
+              {isOpen ? <div className="mt-2 flex justify-end">
                 {ans.promoted ? (
                   <button
                     type="button"
@@ -168,20 +180,20 @@ export function ThreadCard(props: ThreadCardProps) {
                     <ArrowRight size={12} /> Send Q+A to next turn
                   </button>
                 )}
-              </div>
+              </div> : null}
             </li>
           ))}
         </ul>
       ) : null}
 
-      {agentAction ? (
+      {agentAction && isOpen ? (
         <div className="btw-thinking mt-3" role="status" aria-live="polite">
           <Sparkles size={13} />
           <span>{agentAction === "asking" ? "Codex is thinking about this /btw…" : "Codex is iterating on this comment…"}</span>
         </div>
       ) : null}
 
-      <div className="mt-3 flex items-center gap-1.5">
+      {isOpen ? <div className="mt-3 flex items-center gap-1.5">
         <button
           type="button"
           className="btn btn-sm flex-1"
@@ -211,7 +223,7 @@ export function ThreadCard(props: ThreadCardProps) {
         >
           <Sparkles size={13} /> {agentAction === "iterating" ? "Iterating…" : "Iterate"}
         </button>
-      </div>
+      </div> : null}
     </section>
   );
 }

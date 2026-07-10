@@ -78,6 +78,14 @@ export interface DiffLine {
   text: string;
 }
 
+export interface RevisionComparison {
+  from: string;
+  to: string;
+  lines: DiffLine[];
+  beforePlan: string;
+  afterPlan: string;
+}
+
 export interface Session {
   id: string;
   plan: string;

@@ -433,28 +433,22 @@ func TestIndexRouteServesReviewUI(t *testing.T) {
 	}
 }
 
-func TestStaticAssetsIncludeLazyLoadedReviewModules(t *testing.T) {
+func TestStaticAssetsServeBuiltReviewModules(t *testing.T) {
 	assets, err := fs.ReadDir(staticFiles, "static/assets")
 	if err != nil {
 		t.Fatalf("review UI not built (run ./scripts/build-web.sh): %v", err)
 	}
-	var lazyAsset string
-	for _, asset := range assets {
-		if asset.Name() != "app.js" && asset.Name() != "app.css" && strings.HasSuffix(asset.Name(), ".js") {
-			lazyAsset = asset.Name()
-			break
-		}
-	}
-	if lazyAsset == "" {
-		t.Fatal("expected a lazy-loaded review UI asset")
-	}
-
 	s := session.New("plan-1", "# Plan")
 	server := NewServer(s)
-	res := httptest.NewRecorder()
-	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/assets/"+lazyAsset, nil))
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected lazy asset %q to be served, got %d", lazyAsset, res.Code)
+	for _, asset := range assets {
+		if !strings.HasSuffix(asset.Name(), ".js") && !strings.HasSuffix(asset.Name(), ".css") {
+			continue
+		}
+		res := httptest.NewRecorder()
+		server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/assets/"+asset.Name(), nil))
+		if res.Code != http.StatusOK {
+			t.Fatalf("expected built asset %q to be served, got %d", asset.Name(), res.Code)
+		}
 	}
 }
 
