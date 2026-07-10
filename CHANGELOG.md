@@ -54,6 +54,8 @@
 - Reworked in-place and alongside comment styling into clean, standalone cards;
   removed the colored side-rail treatment and made active, note, resolved,
   stale, and `/btw` states distinct through restrained surfaces and labels.
+- Automatically open a review with the checked-out revision compared to its
+  direct parent when revision history exists.
 
 ## v0.1.0
 

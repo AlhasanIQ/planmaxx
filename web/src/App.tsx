@@ -61,6 +61,7 @@ function useReviewController() {
   const [revisionDiffLoading, setRevisionDiffLoading] = useState(false);
   const [revisionDiffError, setRevisionDiffError] = useState<string | null>(null);
   const revisionDiffCache = useRef(new Map<string, RevisionDiffState>());
+  const initialComparisonRequestedRef = useRef(false);
 
   const pushToast = useCallback((kind: Toast["kind"], message: string) => {
     setToasts((prev) => [...prev, { id: Date.now() + Math.random(), kind, message }]);
@@ -75,6 +76,13 @@ function useReviewController() {
       setSession(next);
       setLoadError(null);
       setStatus({ label: "Codex paused — review in progress", kind: "idle" });
+      if (!initialComparisonRequestedRef.current) {
+        initialComparisonRequestedRef.current = true;
+        const currentRevision = next.revisions.find((revision) => revision.id === next.currentRevisionId);
+        if (currentRevision?.parentId) {
+          void handleCompareRevision(currentRevision.parentId, currentRevision.id);
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load review";
       setLoadError(msg);
