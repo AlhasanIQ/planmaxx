@@ -33,7 +33,7 @@ func TestSkillInstallCodexDefaultWritesManagedSkillAndReminder(t *testing.T) {
 		t.Fatalf("managed skill missing frontmatter, got %q", managedBytes)
 	}
 
-	installedPath := filepath.Join(home, ".codex", "skills", "planmaxx", "SKILL.md")
+	installedPath := filepath.Join(home, ".agents", "skills", "planmaxx", "SKILL.md")
 	info, err := os.Lstat(installedPath)
 	if err != nil {
 		t.Fatalf("lstat installed skill: %v", err)
@@ -79,7 +79,7 @@ func TestSkillInstallCopyModeWritesRegularFile(t *testing.T) {
 		t.Fatalf("skill install --copy failed: %v", err)
 	}
 
-	installedPath := filepath.Join(home, ".codex", "skills", "planmaxx", "SKILL.md")
+	installedPath := filepath.Join(home, ".agents", "skills", "planmaxx", "SKILL.md")
 	info, err := os.Lstat(installedPath)
 	if err != nil {
 		t.Fatalf("lstat installed skill: %v", err)
@@ -116,7 +116,7 @@ func TestSkillRemoveDeletesManagedInstallAndReminder(t *testing.T) {
 		t.Fatalf("skill remove failed: %v", err)
 	}
 
-	installedPath := filepath.Join(home, ".codex", "skills", "planmaxx", "SKILL.md")
+	installedPath := filepath.Join(home, ".agents", "skills", "planmaxx", "SKILL.md")
 	if _, err := os.Lstat(installedPath); !os.IsNotExist(err) {
 		t.Fatalf("expected installed skill to be removed, stat err: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestSkillRemoveSkipsUserModifiedSkill(t *testing.T) {
 	setSkillTestDirs(t, home, configDir)
 	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
 
-	installedDir := filepath.Join(home, ".codex", "skills", "planmaxx")
+	installedDir := filepath.Join(home, ".agents", "skills", "planmaxx")
 	if err := os.MkdirAll(installedDir, 0o755); err != nil {
 		t.Fatalf("mkdir installed dir: %v", err)
 	}
@@ -180,11 +180,14 @@ func TestSkillInstallRepoScoped(t *testing.T) {
 		t.Fatalf("repo skill install failed: %v", err)
 	}
 
-	repoSkill := filepath.Join(repoDir, ".codex", "skills", "planmaxx", "SKILL.md")
+	repoSkill := filepath.Join(repoDir, ".agents", "skills", "planmaxx", "SKILL.md")
 	if _, err := os.Stat(repoSkill); err != nil {
 		t.Fatalf("expected repo skill install: %v", err)
 	}
-	globalSkill := filepath.Join(home, ".codex", "skills", "planmaxx", "SKILL.md")
+	if _, err := os.Stat(filepath.Join(repoDir, "AGENTS.md")); err != nil {
+		t.Fatalf("expected repo AGENTS.md reminder: %v", err)
+	}
+	globalSkill := filepath.Join(home, ".agents", "skills", "planmaxx", "SKILL.md")
 	if _, err := os.Stat(globalSkill); !os.IsNotExist(err) {
 		t.Fatalf("did not expect global install for repo-scoped command, stat err: %v", err)
 	}
@@ -250,8 +253,11 @@ func TestInstallerDocumentsOptionalSkillInstall(t *testing.T) {
 	content := string(installer)
 	for _, want := range []string{
 		"--install-codex-skill",
+		"~/.agents/skills",
 		"PLANMAXX_INSTALL_CODEX_SKILL",
 		"skill install --target codex",
+		"${BASE_URL}/SKILL.md",
+		"verify_checksum \"${TMPDIR_PLANMAXX}/SKILL.md\" \"$CHECKSUMS\"",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected installer to mention %q", want)

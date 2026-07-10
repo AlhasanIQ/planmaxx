@@ -11,7 +11,8 @@ The release workflow:
 3. runs Go and web checks,
 4. cross-compiles self-contained binaries,
 5. archives each binary,
-6. publishes archives and `checksums.txt` to GitHub Releases.
+6. publishes archives, the version-matched `SKILL.md`, and `checksums.txt` to
+   GitHub Releases.
 
 Generated UI assets are not committed. Release binaries embed them.
 
@@ -19,7 +20,8 @@ Generated UI assets are not committed. Release binaries embed them.
 
 Each release is tied to a version tag. The corresponding GPLv3 source is the
 tagged repository source archive that GitHub publishes with the release. The
-binary archives include `README.md` and `LICENSE`; rebuild from source with:
+binary archives include `README.md`, `LICENSE`, and `SKILL.md`; rebuild from
+source with:
 
 ```bash
 cd web && bun install

@@ -277,19 +277,21 @@ func resolveSkillRepoRoot(raw string) (string, error) {
 }
 
 func resolveCodexSkillPaths(repoRoot string) (string, string, error) {
-	base := repoRoot
-	if base == "" {
-		home, err := skillUserHomeDir()
-		if err != nil {
-			return "", "", err
-		}
-		if strings.TrimSpace(home) == "" {
-			return "", "", fmt.Errorf("home directory is empty")
-		}
-		base = home
+	if repoRoot != "" {
+		return filepath.Join(repoRoot, ".agents", "skills", "planmaxx"),
+			filepath.Join(repoRoot, "AGENTS.md"),
+			nil
 	}
-	return filepath.Join(base, ".codex", "skills", "planmaxx"),
-		filepath.Join(base, ".codex", "AGENTS.md"),
+
+	home, err := skillUserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", "", fmt.Errorf("home directory is empty")
+	}
+	return filepath.Join(home, ".agents", "skills", "planmaxx"),
+		filepath.Join(home, ".codex", "AGENTS.md"),
 		nil
 }
 

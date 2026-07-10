@@ -52,8 +52,9 @@ planmaxx skill install --target codex
 planmaxx skill remove --target codex
 ```
 
-The skill is installed under your Codex user directory by default. Use
-`--repo /path/to/repo` with either command for repo-scoped installation.
+The skill is installed under `$HOME/.agents/skills/planmaxx` by default. Use
+`--repo /path/to/repo` with either command to install it under that
+repository's `.agents/skills/planmaxx` directory.
 
 ## Quick Start
 
@@ -148,7 +149,8 @@ For UI screenshots, run `node scripts/render-review.mjs`.
 ## Release
 
 Releases are built by GitHub Actions from version tags. Each release includes
-Linux, macOS, and Windows archives, `checksums.txt`, and tagged source archives.
+Linux, macOS, and Windows archives, a version-matched `SKILL.md`,
+`checksums.txt`, and tagged source archives.
 
 See [docs/release.md](docs/release.md).
 

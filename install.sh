@@ -27,7 +27,7 @@ Options:
   --version <tag|latest>  Version tag to install (default: latest)
   --install-dir <path>    Binary install directory (default: ~/.local/bin)
   --repo <owner/repo>     GitHub repo (default: AlhasanIQ/planmaxx)
-  --install-codex-skill   Also install the optional user-level Codex skill
+  --install-codex-skill   Also install the optional user-level Codex skill under ~/.agents/skills
   --help                  Show this help
 
 Environment overrides:
@@ -157,6 +157,30 @@ install_binary() {
   printf '%s\n' "$bin_dst"
 }
 
+install_codex_skill() {
+  local skill_dir skill_file skill_url
+
+  if "$BIN_PATH" skill install --target codex; then
+    return
+  fi
+
+  log "Installed binary does not support skill installation; installing the Codex skill directly."
+  skill_dir="${HOME}/.agents/skills/planmaxx"
+  skill_file="${skill_dir}/SKILL.md"
+  skill_url="${BASE_URL}/SKILL.md"
+
+  mkdir -p "$skill_dir"
+  download_to_file "$skill_url" "${TMPDIR_PLANMAXX}/SKILL.md"
+  verify_checksum "${TMPDIR_PLANMAXX}/SKILL.md" "$CHECKSUMS"
+  if command -v install >/dev/null 2>&1; then
+    install -m 0644 "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_file"
+  else
+    cp "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_file"
+    chmod 0644 "$skill_file"
+  fi
+  log "Installed ${skill_file}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version)
@@ -226,7 +250,7 @@ esac
 case "$INSTALL_CODEX_SKILL" in
   1|true|TRUE|yes|YES)
     log "Installing optional user-level Codex skill..."
-    "$BIN_PATH" skill install --target codex
+    install_codex_skill
     ;;
   0|false|FALSE|no|NO|"")
     log "Optional Codex skill not installed. To enable automatic plan review later, run: ${BIN_PATH} skill install --target codex"

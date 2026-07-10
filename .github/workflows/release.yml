@@ -109,7 +109,7 @@ jobs:
           ldflags="-s -w -buildid= -X github.com/AlhasanIQ/planmaxx/internal/version.Version=${version_no_v} -X github.com/AlhasanIQ/planmaxx/internal/version.Commit=${GITHUB_SHA} -X github.com/AlhasanIQ/planmaxx/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -ldflags="$ldflags" -o "package/${bin_name}" ./cmd/planmaxx
-          cp README.md LICENSE package/
+          cp README.md LICENSE SKILL.md package/
           tar \
             --sort=name \
             --mtime='UTC 1970-01-01' \
@@ -145,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum planmaxx_*.tar.gz > checksums.txt
+          sha256sum planmaxx_*.tar.gz SKILL.md > checksums.txt
           cp ../install.sh ./install.sh
 
       - name: Publish with gh
