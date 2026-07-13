@@ -7,7 +7,7 @@ import type { Anchor, PlanFormat, RevisionComparison, RevisionFeedback, SectionP
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
 import { lineDiff } from "../lib/diff";
-import { comparisonLineIdentity } from "../lib/comparisonLines";
+import { comparisonGutterValues, comparisonLineIdentity } from "../lib/comparisonLines";
 import { highlightCodeBlocks, type HighlightToken } from "../lib/codeHighlight";
 import { groupSideAnswersByThread, threadsByAnchorEnd, visibleThreads } from "../lib/threadPlacement";
 import { ThreadCard } from "./ThreadCard";
@@ -423,6 +423,9 @@ export const Plan = memo(function Plan({
           const inDraft = commentable && draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
           const inHoverAnchor = commentable && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
           const anchoredThreadId = commentable ? lineToThread.get(lineNumber) : undefined;
+          const comparisonGutter = comparison
+            ? comparisonGutterValues(row.beforeLineNumber, row.afterLineNumber)
+            : null;
           return (
             <div key={`${row.diffKind}-${row.beforeLineNumber ?? "-"}-${row.afterLineNumber ?? "-"}-${idx}`} className="plan-row-with-comments">
               <div
@@ -451,8 +454,16 @@ export const Plan = memo(function Plan({
                         className="comparison-line-numbers"
                         aria-label={`Before line ${row.beforeLineNumber ?? "none"}; current line ${row.afterLineNumber ?? "none"}`}
                       >
-                        <span>{row.beforeLineNumber ?? "—"}</span>
-                        <span>{row.afterLineNumber ?? "—"}</span>
+                        {row.beforeLineNumber !== undefined ? (
+                          <span className="comparison-line-number is-before">{comparisonGutter?.before}</span>
+                        ) : (
+                          <span className="comparison-line-marker is-add" aria-hidden="true">{comparisonGutter?.before}</span>
+                        )}
+                        {row.afterLineNumber !== undefined ? (
+                          <span className="comparison-line-number is-current">{comparisonGutter?.after}</span>
+                        ) : (
+                          <span className="comparison-line-marker is-remove" aria-hidden="true">{comparisonGutter?.after}</span>
+                        )}
                       </span>
                     ) : row.displayLineNumber}
                   </div>

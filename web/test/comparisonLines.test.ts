@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { comparisonLineIdentity } from "../src/lib/comparisonLines";
+import { comparisonGutterValues, comparisonLineIdentity } from "../src/lib/comparisonLines";
 
 describe("comparisonLineIdentity", () => {
   test("keeps before and current line numbers distinct when a deletion shifts later lines", () => {
@@ -24,5 +24,10 @@ describe("comparisonLineIdentity", () => {
       beforeLineNumber: 60,
       displayLineNumber: 60,
     });
+  });
+
+  test("uses a minus for removed rows and a plus for added rows", () => {
+    expect(comparisonGutterValues(149, undefined)).toEqual({ before: 149, after: "−" });
+    expect(comparisonGutterValues(undefined, 147)).toEqual({ before: "+", after: 147 });
   });
 });

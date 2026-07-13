@@ -17,3 +17,13 @@ export function comparisonLineIdentity(line: DiffLine): ComparisonLineIdentity {
     anchorLineNumber: line.after,
   };
 }
+
+export function comparisonGutterValues(before?: number, after?: number): {
+  before: number | "+";
+  after: number | "−";
+} {
+  return {
+    before: before ?? "+",
+    after: after ?? "−",
+  };
+}

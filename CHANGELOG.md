@@ -72,6 +72,8 @@
 - Redesigned revision-comparison gutters to show `before → current` line
   coordinates. Only current-revision rows can receive comments, so a removed
   row can never steal a comment intended for an added or shifted line.
+- Corrected comparison gutter markers so removed rows show `−` and added rows
+  show `+`, with wider columns and balanced padding for multi-digit lines.
 
 ## v0.1.0
 
