@@ -58,6 +58,10 @@
   direct parent when revision history exists.
 - Fixed GFM table rendering when a table is followed by a blank line and a
   subsequent Markdown block.
+- Made table-cell comments source-safe: their exact visible selection is kept
+  as context, while the anchor covers the full table row(s) so rendered-cell
+  offsets can never target the wrong Markdown characters. Code-block comments
+  retain their exact character anchors.
 
 ## v0.1.0
 

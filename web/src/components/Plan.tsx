@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Columns2, GitCompareArrows, ListTree, Loader2, MessageSquarePlus, MessageSquareText, RotateCcw, Search, Sparkles, Trash2 } from "lucide-react";
 import { renderPlanLines } from "../lib/markdown";
+import { anchorForCommentSelection } from "../lib/commentSelection";
 import type { Anchor, RevisionComparison, RevisionFeedback, SectionProposal, SideAnswer, Thread, ThreadKind } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
@@ -416,6 +417,7 @@ export const Plan = memo(function Plan({
                   <PlanLineContent
                     html={line.html}
                     lineNumber={lineNumber}
+                    isTableRow={line.kind === "table-header" || line.kind === "table-divider" || line.kind === "table-row"}
                     anchoredThreadId={anchoredThreadId}
                     codeTokens={isProposedLine ? undefined : highlightedCode.get(lineNumber)}
                     onFocusThread={onFocusThread}
@@ -890,12 +892,14 @@ function InlineCommentComposer({
 const PlanLineContent = memo(function PlanLineContent({
   html,
   lineNumber,
+  isTableRow,
   anchoredThreadId,
   codeTokens,
   onFocusThread,
 }: {
   html: string;
   lineNumber: number;
+  isTableRow: boolean;
   anchoredThreadId: string | undefined;
   codeTokens?: HighlightToken[];
   onFocusThread: (threadId: string) => void;
@@ -934,6 +938,7 @@ const PlanLineContent = memo(function PlanLineContent({
       <div
         className="line-content"
         data-line-content={lineNumber}
+        data-structured-row={isTableRow || undefined}
         {...anchoredLineProps}
       >
         {content}
@@ -942,7 +947,11 @@ const PlanLineContent = memo(function PlanLineContent({
   }
 
   return (
-    <div className="line-content" data-line-content={lineNumber}>
+    <div
+      className="line-content"
+      data-line-content={lineNumber}
+      data-structured-row={isTableRow || undefined}
+    >
       {content}
     </div>
   );
@@ -1153,16 +1162,21 @@ function draftFromSelection(selection: Selection | null): CommentDraft | null {
   const endLineNumber = Number(endLine.dataset.lineContent);
   if (!Number.isInteger(startLineNumber) || !Number.isInteger(endLineNumber)) return null;
 
-  const startChar = textOffset(startLine, range.startContainer, range.startOffset);
-  const endChar = textOffset(endLine, range.endContainer, range.endOffset);
-  const anchor = {
-    startLine: startLineNumber,
-    startChar,
-    endLine: endLineNumber,
-    endChar,
-  };
-  const quote = textForAnchorContents(startLine, endLine, anchor).trim();
-  if (!quote || compareAnchorPoints(anchor.startLine, anchor.startChar, anchor.endLine, anchor.endChar) === 0) {
+  const selectionTouchesTable = isStructuredRow(startLine) || isStructuredRow(endLine);
+  // Table cells omit Markdown pipes, alignment markers, and spacing. Their DOM
+  // offsets therefore cannot safely target source characters. Keep the user's
+  // exact selected text, but scope table selections to complete source rows.
+  const anchor = anchorForCommentSelection(
+    startLineNumber,
+    textOffset(startLine, range.startContainer, range.startOffset),
+    endLineNumber,
+    textOffset(endLine, range.endContainer, range.endOffset),
+    selectionTouchesTable,
+  );
+  const quote = selectionTouchesTable
+    ? range.toString().trim()
+    : textForAnchorContents(startLine, endLine, anchor).trim();
+  if (!quote || (!selectionTouchesTable && compareAnchorPoints(anchor.startLine, anchor.startChar ?? 0, anchor.endLine, anchor.endChar ?? 0) === 0)) {
     return null;
   }
 
@@ -1179,6 +1193,10 @@ function selectedTextForAnchorInArticle(root: HTMLElement | null, anchor: Anchor
   const endContent = lineContent(root, anchor.endLine);
   if (!startContent || !endContent) return "";
   return textForAnchorContents(startContent, endContent, anchor);
+}
+
+function isStructuredRow(line: HTMLElement): boolean {
+  return line.dataset.structuredRow === "true";
 }
 
 function restoreNativeSelection(root: HTMLElement | null, anchor: Anchor) {
