@@ -213,7 +213,7 @@ function tableAt(lines: string[], start: number): { consumed: number; lines: Lin
     lines: [
       { kind: "table-header", html: tableMarkup(first.header, columns, "header") },
       { kind: "table-divider", html: tableDividerMarkup(columns) },
-      ...first.rows.map((cells) => ({
+      ...first.rows.map((cells: Tokens.TableCell[]) => ({
         kind: "table-row" as const,
         html: tableMarkup(cells, columns, "body"),
       })),

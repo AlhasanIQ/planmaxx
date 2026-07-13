@@ -62,6 +62,9 @@
   as context, while the anchor covers the full table row(s) so rendered-cell
   offsets can never target the wrong Markdown characters. Code-block comments
   retain their exact character anchors.
+- Redesigned revision-comparison gutters to show `before → current` line
+  coordinates. Only current-revision rows can receive comments, so a removed
+  row can never steal a comment intended for an added or shifted line.
 
 ## v0.1.0
 

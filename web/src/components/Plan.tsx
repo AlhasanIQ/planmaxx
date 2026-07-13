@@ -6,6 +6,7 @@ import type { Anchor, RevisionComparison, RevisionFeedback, SectionProposal, Sid
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
 import { lineDiff } from "../lib/diff";
+import { comparisonLineIdentity } from "../lib/comparisonLines";
 import { highlightCodeBlocks, type HighlightToken } from "../lib/codeHighlight";
 import { groupSideAnswersByThread, threadsByAnchorEnd, visibleThreads } from "../lib/threadPlacement";
 import { ThreadCard } from "./ThreadCard";
@@ -123,19 +124,31 @@ export const Plan = memo(function Plan({
   );
   const displayRows = useMemo(() => {
     if (!proposal && !comparison) {
-      return lines.map((line, index) => ({ diffKind: "context" as const, line, lineNumber: index + 1 }));
+      return lines.map((line, index) => ({
+        diffKind: "context" as const,
+        line,
+        displayLineNumber: index + 1,
+        anchorLineNumber: index + 1,
+        beforeLineNumber: undefined,
+        afterLineNumber: undefined,
+      }));
     }
     const diffLines = proposal ? lineDiff(plan, proposal.proposedPlan) : comparison!.lines;
     return diffLines.map((diffLine) => {
-      const lineNumber = diffLine.before ?? diffLine.after ?? 0;
       const sourceLines = proposal
         ? (diffLine.kind === "add" ? proposalLines : lines)
         : (diffLine.kind === "add" ? comparisonAfterLines : comparisonBeforeLines);
       const sourceIndex = ((diffLine.kind === "add" ? diffLine.after : diffLine.before) ?? 0) - 1;
+      const comparisonIdentity = comparison ? comparisonLineIdentity(diffLine) : null;
       return {
         diffKind: diffLine.kind,
         line: sourceLines[sourceIndex] ?? renderPlanLines(diffLine.text)[0],
-        lineNumber,
+        displayLineNumber: comparisonIdentity?.displayLineNumber ?? diffLine.before ?? diffLine.after ?? 0,
+        anchorLineNumber: comparisonIdentity
+          ? comparisonIdentity.anchorLineNumber
+          : diffLine.before ?? diffLine.after,
+        beforeLineNumber: comparisonIdentity?.beforeLineNumber,
+        afterLineNumber: comparisonIdentity?.afterLineNumber,
       };
     });
   }, [comparison, comparisonAfterLines, comparisonBeforeLines, lines, plan, proposal, proposalLines]);
@@ -356,6 +369,7 @@ export const Plan = memo(function Plan({
       {comparison ? (
         <div className="plan-comparison-banner">
           <span><GitCompareArrows size={14} /> Showing changes: {comparison.from} → {comparison.to}</span>
+          <span className="comparison-line-key">Line numbers: before → current</span>
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClearComparison}>Hide changes</button>
         </div>
       ) : null}
@@ -364,39 +378,50 @@ export const Plan = memo(function Plan({
       ) : null}
       <div className="plan-body py-2">
         {displayRows.map((row, idx) => {
-          const lineNumber = row.lineNumber;
+          const lineNumber = row.anchorLineNumber;
           const line = row.line;
-          const isProposedLine = row.diffKind === "add";
+          const isProposedLine = Boolean(proposal && row.diffKind === "add");
           const isHistoricalLine = Boolean(comparison && row.diffKind === "remove");
-          const lineThreads = isProposedLine || isHistoricalLine ? [] : threadsAtLine.get(lineNumber) ?? [];
-          const inDraft = !isProposedLine && !isHistoricalLine && draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
-          const inHoverAnchor = !isProposedLine && !isHistoricalLine && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
-          const anchoredThreadId = isProposedLine || isHistoricalLine ? undefined : lineToThread.get(lineNumber);
+          const commentable = !isProposedLine && !isHistoricalLine && lineNumber !== undefined;
+          const lineThreads = commentable ? threadsAtLine.get(lineNumber) ?? [] : [];
+          const inDraft = commentable && draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
+          const inHoverAnchor = commentable && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
+          const anchoredThreadId = commentable ? lineToThread.get(lineNumber) : undefined;
           return (
-            <div key={`${row.diffKind}-${lineNumber}-${idx}`} className="plan-row-with-comments">
+            <div key={`${row.diffKind}-${row.beforeLineNumber ?? "-"}-${row.afterLineNumber ?? "-"}-${idx}`} className="plan-row-with-comments">
               <div
                 className="plan-row-main"
                 style={
-                  commentView === "alongside" && !isProposedLine && !isHistoricalLine
+                  commentView === "alongside" && commentable
                     ? { minHeight: commentRailMetrics.get(lineNumber)?.height }
                     : undefined
                 }
               >
                 <div
-                  data-line={isProposedLine || isHistoricalLine ? undefined : lineNumber}
+                  data-line={commentable ? lineNumber : undefined}
                   className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
                     line.kind === "table-header" ? " is-table-header" : ""
                   }${line.kind === "table-divider" ? " is-table-divider" : ""}${
                     line.kind === "table-row" ? " is-table-row" : ""
-                  }${
+                  }${comparison ? " is-comparison" : ""}${
                     inDraft ? " is-anchored" : ""
                   }${inHoverAnchor ? " is-hover-anchor" : ""}${
                     row.diffKind === "remove" ? " is-proposal-remove" : ""
                   }${row.diffKind === "add" ? " is-proposal-add" : ""}`}
                 >
-                  <div className="line-number">{lineNumber}</div>
+                  <div className="line-number">
+                    {comparison ? (
+                      <span
+                        className="comparison-line-numbers"
+                        aria-label={`Before line ${row.beforeLineNumber ?? "none"}; current line ${row.afterLineNumber ?? "none"}`}
+                      >
+                        <span>{row.beforeLineNumber ?? "—"}</span>
+                        <span>{row.afterLineNumber ?? "—"}</span>
+                      </span>
+                    ) : row.displayLineNumber}
+                  </div>
                   <div className="pin-cell">
-                    {!isProposedLine && !isHistoricalLine ? (
+                    {commentable ? (
                       <button
                         type="button"
                         className={`pin-btn${anchoredThreadId ? " has-anchor" : ""}`}
@@ -419,16 +444,16 @@ export const Plan = memo(function Plan({
                     lineNumber={lineNumber}
                     isTableRow={line.kind === "table-header" || line.kind === "table-divider" || line.kind === "table-row"}
                     anchoredThreadId={anchoredThreadId}
-                    codeTokens={isProposedLine ? undefined : highlightedCode.get(lineNumber)}
+                    codeTokens={isProposedLine || lineNumber === undefined ? undefined : highlightedCode.get(lineNumber)}
                     onFocusThread={onFocusThread}
                   />
                 </div>
 
-                {comparison && row.diffKind === "add" && feedbackByResultLine.get(lineNumber)?.length ? (
-                  <ComparisonFeedbackList feedback={feedbackByResultLine.get(lineNumber) ?? []} />
+                {comparison && row.diffKind === "add" && row.afterLineNumber && feedbackByResultLine.get(row.afterLineNumber)?.length ? (
+                  <ComparisonFeedbackList feedback={feedbackByResultLine.get(row.afterLineNumber) ?? []} />
                 ) : null}
 
-                {draft && draftComposerPlacement?.afterLine === lineNumber ? (
+                {commentable && draft && draftComposerPlacement?.afterLine === lineNumber ? (
                   <InlineCommentComposer
                     draft={draft}
                     spacerLines={draftComposerPlacement.spacerLines}
@@ -898,7 +923,7 @@ const PlanLineContent = memo(function PlanLineContent({
   onFocusThread,
 }: {
   html: string;
-  lineNumber: number;
+  lineNumber?: number;
   isTableRow: boolean;
   anchoredThreadId: string | undefined;
   codeTokens?: HighlightToken[];
