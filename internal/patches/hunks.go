@@ -39,6 +39,7 @@ func Resolve(base string, hunks []Hunk) ([]Resolved, error) {
 			return nil, errors.New("patch hunk requires expected source text")
 		}
 		var matches []Resolved
+		var exactMatches []Resolved
 		for offset := 0; ; {
 			index := strings.Index(base[offset:], h.Expected)
 			if index < 0 {
@@ -46,20 +47,30 @@ func Resolve(base string, hunks []Hunk) ([]Resolved, error) {
 			}
 			start := offset + index
 			end := start + len(h.Expected)
+			startLine, startChar := PositionAt(base, start)
+			endLine, endChar := PositionAt(base, end)
+			candidate := Resolved{Hunk: h, StartOffset: start, EndOffset: end, StartLine: startLine, StartChar: startChar, EndLine: endLine, EndChar: endChar}
+			exactMatches = append(exactMatches, candidate)
 			if contextMatches(base, start, end, h) {
-				startLine, startChar := PositionAt(base, start)
-				endLine, endChar := PositionAt(base, end)
-				matches = append(matches, Resolved{Hunk: h, StartOffset: start, EndOffset: end, StartLine: startLine, StartChar: startChar, EndLine: endLine, EndChar: endChar})
+				matches = append(matches, candidate)
 			}
 			offset = start + 1
 			if offset >= len(base) {
 				break
 			}
 		}
-		if len(matches) != 1 {
-			return nil, errors.New("patch hunk is missing or ambiguous in the base revision")
+		if len(matches) == 1 {
+			out = append(out, matches[0])
+			continue
 		}
-		out = append(out, matches[0])
+		// Exact source text is sufficient when it occurs once. This safely
+		// recovers from a model miscounting or slightly miscopying optional
+		// surrounding context, without using fragile line-number hints.
+		if len(matches) == 0 && len(exactMatches) == 1 {
+			out = append(out, exactMatches[0])
+			continue
+		}
+		return nil, errors.New("patch hunk is missing or ambiguous in the base revision")
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartOffset < out[j].StartOffset })
 	for i := 1; i < len(out); i++ {

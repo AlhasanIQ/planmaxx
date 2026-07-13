@@ -37,10 +37,31 @@ func TestResolveAllowsEmptyReplacementForDeletion(t *testing.T) {
 	}
 }
 
+func TestResolveUsesUniqueExpectedTextWhenModelContextIsWrong(t *testing.T) {
+	base := "# Plan\n- Product name: Old\n- Keep"
+	resolved, err := Resolve(base, []Hunk{
+		{
+			Before:   "# Wrong heading",
+			Expected: "- Product name: Old",
+			After:    "- Also wrong",
+			Content:  "- Product name: New",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Apply(base, resolved); got != "# Plan\n- Product name: New\n- Keep" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestResolveRejectsAmbiguousAndOverlappingHunks(t *testing.T) {
 	base := "before\nold\nafter\nbefore\nold\nafter"
 	if _, err := Resolve(base, []Hunk{{Expected: "old", Content: "new"}}); err == nil {
 		t.Fatal("expected ambiguity")
+	}
+	if _, err := Resolve(base, []Hunk{{Before: "wrong", Expected: "old", After: "also wrong", Content: "new"}}); err == nil {
+		t.Fatal("expected ambiguous exact source to remain rejected")
 	}
 	base = "before\none\ntwo\nafter"
 	if _, err := Resolve(base, []Hunk{{Before: "before", Expected: "one\ntwo", After: "after", Content: "x"}, {Before: "before", Expected: "one", After: "two", Content: "y"}}); err == nil {
