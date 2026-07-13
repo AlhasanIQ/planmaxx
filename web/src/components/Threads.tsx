@@ -9,7 +9,6 @@ interface ThreadsProps {
   focusedThreadId: string | null;
   hoveredThreadId: string | null;
   onHover: (id: string | null) => void;
-  onMove: (id: string, x: number, y: number) => void;
   onSetKind: (id: string, kind: ThreadKind) => void | Promise<void>;
   onReply: (id: string) => void;
   onDelete: (id: string) => void;
@@ -32,7 +31,6 @@ export function Threads(props: ThreadsProps) {
     filter,
     focusedThreadId,
     onHover,
-    onMove,
     onSetKind,
     onReply,
     onDelete,
@@ -105,7 +103,6 @@ export function Threads(props: ThreadsProps) {
           sideAnswers={sideAnswersByThread.get(thread.id) ?? []}
           isFocused={focusedThreadId === thread.id}
           onHover={onHover}
-          onMove={onMove}
           onSetKind={onSetKind}
           onReply={onReply}
           onDelete={onDelete}
@@ -114,7 +111,8 @@ export function Threads(props: ThreadsProps) {
           onIterate={onIterate}
           onPromote={onPromote}
           onUnpromote={onUnpromote}
-          isAskingSide={Boolean(askingThreadIds[thread.id])}
+          agentAction={askingThreadIds[thread.id] ? "asking" : undefined}
+          disabled={false}
           sideQuestionsEnabled={sideQuestionsEnabled}
         />
       ))}

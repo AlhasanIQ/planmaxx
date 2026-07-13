@@ -1,21 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "./api";
 import { TopBar } from "./components/TopBar";
-import { Plan } from "./components/Plan";
-import { Threads } from "./components/Threads";
-import { HandoffPanel } from "./components/HandoffPanel";
-import { ProposalPanel } from "./components/ProposalPanel";
+import { Plan, type CommentView } from "./components/Plan";
 import { RevisionPanel } from "./components/RevisionPanel";
 import { ToastStack, type Toast } from "./components/Toasts";
 import { CompletedScreen } from "./components/CompletedScreen";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
 import { FinalizeDialog } from "./components/dialogs/FinalizeDialog";
-import type { Anchor, DiffLine, Digest, Session, Thread, ThreadKind } from "./types";
+import type { Anchor, DiffLine, Digest, RevisionComparison, RevisionFeedback, Session, Thread, ThreadKind } from "./types";
 import { buildDigestDraft, countHandoff } from "./lib/digest";
 import { anchorLabel } from "./lib/anchors";
 import { sideQuestionContext } from "./lib/selectionContext";
+import { finalizeIterationInstruction, wholePlanAnchor } from "./lib/finalizeIteration";
 import {
   nextThemeMode,
   prefersDarkFromMatcher,
@@ -26,8 +23,9 @@ import {
   type ThemeMode,
 } from "./lib/theme";
 
-type CompletionState = null | "finalized" | "rejected" | "canceled";
-type RevisionDiffState = { from: string; to: string; lines: DiffLine[] };
+type CompletionState = null | "finalized" | "canceled";
+type RevisionDiffState = { from: string; to: string; lines: DiffLine[]; feedback?: RevisionFeedback[] };
+type ThreadAgentAction = "asking" | "iterating";
 
 type DialogState =
   | null
@@ -35,6 +33,7 @@ type DialogState =
   | { kind: "delete"; threadId: string }
   | { kind: "ask"; thread: Thread }
   | { kind: "finalize"; digest: Digest }
+  | { kind: "iteratePlan"; digest: Digest }
   | { kind: "confirmCancel" };
 
 function useReviewController() {
@@ -46,6 +45,7 @@ function useReviewController() {
   });
   const [completion, setCompletion] = useState<CompletionState>(null);
   const [busy, setBusy] = useState(false);
+  const operationInFlightRef = useRef(false);
   const [filter, setFilter] = useState("");
   const [dialog, setDialog] = useState<DialogState>(null);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
@@ -53,12 +53,15 @@ function useReviewController() {
   const [sideQuestionsEnabled, setSideQuestionsEnabled] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const theme = useTheme();
-  const [handoffCollapsed, setHandoffCollapsed] = useState(false);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
-  const [askingThreadIds, setAskingThreadIds] = useState<Record<string, boolean>>({});
+  const [threadAgentActions, setThreadAgentActions] = useState<Record<string, ThreadAgentAction>>({});
+  const [iteratingSection, setIteratingSection] = useState(false);
+  const iteratingSectionRef = useRef(false);
   const [revisionDiff, setRevisionDiff] = useState<RevisionDiffState | null>(null);
   const [revisionDiffLoading, setRevisionDiffLoading] = useState(false);
   const [revisionDiffError, setRevisionDiffError] = useState<string | null>(null);
+  const revisionDiffCache = useRef(new Map<string, RevisionDiffState>());
+  const initialComparisonRequestedRef = useRef(false);
 
   const pushToast = useCallback((kind: Toast["kind"], message: string) => {
     setToasts((prev) => [...prev, { id: Date.now() + Math.random(), kind, message }]);
@@ -73,6 +76,13 @@ function useReviewController() {
       setSession(next);
       setLoadError(null);
       setStatus({ label: "Codex paused — review in progress", kind: "idle" });
+      if (!initialComparisonRequestedRef.current) {
+        initialComparisonRequestedRef.current = true;
+        const currentRevision = next.revisions.find((revision) => revision.id === next.currentRevisionId);
+        if (currentRevision?.parentId) {
+          void handleCompareRevision(currentRevision.parentId, currentRevision.id);
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load review";
       setLoadError(msg);
@@ -95,12 +105,17 @@ function useReviewController() {
       try {
         await api.setThreadKind(threadId, kind);
       } catch (e) {
+        if (isSourceChangeConflict(e)) {
+          await refresh();
+          pushToast("error", "The plan changed outside PlanMaxx. Review state was refreshed.");
+          return;
+        }
         setSession(previous);
         const msg = e instanceof Error ? e.message : "Failed to update thread kind";
         pushToast("error", msg);
       }
     },
-    [pushToast, session],
+    [pushToast, refresh, session],
   );
 
   const liveDigest = useMemo(() => (session ? buildDigestDraft(session) : null), [session]);
@@ -142,6 +157,8 @@ function useReviewController() {
   }, [completion, openFinalize]);
 
   async function withBusy<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
+    if (operationInFlightRef.current) return null;
+    operationInFlightRef.current = true;
     setBusy(true);
     setStatus({ label, kind: "busy" });
     try {
@@ -149,11 +166,19 @@ function useReviewController() {
       setStatus({ label: "Codex paused — review in progress", kind: "idle" });
       return result;
     } catch (e) {
+      if (isSourceChangeConflict(e)) {
+        await refresh();
+        setDialog(null);
+        setEditingThreadId(null);
+        pushToast("error", "The plan changed outside PlanMaxx. Review state was refreshed.");
+        return null;
+      }
       const msg = e instanceof Error ? e.message : "Request failed";
       setStatus({ label: msg, kind: "error" });
       pushToast("error", msg);
       return null;
     } finally {
+      operationInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -186,19 +211,36 @@ function useReviewController() {
   }
 
   async function handleIterateSection(anchor: Anchor, instruction: string, threadId?: string): Promise<boolean> {
-    const result = await withBusy("Iterating section…", () =>
-      api.proposeSection(threadId, anchor, instruction),
-    );
-    if (!result) return false;
-    setSession((current) => (current ? { ...current, pendingProposal: result } : current));
-    setRevisionDiff(null);
-    pushToast("success", "Proposal ready");
-    return true;
+    if (iteratingSectionRef.current) return false;
+    iteratingSectionRef.current = true;
+    setIteratingSection(true);
+    try {
+      const result = await withBusy("Iterating section…", () =>
+        api.proposeSection(threadId, anchor, instruction),
+      );
+      if (!result) return false;
+      setSession((current) => (current ? { ...current, pendingProposal: result } : current));
+      setRevisionDiff(null);
+      pushToast("success", "Proposal ready");
+      return true;
+    } finally {
+      iteratingSectionRef.current = false;
+      setIteratingSection(false);
+    }
   }
 
-  function handleIterateThread(thread: Thread) {
+  async function handleIterateThread(thread: Thread) {
     const instruction = thread.messages.at(-1)?.body.trim() || "Revise this section according to this thread.";
-    void handleIterateSection(thread.anchor, instruction, thread.id);
+    setThreadAgentActions((prev) => ({ ...prev, [thread.id]: "iterating" }));
+    try {
+      await handleIterateSection(thread.anchor, instruction, thread.id);
+    } finally {
+      setThreadAgentActions((prev) => {
+        const next = { ...prev };
+        delete next[thread.id];
+        return next;
+      });
+    }
   }
 
   async function handleUpdateThread(threadId: string, anchor: Anchor, body: string, selectedText: string): Promise<boolean> {
@@ -244,18 +286,6 @@ function useReviewController() {
     }
   }
 
-  async function handleMove(threadId: string, x: number, y: number) {
-    const ok = await withBusy("Moving comment…", () => api.moveThread(threadId, x, y));
-    if (ok && session) {
-      setSession({
-        ...session,
-        threads: session.threads.map((t) =>
-          t.id === threadId ? { ...t, position: { x, y } } : t,
-        ),
-      });
-    }
-  }
-
   async function handleAsk(thread: Thread, question: string) {
     setDialog(null);
     return askSideQuestion(thread, question, session);
@@ -263,10 +293,12 @@ function useReviewController() {
 
   async function askSideQuestion(thread: Thread, question: string, sourceSession: Session | null): Promise<boolean> {
     if (!sourceSession) return false;
+    if (operationInFlightRef.current) return false;
+    operationInFlightRef.current = true;
     setBusy(true);
     setStatus({ label: "Asking Codex (ephemeral /btw)…", kind: "busy" });
     setFocusedThreadId(thread.id);
-    setAskingThreadIds((prev) => ({ ...prev, [thread.id]: true }));
+    setThreadAgentActions((prev) => ({ ...prev, [thread.id]: "asking" }));
     try {
       const answer = await api.sideQuestion(thread.id, question, sideQuestionContext(sourceSession, thread));
       setSession((current) =>
@@ -292,11 +324,12 @@ function useReviewController() {
       }
       return false;
     } finally {
-      setAskingThreadIds((prev) => {
+      setThreadAgentActions((prev) => {
         const next = { ...prev };
         delete next[thread.id];
         return next;
       });
+      operationInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -319,8 +352,15 @@ function useReviewController() {
   async function handleApplyProposal(proposalId: string) {
     const revision = await withBusy("Applying proposal…", () => api.applyProposal(proposalId));
     if (!revision) return;
-    setRevisionDiff(null);
-    await refresh();
+    if (revision.parentId) {
+      await Promise.all([
+        refresh(),
+        handleCompareRevision(revision.parentId, revision.id),
+      ]);
+    } else {
+      await refresh();
+      setRevisionDiff(null);
+    }
     pushToast("success", "Proposal applied");
   }
 
@@ -332,10 +372,21 @@ function useReviewController() {
   }
 
   async function handleCompareRevision(from: string, to: string) {
-    setRevisionDiffLoading(true);
+    if (revisionDiff?.from === from && revisionDiff.to === to) {
+      setRevisionDiff(null);
+      return;
+    }
     setRevisionDiffError(null);
+    const key = `${from}:${to}`;
+    const cached = revisionDiffCache.current.get(key);
+    if (cached) {
+      setRevisionDiff(cached);
+      return;
+    }
+    setRevisionDiffLoading(true);
     try {
       const result = await api.revisionDiff(from, to);
+      revisionDiffCache.current.set(key, result);
       setRevisionDiff(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load revision diff";
@@ -344,6 +395,19 @@ function useReviewController() {
     } finally {
       setRevisionDiffLoading(false);
     }
+  }
+
+  function handleClearRevisionDiff() {
+    setRevisionDiff(null);
+    setRevisionDiffError(null);
+  }
+
+  async function handleRestoreRevision(revisionId: string) {
+    const restored = await withBusy("Restoring revision…", () => api.restoreRevision(revisionId));
+    if (!restored) return;
+    setRevisionDiff(null);
+    await refresh();
+    pushToast("success", `Restored ${revisionId} as ${restored.id}`);
   }
 
   async function handleFinalize(digest: Digest) {
@@ -355,13 +419,14 @@ function useReviewController() {
     }
   }
 
-  async function handleReject(digest: Digest) {
+  function openPlanIteration(digest: Digest) {
+    setDialog({ kind: "iteratePlan", digest });
+  }
+
+  async function handlePlanIteration(digest: Digest) {
+    if (!session) return;
     setDialog(null);
-    const ok = await withBusy("Rejecting…", () => api.reject(digest));
-    if (ok) {
-      setCompletion("rejected");
-      setStatus({ label: "Rejected — handoff sent", kind: "success" });
-    }
+    await handleIterateSection(wholePlanAnchor(session.plan), finalizeIterationInstruction(digest));
   }
 
   async function handleCancel() {
@@ -374,7 +439,7 @@ function useReviewController() {
   }
 
   return {
-    askingThreadIds,
+    threadAgentActions,
     busy,
     completion,
     counts,
@@ -387,6 +452,8 @@ function useReviewController() {
     handleAsk,
     handleCancel,
     handleCompareRevision,
+    handleClearRevisionDiff,
+    handleRestoreRevision,
     handleCreateThread,
     handleCreateThreadAndAsk,
     handleDelete,
@@ -394,27 +461,26 @@ function useReviewController() {
     handleFinalize,
     handleIterateSection,
     handleIterateThread,
-    handleMove,
     handlePromote,
-    handleReject,
+    handlePlanIteration,
     handleReply,
     handleUnpromote,
     handleUpdateThread,
-    handoffCollapsed,
     hoveredThreadId,
     liveDigest,
     loadError,
     openFinalize,
+    openPlanIteration,
     refresh,
     revisionDiff,
     revisionDiffError,
     revisionDiffLoading,
+    iteratingSection,
     session,
     setDialog,
     setEditingThreadId,
     setFilter,
     setFocusedThreadId,
-    setHandoffCollapsed,
     setHoveredThreadId,
     sideQuestionsEnabled,
     status,
@@ -422,6 +488,14 @@ function useReviewController() {
     toasts,
     updateThreadKind,
   };
+}
+
+function isSourceChangeConflict(error: unknown): error is ApiError {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    (error.message.includes("source plan changed outside PlanMaxx") || error.message.includes("review state changed in another PlanMaxx session"))
+  );
 }
 
 type ReviewController = ReturnType<typeof useReviewController>;
@@ -433,7 +507,7 @@ export default function App() {
 
 function ReviewScreen({ controller }: { controller: ReviewController }) {
   const {
-    askingThreadIds,
+    threadAgentActions,
     busy,
     completion,
     counts,
@@ -446,6 +520,8 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleAsk,
     handleCancel,
     handleCompareRevision,
+    handleClearRevisionDiff,
+    handleRestoreRevision,
     handleCreateThread,
     handleCreateThreadAndAsk,
     handleDelete,
@@ -453,27 +529,26 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleFinalize,
     handleIterateSection,
     handleIterateThread,
-    handleMove,
     handlePromote,
-    handleReject,
+    handlePlanIteration,
     handleReply,
     handleUnpromote,
     handleUpdateThread,
-    handoffCollapsed,
     hoveredThreadId,
     liveDigest,
     loadError,
     openFinalize,
+    openPlanIteration,
     refresh,
     revisionDiff,
     revisionDiffError,
     revisionDiffLoading,
+    iteratingSection,
     session,
     setDialog,
     setEditingThreadId,
     setFilter,
     setFocusedThreadId,
-    setHandoffCollapsed,
     setHoveredThreadId,
     sideQuestionsEnabled,
     status,
@@ -496,9 +571,20 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     },
     [setFocusedThreadId, setHoveredThreadId],
   );
-  const toggleHandoffCollapsed = useCallback(() => {
-    setHandoffCollapsed((value) => !value);
-  }, [setHandoffCollapsed]);
+  const [commentView, setCommentView] = useState<CommentView>("inline");
+  const revisionComparison = useMemo<RevisionComparison | null>(() => {
+    if (!session || !revisionDiff) return null;
+    const before = session.revisions.find((revision) => revision.id === revisionDiff.from);
+    const after = session.revisions.find((revision) => revision.id === revisionDiff.to);
+    if (!before || !after) return null;
+    return {
+      ...revisionDiff,
+      beforePlan: planFromDiff(revisionDiff.lines, "before"),
+      afterPlan: planFromDiff(revisionDiff.lines, "after"),
+      feedback: revisionDiff.feedback ?? [],
+      isDirect: after.parentId === before.id,
+    };
+  }, [revisionDiff, session]);
 
   if (completion) {
     return <CompletedScreen state={completion} />;
@@ -539,44 +625,53 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         finalizeDisabled={Boolean(session.pendingProposal)}
       />
 
-      <main className="mx-auto grid w-full max-w-[1240px] grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <main className="mx-auto grid w-full max-w-[1600px] grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <Plan
           plan={session.plan}
+          planFormat={session.planFormat}
+          theme={theme.resolved}
+          proposal={session.pendingProposal}
+          comparison={revisionComparison}
+          comparisonLoading={revisionDiffLoading}
+          onClearComparison={handleClearRevisionDiff}
           threads={session.threads}
+          sideAnswers={session.sideAnswers}
           hoveredThreadId={hoveredThreadId}
           focusedThreadId={focusedThreadId}
           editingThread={session.threads.find((t) => t.id === editingThreadId) ?? null}
+          commentView={commentView}
+          commentFilter={filter}
+          onCommentViewChange={setCommentView}
+          onCommentFilterChange={setFilter}
           onCreateComment={handleCreateThread}
           onUpdateComment={handleUpdateThread}
           onAskSideFromDraft={handleCreateThreadAndAsk}
           onIterateDraft={(anchor, instruction) => handleIterateSection(anchor, instruction)}
+          disabled={busy}
+          proposalDisabled={busy}
+          proposalIterating={iteratingSection}
+          onApplyProposal={handleApplyProposal}
+          onDiscardProposal={handleDiscardProposal}
+          onIterateProposal={(anchor, instruction) => handleIterateSection(anchor, instruction)}
           onEditDone={clearEditingThread}
           onFocusThread={focusThreadTemporarily}
+          onHoverThread={setHoveredThreadId}
+          onSetThreadKind={updateThreadKind}
+          onReplyThread={(id) => setDialog({ kind: "reply", threadId: id })}
+          onDeleteThread={(id) => setDialog({ kind: "delete", threadId: id })}
+          onEditThread={(id) => {
+            setEditingThreadId(id);
+            setFocusedThreadId(id);
+          }}
+          onAskSide={(thread) => setDialog({ kind: "ask", thread })}
+          onIterateThread={handleIterateThread}
+          onPromoteAnswer={handlePromote}
+          onUnpromoteAnswer={handleUnpromote}
+          threadAgentActions={threadAgentActions}
+          sideQuestionsEnabled={sideQuestionsEnabled}
         />
 
-        <aside className="min-w-0 space-y-3">
-          {session.pendingProposal ? (
-            <ProposalPanel
-              proposal={session.pendingProposal}
-              disabled={busy}
-              onApply={handleApplyProposal}
-              onDiscard={handleDiscardProposal}
-              onIterate={(anchor, instruction) => handleIterateSection(anchor, instruction)}
-            />
-          ) : null}
-          {liveDigest ? (
-            <HandoffPanel
-              digest={liveDigest}
-              decisionCount={counts.decisions}
-              noteCount={counts.notes}
-              promotedCount={counts.promoted}
-              ephemeralCount={counts.ephemeral}
-              collapsed={handoffCollapsed}
-              onToggle={toggleHandoffCollapsed}
-              onFinalize={openFinalize}
-              disabled={busy || Boolean(session.pendingProposal)}
-            />
-          ) : null}
+        <aside className="min-w-0">
           <RevisionPanel
             currentRevisionId={session.currentRevisionId}
             revisions={session.revisions}
@@ -585,46 +680,8 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
             error={revisionDiffError}
             disabled={busy}
             onCompare={handleCompareRevision}
-          />
-          <label
-            htmlFor="thread-filter"
-            className="block text-xs font-semibold uppercase tracking-wide text-foreground-muted"
-          >
-            Threads
-          </label>
-          <div className="relative">
-            <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-foreground-muted" />
-            <input
-              id="thread-filter"
-              type="search"
-              className="field pl-8"
-              placeholder="Filter threads (⌘/Ctrl+K)"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              autoComplete="off"
-            />
-          </div>
-          <Threads
-            threads={session.threads}
-            sideAnswers={session.sideAnswers}
-            filter={filter}
-            focusedThreadId={focusedThreadId}
-            hoveredThreadId={hoveredThreadId}
-            onHover={setHoveredThreadId}
-            onMove={handleMove}
-            onSetKind={updateThreadKind}
-            onReply={(id) => setDialog({ kind: "reply", threadId: id })}
-            onDelete={(id) => setDialog({ kind: "delete", threadId: id })}
-            onEdit={(id) => {
-              setEditingThreadId(id);
-              setFocusedThreadId(id);
-            }}
-            onAskSide={(t) => setDialog({ kind: "ask", thread: t })}
-            onIterate={handleIterateThread}
-            onPromote={handlePromote}
-            onUnpromote={handleUnpromote}
-            askingThreadIds={askingThreadIds}
-            sideQuestionsEnabled={sideQuestionsEnabled}
+            onClearCompare={handleClearRevisionDiff}
+            onRestore={handleRestoreRevision}
           />
         </aside>
       </main>
@@ -662,8 +719,17 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         <FinalizeDialog
           initial={dialog.digest}
           onCancel={() => setDialog(null)}
-          onReject={handleReject}
+          onIterate={openPlanIteration}
           onSubmit={handleFinalize}
+        />
+      )}
+      {dialog?.kind === "iteratePlan" && (
+        <ConfirmDialog
+          title="Iterate the complete plan?"
+          body="PlanMaxx will ask Codex for one whole-plan proposal using the feedback shown in the final review. You can approve, discard, or iterate again after reviewing that proposal."
+          confirmLabel="Iterate plan"
+          onCancel={() => setDialog(null)}
+          onConfirm={() => handlePlanIteration(dialog.digest)}
         />
       )}
       {dialog?.kind === "confirmCancel" && (
@@ -680,6 +746,13 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
+}
+
+function planFromDiff(lines: DiffLine[], side: "before" | "after") {
+  return lines
+    .filter((line) => side === "before" ? line.kind !== "add" : line.kind !== "remove")
+    .map((line) => line.text)
+    .join("\n");
 }
 
 function useTheme() {

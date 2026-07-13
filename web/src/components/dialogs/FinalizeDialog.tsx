@@ -1,16 +1,16 @@
 import { useMemo, useState } from "react";
-import { ArrowRight, CheckCircle2, ListChecks, Sparkles, XCircle } from "lucide-react";
+import { ArrowRight, CheckCircle2, ListChecks, Sparkles } from "lucide-react";
 import { Modal } from "../Modal";
 import type { Digest } from "../../types";
 
 interface Props {
   initial: Digest;
   onCancel: () => void;
-  onReject: (digest: Digest) => void;
+  onIterate: (digest: Digest) => void;
   onSubmit: (digest: Digest) => void;
 }
 
-export function FinalizeDialog({ initial, onCancel, onReject, onSubmit }: Props) {
+export function FinalizeDialog({ initial, onCancel, onIterate, onSubmit }: Props) {
   const [summary, setSummary] = useState(() => initial.summary);
   const [decisions, setDecisions] = useState(() =>
     editableItems("decision", initial.reviewerDecisions ?? []),
@@ -28,34 +28,26 @@ export function FinalizeDialog({ initial, onCancel, onReject, onSubmit }: Props)
     [answers],
   );
 
-  function submit() {
-    onSubmit({
+  function digest() {
+    return {
       summary: summary.trim(),
       reviewerDecisions: trimmedDecisions.map((item) => item.value),
       promotedSideAnswers: trimmedAnswers.map((item) => item.value),
-    });
-  }
-
-  function reject() {
-    onReject({
-      summary: summary.trim(),
-      reviewerDecisions: trimmedDecisions.map((item) => item.value),
-      promotedSideAnswers: trimmedAnswers.map((item) => item.value),
-    });
+    };
   }
 
   return (
     <Modal
       title="Finalize review"
-      description="This is the only thing Codex sees besides the plan itself. Edit before handing off."
+      description="Approve to hand off. Iterate creates a whole-plan proposal from this feedback and returns you to review."
       size="lg"
       onClose={onCancel}
       footer={
         <>
-          <button type="button" className="btn btn-danger" onClick={reject}>
-            <XCircle size={14} /> Reject
+          <button type="button" className="btn" onClick={() => onIterate(digest())}>
+            <Sparkles size={14} /> Iterate plan
           </button>
-          <button type="button" className="btn btn-primary" onClick={submit}>
+          <button type="button" className="btn btn-primary" onClick={() => onSubmit(digest())}>
             <CheckCircle2 size={14} /> Approve
           </button>
         </>

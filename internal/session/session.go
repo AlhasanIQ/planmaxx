@@ -6,21 +6,26 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+
+	"github.com/AlhasanIQ/planmaxx/internal/planformat"
 )
 
 type Session struct {
-	ID                string           `json:"id"`
-	Plan              string           `json:"plan"`
-	PlanPath          string           `json:"planPath"`
-	CurrentRevisionID string           `json:"currentRevisionId"`
-	Revisions         []Revision       `json:"revisions"`
-	PendingProposal   *SectionProposal `json:"pendingProposal,omitempty"`
-	Threads           []Thread         `json:"threads"`
-	SideAnswers       []SideAnswer     `json:"sideAnswers"`
-	Digest            Digest           `json:"digest"`
+	ID                string            `json:"id"`
+	Plan              string            `json:"plan"`
+	PlanPath          string            `json:"planPath"`
+	PlanFormat        planformat.Format `json:"planFormat"`
+	CurrentRevisionID string            `json:"currentRevisionId"`
+	Revisions         []Revision        `json:"revisions"`
+	PendingProposal   *SectionProposal  `json:"pendingProposal,omitempty"`
+	Threads           []Thread          `json:"threads"`
+	SideAnswers       []SideAnswer      `json:"sideAnswers"`
+	Digest            Digest            `json:"digest"`
+	NextThreadID      int               `json:"nextThreadId,omitempty"`
+	NextSideAnswerID  int               `json:"nextSideAnswerId,omitempty"`
+	NextProposalID    int               `json:"nextProposalId,omitempty"`
 	nextMessage       int
 	nextRevision      int
-	nextProposal      int
 }
 
 const (
@@ -34,6 +39,7 @@ const (
 	RevisionSourceInitial   = "initial"
 	RevisionSourceTurn      = "turn"
 	RevisionSourceImmediate = "immediate"
+	RevisionSourceExternal  = "external"
 )
 
 type Anchor struct {
@@ -41,6 +47,10 @@ type Anchor struct {
 	StartChar int `json:"startChar"`
 	EndLine   int `json:"endLine"`
 	EndChar   int `json:"endChar"`
+}
+
+func hasCharacterRange(anchor Anchor) bool {
+	return anchor.StartChar != 0 || anchor.EndChar != 0
 }
 
 type Thread struct {
@@ -54,34 +64,60 @@ type Thread struct {
 }
 
 type Revision struct {
-	ID        string    `json:"id"`
-	ParentID  string    `json:"parentId,omitempty"`
-	Source    string    `json:"source"`
-	CreatedAt time.Time `json:"createdAt"`
-	Plan      string    `json:"plan"`
-	Anchor    Anchor    `json:"anchor,omitempty"`
-	Summary   string    `json:"summary,omitempty"`
+	ID        string             `json:"id"`
+	CommitID  string             `json:"commitId,omitempty"`
+	ParentID  string             `json:"parentId,omitempty"`
+	Source    string             `json:"source"`
+	CreatedAt time.Time          `json:"createdAt"`
+	Plan      string             `json:"plan"`
+	Anchor    Anchor             `json:"anchor,omitempty"`
+	Summary   string             `json:"summary,omitempty"`
+	Feedback  []RevisionFeedback `json:"feedback,omitempty"`
+}
+
+// RevisionFeedback is an immutable snapshot of the review thread that was
+// supplied when a proposal became an accepted revision. Thread state later
+// changes as plans evolve, so comparisons must not depend on mutable threads.
+type RevisionFeedback struct {
+	RevisionID   string    `json:"revisionId"`
+	ThreadID     string    `json:"threadId"`
+	Anchor       Anchor    `json:"anchor"`
+	ResultAnchor Anchor    `json:"resultAnchor"`
+	SelectedText string    `json:"selectedText,omitempty"`
+	Kind         string    `json:"kind"`
+	Messages     []Message `json:"messages"`
 }
 
 type SectionProposal struct {
-	ID                string    `json:"id"`
-	ParentID          string    `json:"parentId"`
-	ThreadID          string    `json:"threadId,omitempty"`
-	Anchor            Anchor    `json:"anchor"`
-	ReplacementAnchor Anchor    `json:"replacementAnchor"`
-	OriginalSection   string    `json:"originalSection"`
-	ProposedSection   string    `json:"proposedSection"`
-	ProposedPlan      string    `json:"proposedPlan"`
-	Summary           string    `json:"summary"`
-	Instruction       string    `json:"instruction"`
-	RawResponse       string    `json:"rawResponse"`
-	IncludedThreadIDs []string  `json:"includedThreadIds,omitempty"`
-	CreatedAt         time.Time `json:"createdAt"`
+	ID                string        `json:"id"`
+	ParentID          string        `json:"parentId"`
+	ThreadID          string        `json:"threadId,omitempty"`
+	Anchor            Anchor        `json:"anchor"`                  // Original reviewer selection.
+	AppliedAnchor     Anchor        `json:"appliedAnchor,omitempty"` // Source-plan region affected when this proposal is applied.
+	AppliedHunks      []AppliedHunk `json:"appliedHunks,omitempty"`
+	ReplacementAnchor Anchor        `json:"replacementAnchor"` // Result range in ProposedPlan.
+	OriginalSection   string        `json:"originalSection"`
+	ProposedSection   string        `json:"proposedSection"`
+	ProposedPlan      string        `json:"proposedPlan"`
+	Summary           string        `json:"summary"`
+	Instruction       string        `json:"instruction"`
+	RawResponse       string        `json:"rawResponse"`
+	IncludedThreadIDs []string      `json:"includedThreadIds,omitempty"`
+	Obsolete          bool          `json:"obsolete,omitempty"`
+	CreatedAt         time.Time     `json:"createdAt"`
+}
+
+type AppliedHunk struct {
+	Anchor    Anchor `json:"anchor"`
+	Result    Anchor `json:"result"`
+	LineDelta int    `json:"lineDelta"`
 }
 
 type SectionProposalInput struct {
 	ThreadID          string
 	Anchor            Anchor
+	AppliedAnchor     Anchor
+	AppliedHunks      []AppliedHunk
 	ReplacementAnchor Anchor
 	OriginalSection   string
 	ProposedSection   string
@@ -120,7 +156,11 @@ type Digest struct {
 }
 
 func New(id string, plan string) *Session {
-	s := &Session{ID: id, Plan: plan}
+	return NewWithFormat(id, plan, planformat.Markdown)
+}
+
+func NewWithFormat(id string, plan string, format planformat.Format) *Session {
+	s := &Session{ID: id, Plan: plan, PlanFormat: planformat.Normalize(format, "")}
 	s.addRevision("", RevisionSourceInitial, plan, Anchor{}, "Initial plan")
 	return s
 }
@@ -131,7 +171,7 @@ func (s *Session) AddThread(anchor Anchor, body string) Thread {
 
 func (s *Session) AddThreadWithSelectedText(anchor Anchor, body string, selectedText string) Thread {
 	thread := Thread{
-		ID:           fmt.Sprintf("thread-%d", len(s.Threads)+1),
+		ID:           fmt.Sprintf("thread-%d", s.NextThreadID+1),
 		Anchor:       anchor,
 		SelectedText: selectedText,
 		Kind:         ThreadKindDecision,
@@ -142,6 +182,7 @@ func (s *Session) AddThreadWithSelectedText(anchor Anchor, body string, selected
 		},
 		Messages: []Message{s.newMessage("reviewer", body)},
 	}
+	s.NextThreadID++
 	s.Threads = append(s.Threads, thread)
 	return thread
 }
@@ -202,6 +243,7 @@ func (s *Session) ReanchorThread(threadID string, anchor Anchor) bool {
 	for i := range s.Threads {
 		if s.Threads[i].ID == threadID {
 			s.Threads[i].Anchor = anchor
+			s.Threads[i].Status = ThreadStatusOpen
 			return true
 		}
 	}
@@ -220,6 +262,7 @@ func (s *Session) EditThreadWithSelectedText(threadID string, anchor Anchor, bod
 			}
 			s.Threads[i].Anchor = anchor
 			s.Threads[i].SelectedText = selectedText
+			s.Threads[i].Status = ThreadStatusOpen
 			s.Threads[i].Messages[0].Body = body
 			return true
 		}
@@ -229,12 +272,13 @@ func (s *Session) EditThreadWithSelectedText(threadID string, anchor Anchor, bod
 
 func (s *Session) AddSideAnswer(threadID string, question string, answer string) SideAnswer {
 	sideAnswer := SideAnswer{
-		ID:        fmt.Sprintf("side-%d", len(s.SideAnswers)+1),
+		ID:        fmt.Sprintf("side-%d", s.NextSideAnswerID+1),
 		ThreadID:  threadID,
 		Question:  question,
 		Answer:    answer,
 		CreatedAt: time.Now().UTC(),
 	}
+	s.NextSideAnswerID++
 	s.SideAnswers = append(s.SideAnswers, sideAnswer)
 	return sideAnswer
 }
@@ -268,17 +312,58 @@ func (s *Session) AddTurnRevision(plan string, summary string) Revision {
 	return s.addRevision(s.CurrentRevisionID, RevisionSourceTurn, plan, Anchor{}, summary)
 }
 
+// AddExternalRevision records a change made to the source file outside of
+// PlanMaxx. Unlike a normal turn revision, it preserves a pending proposal so
+// that it cannot disappear merely because the source document changed.
+func (s *Session) AddExternalRevision(plan string, summary string) Revision {
+	return s.addRevision(s.CurrentRevisionID, RevisionSourceExternal, plan, Anchor{}, summary)
+}
+
+// ReconcileExternalPlan makes an externally edited source document the active
+// revision without dropping reviewer work. A comment is moved only when its
+// original selected text (or full-line anchor text for older comments) has one
+// unambiguous match in the new document. Otherwise the comment remains intact
+// and is marked stale for the reviewer to re-anchor deliberately.
+func (s *Session) ReconcileExternalPlan(previousSource string, nextSource string) {
+	for i := range s.Threads {
+		thread := &s.Threads[i]
+		selected := thread.SelectedText
+		if selected == "" {
+			// Legacy full-line anchors point at the mutable working revision.
+			// Once it differs from the source baseline, guessing from source
+			// line numbers could attach the comment to unrelated content.
+			if s.Plan != previousSource {
+				thread.Status = ThreadStatusStale
+				continue
+			}
+			selected = textForAnchor(previousSource, thread.Anchor)
+		}
+		anchor, ok := uniqueAnchorForText(nextSource, selected, thread.Anchor)
+		if !ok {
+			thread.Status = ThreadStatusStale
+			continue
+		}
+		thread.Anchor = anchor
+	}
+	if s.PendingProposal != nil {
+		s.PendingProposal.Obsolete = true
+	}
+	s.AddExternalRevision(nextSource, "Plan file changed outside PlanMaxx")
+}
+
 func (s *Session) CreateSectionProposal(input SectionProposalInput) SectionProposal {
-	s.nextProposal++
+	s.NextProposalID++
 	replacementAnchor := input.ReplacementAnchor
 	if replacementAnchor.StartLine == 0 {
 		replacementAnchor = replacementAnchorFromSection(input.Anchor, input.ProposedSection)
 	}
 	proposal := SectionProposal{
-		ID:                fmt.Sprintf("proposal-%d", s.nextProposal),
+		ID:                fmt.Sprintf("proposal-%d", s.NextProposalID),
 		ParentID:          s.CurrentRevisionID,
 		ThreadID:          input.ThreadID,
 		Anchor:            input.Anchor,
+		AppliedAnchor:     input.AppliedAnchor,
+		AppliedHunks:      append([]AppliedHunk(nil), input.AppliedHunks...),
 		ReplacementAnchor: replacementAnchor,
 		OriginalSection:   input.OriginalSection,
 		ProposedSection:   input.ProposedSection,
@@ -298,12 +383,12 @@ func (s *Session) ApplyProposal(proposalID string) (Revision, bool) {
 		return Revision{}, false
 	}
 	proposal := *s.PendingProposal
-	if proposal.ParentID != s.CurrentRevisionID {
-		s.PendingProposal = nil
+	if proposal.Obsolete || proposal.ParentID != s.CurrentRevisionID {
 		return Revision{}, false
 	}
 	delta := lineCount(proposal.ProposedPlan) - lineCount(s.Plan)
-	revision := s.addRevision(proposal.ParentID, RevisionSourceImmediate, proposal.ProposedPlan, proposal.Anchor, proposal.Summary)
+	feedback := s.feedbackForProposal(proposal)
+	revision := s.addRevisionWithFeedback(proposal.ParentID, RevisionSourceImmediate, proposal.ProposedPlan, proposal.Anchor, proposal.Summary, feedback)
 	s.adjustThreadsForAppliedProposal(proposal, delta)
 	s.PendingProposal = nil
 	return revision, true
@@ -330,7 +415,12 @@ func (s *Session) RestoreCounters() {
 	maxMessage := 0
 	maxRevision := 0
 	maxProposal := 0
+	maxThread := 0
+	maxSideAnswer := 0
 	for _, thread := range s.Threads {
+		if n, ok := numberedID(thread.ID, "thread-"); ok && n > maxThread {
+			maxThread = n
+		}
 		for _, message := range thread.Messages {
 			raw, ok := strings.CutPrefix(message.ID, "msg-")
 			if !ok {
@@ -340,6 +430,11 @@ func (s *Session) RestoreCounters() {
 			if err == nil && n > maxMessage {
 				maxMessage = n
 			}
+		}
+	}
+	for _, answer := range s.SideAnswers {
+		if n, ok := numberedID(answer.ID, "side-"); ok && n > maxSideAnswer {
+			maxSideAnswer = n
 		}
 	}
 	for _, revision := range s.Revisions {
@@ -363,9 +458,26 @@ func (s *Session) RestoreCounters() {
 	}
 	s.nextMessage = maxMessage
 	s.nextRevision = maxRevision
-	s.nextProposal = maxProposal
+	if s.NextProposalID < maxProposal {
+		s.NextProposalID = maxProposal
+	}
+	if s.NextThreadID < maxThread {
+		s.NextThreadID = maxThread
+	}
+	if s.NextSideAnswerID < maxSideAnswer {
+		s.NextSideAnswerID = maxSideAnswer
+	}
 	s.restoreThreadDefaults()
 	s.restoreRevisionDefaults()
+}
+
+func numberedID(id string, prefix string) (int, bool) {
+	raw, ok := strings.CutPrefix(id, prefix)
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	return n, err == nil
 }
 
 func (s *Session) deleteSideAnswersForThread(threadID string) {
@@ -389,6 +501,10 @@ func (s *Session) setThreadStatus(threadID string, status string) bool {
 }
 
 func (s *Session) addRevision(parentID string, source string, plan string, anchor Anchor, summary string) Revision {
+	return s.addRevisionWithFeedback(parentID, source, plan, anchor, summary, nil)
+}
+
+func (s *Session) addRevisionWithFeedback(parentID string, source string, plan string, anchor Anchor, summary string, feedback []RevisionFeedback) Revision {
 	s.nextRevision++
 	revision := Revision{
 		ID:        fmt.Sprintf("rev-%d", s.nextRevision),
@@ -399,13 +515,48 @@ func (s *Session) addRevision(parentID string, source string, plan string, ancho
 		Anchor:    anchor,
 		Summary:   summary,
 	}
+	for i := range feedback {
+		feedback[i].RevisionID = revision.ID
+	}
+	revision.Feedback = feedback
 	s.Revisions = append(s.Revisions, revision)
 	s.CurrentRevisionID = revision.ID
 	s.Plan = plan
 	return revision
 }
 
+func (s *Session) feedbackForProposal(proposal SectionProposal) []RevisionFeedback {
+	feedback := make([]RevisionFeedback, 0, len(proposal.IncludedThreadIDs))
+	for _, threadID := range proposal.IncludedThreadIDs {
+		for _, thread := range s.Threads {
+			if thread.ID != threadID {
+				continue
+			}
+			feedback = append(feedback, RevisionFeedback{
+				ThreadID:     thread.ID,
+				Anchor:       thread.Anchor,
+				ResultAnchor: replacementAnchorForThread(thread.Anchor, proposal),
+				SelectedText: thread.SelectedText,
+				Kind:         thread.Kind,
+				Messages:     append([]Message(nil), thread.Messages...),
+			})
+			break
+		}
+	}
+	return feedback
+}
+
 func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delta int) {
+	if len(proposal.AppliedHunks) > 0 {
+		s.adjustThreadsForAppliedHunks(proposal)
+		return
+	}
+	applied := proposal.AppliedAnchor
+	if applied.StartLine == 0 {
+		// Sessions created before the explicit replacement protocol used Anchor
+		// for both the requested and applied range.
+		applied = proposal.Anchor
+	}
 	included := map[string]bool{}
 	for _, threadID := range proposal.IncludedThreadIDs {
 		included[threadID] = true
@@ -413,16 +564,106 @@ func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delt
 	for i := range s.Threads {
 		thread := &s.Threads[i]
 		switch {
-		case thread.Anchor.EndLine < proposal.Anchor.StartLine:
+		case thread.Anchor.EndLine < applied.StartLine:
 			continue
-		case thread.Anchor.StartLine > proposal.Anchor.EndLine:
+		case thread.Anchor.StartLine > applied.EndLine:
 			thread.Anchor = shiftAnchor(thread.Anchor, delta)
 		case included[thread.ID]:
-			thread.Status = ThreadStatusResolved
+			resolveThreadAfterProposal(thread, proposal.ReplacementAnchor)
 		default:
 			thread.Status = ThreadStatusStale
 		}
 	}
+}
+
+func (s *Session) adjustThreadsForAppliedHunks(proposal SectionProposal) {
+	included := map[string]bool{}
+	for _, threadID := range proposal.IncludedThreadIDs {
+		included[threadID] = true
+	}
+	for i := range s.Threads {
+		thread := &s.Threads[i]
+		affected := false
+		for _, hunk := range proposal.AppliedHunks {
+			if anchorsOverlap(thread.Anchor, hunk.Anchor) {
+				affected = true
+				break
+			}
+		}
+		if affected {
+			if included[thread.ID] {
+				resolveThreadAfterProposal(thread, replacementAnchorForThread(thread.Anchor, proposal))
+			} else {
+				thread.Status = ThreadStatusStale
+			}
+			continue
+		}
+		thread.Anchor = reanchorAfterHunks(thread.Anchor, proposal.AppliedHunks)
+	}
+}
+
+// resolveThreadAfterProposal removes the old character selection because it
+// described text in the parent revision. The thread remains as resolved review
+// history, anchored only to the resulting lines for a useful location label.
+func resolveThreadAfterProposal(thread *Thread, replacement Anchor) {
+	thread.Status = ThreadStatusResolved
+	thread.SelectedText = ""
+	if replacement.StartLine > 0 {
+		thread.Anchor = lineAnchor(replacement)
+	}
+}
+
+func replacementAnchorForThread(anchor Anchor, proposal SectionProposal) Anchor {
+	for _, hunk := range proposal.AppliedHunks {
+		if anchorsOverlap(anchor, hunk.Anchor) {
+			return hunk.Result
+		}
+	}
+	return proposal.ReplacementAnchor
+}
+
+func lineAnchor(anchor Anchor) Anchor {
+	return Anchor{StartLine: anchor.StartLine, EndLine: anchor.EndLine}
+}
+
+func anchorsOverlap(left, right Anchor) bool {
+	if left.EndLine < right.StartLine || right.EndLine < left.StartLine {
+		return false
+	}
+	if !hasCharacterRange(left) || !hasCharacterRange(right) || left.StartLine != left.EndLine || right.StartLine != right.EndLine {
+		return true
+	}
+	return left.StartChar < right.EndChar && right.StartChar < left.EndChar
+}
+
+func reanchorAfterHunks(anchor Anchor, hunks []AppliedHunk) Anchor {
+	startLine, startChar := positionAfterHunks(anchor.StartLine, anchor.StartChar, hunks)
+	endLine, endChar := positionAfterHunks(anchor.EndLine, anchor.EndChar, hunks)
+	anchor.StartLine, anchor.StartChar = startLine, startChar
+	anchor.EndLine, anchor.EndChar = endLine, endChar
+	return anchor
+}
+
+func positionAfterHunks(line, char int, hunks []AppliedHunk) (int, int) {
+	shift := 0
+	resultChar := char
+	for _, hunk := range hunks {
+		source := hunk.Anchor
+		if line > source.EndLine {
+			shift += hunk.LineDelta
+			continue
+		}
+		if line != source.EndLine || !hasCharacterRange(source) || char < source.EndChar {
+			continue
+		}
+		// A position immediately after a character-range hunk follows the
+		// replacement's end, including any inserted/deleted lines. Result was
+		// calculated from the final proposed plan, so this also handles multiple
+		// non-overlapping hunks on the same source line.
+		resultChar = hunk.Result.EndChar + char - source.EndChar
+		shift += hunk.LineDelta
+	}
+	return line + shift, resultChar
 }
 
 func lineCount(text string) int {
@@ -455,6 +696,121 @@ func replacementAnchorFromSection(anchor Anchor, section string) Anchor {
 		EndLine:   endLine,
 		EndChar:   utf16Length(lines[len(lines)-1]),
 	}
+}
+
+func textForAnchor(plan string, anchor Anchor) string {
+	lines := strings.Split(plan, "\n")
+	if anchor.StartLine < 1 || anchor.EndLine < anchor.StartLine || anchor.EndLine > len(lines) {
+		return ""
+	}
+	if anchor.StartChar == 0 && anchor.EndChar == 0 {
+		return strings.Join(lines[anchor.StartLine-1:anchor.EndLine], "\n")
+	}
+	startLine := lines[anchor.StartLine-1]
+	start, ok := utf16ByteOffset(startLine, anchor.StartChar)
+	if !ok {
+		return ""
+	}
+	endLine := lines[anchor.EndLine-1]
+	end, ok := utf16ByteOffset(endLine, anchor.EndChar)
+	if !ok || (anchor.StartLine == anchor.EndLine && end < start) {
+		return ""
+	}
+	if anchor.StartLine == anchor.EndLine {
+		return startLine[start:end]
+	}
+	parts := []string{startLine[start:]}
+	parts = append(parts, lines[anchor.StartLine:anchor.EndLine-1]...)
+	parts = append(parts, endLine[:end])
+	return strings.Join(parts, "\n")
+}
+
+func uniqueAnchorForText(plan string, selected string, original Anchor) (Anchor, bool) {
+	if selected == "" {
+		return Anchor{}, false
+	}
+	index := -1
+	if original.StartChar == 0 && original.EndChar == 0 {
+		index = uniqueLineSequenceIndex(plan, selected)
+	} else {
+		index = uniqueSubstringIndex(plan, selected)
+	}
+	if index < 0 {
+		return Anchor{}, false
+	}
+	before := plan[:index]
+	startLine := strings.Count(before, "\n") + 1
+	startColumnStart := strings.LastIndex(before, "\n") + 1
+	startChar := utf16Length(before[startColumnStart:])
+	if original.StartChar == 0 && original.EndChar == 0 {
+		return Anchor{StartLine: startLine, EndLine: startLine + strings.Count(selected, "\n")}, true
+	}
+	selectedLines := strings.Split(selected, "\n")
+	if len(selectedLines) == 1 {
+		return Anchor{StartLine: startLine, StartChar: startChar, EndLine: startLine, EndChar: startChar + utf16Length(selected)}, true
+	}
+	return Anchor{
+		StartLine: startLine,
+		StartChar: startChar,
+		EndLine:   startLine + len(selectedLines) - 1,
+		EndChar:   utf16Length(selectedLines[len(selectedLines)-1]),
+	}, true
+}
+
+func uniqueSubstringIndex(text string, selected string) int {
+	first := strings.Index(text, selected)
+	if first < 0 {
+		return -1
+	}
+	if strings.Index(text[first+1:], selected) >= 0 {
+		return -1
+	}
+	return first
+}
+
+func uniqueLineSequenceIndex(plan string, selected string) int {
+	planLines := strings.Split(plan, "\n")
+	selectedLines := strings.Split(selected, "\n")
+	matchAt := -1
+	for start := 0; start+len(selectedLines) <= len(planLines); start++ {
+		if strings.Join(planLines[start:start+len(selectedLines)], "\n") != selected {
+			continue
+		}
+		if matchAt >= 0 {
+			return -1
+		}
+		matchAt = start
+	}
+	if matchAt < 0 {
+		return -1
+	}
+	if matchAt == 0 {
+		return 0
+	}
+	return len(strings.Join(planLines[:matchAt], "\n")) + 1
+}
+
+func utf16ByteOffset(text string, offset int) (int, bool) {
+	if offset < 0 {
+		return 0, false
+	}
+	if offset == 0 {
+		return 0, true
+	}
+	units := 0
+	for index, runeValue := range text {
+		if units == offset {
+			return index, true
+		}
+		units += len(utf16.Encode([]rune{runeValue}))
+		if units == offset {
+			return index + len(string(runeValue)), true
+		}
+		if units > offset {
+			return 0, false
+		}
+	}
+	return 0, units == offset
 }
 
 func utf16Length(text string) int {

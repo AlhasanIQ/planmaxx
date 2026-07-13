@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/AlhasanIQ/planmaxx/internal/planformat"
 )
 
 func TestLoadReadsMarkdownPlan(t *testing.T) {
@@ -22,6 +24,25 @@ func TestLoadReadsMarkdownPlan(t *testing.T) {
 	}
 	if plan.Markdown != "# Plan\n\n- Step one\n" {
 		t.Fatalf("unexpected markdown %q", plan.Markdown)
+	}
+	if plan.Format != planformat.Markdown {
+		t.Fatalf("expected Markdown format, got %q", plan.Format)
+	}
+}
+
+func TestLoadDetectsHTMLPlan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plan.HTML")
+	if err := os.WriteFile(path, []byte("<h1>Plan</h1>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Format != planformat.HTML {
+		t.Fatalf("expected HTML format, got %q", plan.Format)
 	}
 }
 

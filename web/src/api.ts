@@ -1,5 +1,5 @@
 import type { SideQuestionContext } from "./lib/selectionContext";
-import type { Anchor, DiffLine, Digest, Revision, SectionProposal, Session, SideAnswer, Thread, ThreadKind } from "./types";
+import type { Anchor, DiffLine, Digest, Revision, RevisionFeedback, SectionProposal, Session, SideAnswer, Thread, ThreadKind } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
@@ -31,9 +31,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 // Go nil slices marshal as JSON null. Normalize so React code can treat
 // these fields as arrays without per-callsite guards.
 function normalizeSession(raw: Session): Session {
+  const planPath = raw.planPath ?? "";
   return {
     ...raw,
-    planPath: raw.planPath ?? "",
+    planPath,
+    planFormat: raw.planFormat ?? (/\.html?$/i.test(planPath) ? "html" : "markdown"),
     currentRevisionId: raw.currentRevisionId ?? "",
     revisions: raw.revisions ?? [],
     pendingProposal: raw.pendingProposal ?? null,
@@ -114,9 +116,14 @@ export const api = {
   revisions: () =>
     request<{ currentRevisionId: string; revisions: Revision[]; pendingProposal?: SectionProposal | null }>("/api/revisions"),
   revisionDiff: (from: string, to: string) =>
-    request<{ from: string; to: string; lines: DiffLine[] }>(
+    request<{ from: string; to: string; lines: DiffLine[]; feedback?: RevisionFeedback[] }>(
       `/api/revisions/${encodeURIComponent(from)}/diff/${encodeURIComponent(to)}`,
     ),
+  restoreRevision: (revisionId: string) =>
+    request<Revision>(`/api/revisions/${encodeURIComponent(revisionId)}/restore`, {
+      method: "POST",
+      body: "{}",
+    }),
   proposeSection: (threadId: string | undefined, anchor: Anchor, instruction: string) =>
     request<SectionProposal>("/api/revisions/propose-section", {
       method: "POST",
@@ -134,11 +141,6 @@ export const api = {
     }),
   finalize: (digest: Digest) =>
     request<{ status: string }>("/api/finalize", {
-      method: "POST",
-      body: JSON.stringify(digest),
-    }),
-  reject: (digest: Digest) =>
-    request<{ status: string }>("/api/reject", {
       method: "POST",
       body: JSON.stringify(digest),
     }),

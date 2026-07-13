@@ -5,17 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/AlhasanIQ/planmaxx/internal/planformat"
 )
 
 var ErrUnavailable = errors.New("side questions unavailable")
 
 type Request struct {
-	ThreadID     string `json:"threadID"`
-	Question     string `json:"question"`
-	FilePath     string `json:"filePath"`
-	Reference    string `json:"reference"`
-	SelectedText string `json:"selectedText"`
-	PlanExcerpt  string `json:"planExcerpt"`
+	ThreadID     string            `json:"threadID"`
+	Question     string            `json:"question"`
+	FilePath     string            `json:"filePath"`
+	Reference    string            `json:"reference"`
+	SelectedText string            `json:"selectedText"`
+	PlanExcerpt  string            `json:"planExcerpt"`
+	Format       planformat.Format `json:"planFormat"`
 }
 
 type AskClient interface {

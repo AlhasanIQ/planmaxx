@@ -10,9 +10,14 @@ export function buildDigestDraft(session: Session): Digest {
       decisions.push(message.body);
     }
   }
+  const openThreadIds = new Set(
+    session.threads
+      .filter((thread) => (thread.status ?? "open") === "open")
+      .map((thread) => thread.id),
+  );
   const promoted: string[] = [];
   for (const answer of session.sideAnswers) {
-    if (!answer.promoted) continue;
+    if (!answer.promoted || !openThreadIds.has(answer.threadId)) continue;
     promoted.push(promotedSideAnswerText(session, answer.id) ?? answer.answer);
   }
   const hasContent = decisions.length > 0 || promoted.length > 0;
@@ -42,8 +47,13 @@ export function countHandoff(session: Session): HandoffCounts {
   }
   let promoted = 0;
   let ephemeral = 0;
+  const openThreadIds = new Set(
+    session.threads
+      .filter((thread) => (thread.status ?? "open") === "open")
+      .map((thread) => thread.id),
+  );
   for (const a of session.sideAnswers) {
-    if (a.promoted) promoted++;
+    if (a.promoted && openThreadIds.has(a.threadId)) promoted++;
     else ephemeral++;
   }
   return { decisions, notes, promoted, ephemeral };

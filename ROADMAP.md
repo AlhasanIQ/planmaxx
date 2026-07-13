@@ -2,6 +2,7 @@
 
 ## v0.1
 
+- Support safe HTML plan preview and exact source review alongside Markdown.
 - Publish GitHub release binaries for macOS, Linux, and Windows.
 - Keep installation simple through the release installer and checksums.
 - Validate the public release path from a fresh machine.

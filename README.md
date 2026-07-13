@@ -6,7 +6,7 @@ readable visualizer, side questions and conversations that do not pollute the
 main context while still inheriting the full context available before the plan,
 and multi-turn iteration for refining a plan before you hand it back.
 
-PlanMaxx can be used with Claude Code and other markdown-based plan workflows,
+PlanMaxx can be used with Claude Code and other plan-file workflows,
 but it is currently optimized for Codex.
 
 ## Install
@@ -59,14 +59,16 @@ repository's `.agents/skills/planmaxx` directory.
 ## Quick Start
 
 When working with an agent, ask it to use PlanMaxx for plan review, or just
-tell the agent to "use planmaxx". The agent should write its plan to a markdown
-file, run the review, wait for your decision, and continue only from the
+tell the agent to "use planmaxx". The agent should write its plan to a Markdown
+or HTML file, run the review, wait for your decision, and continue only from the
 PlanMaxx handoff.
 
-If you already have a markdown plan file, run:
+If you already have a Markdown or HTML plan file, run:
 
 ```bash
 planmaxx review path/to/plan.md
+# or
+planmaxx review path/to/plan.html
 ```
 
 PlanMaxx starts a local server on `127.0.0.1`, opens your browser, and blocks
@@ -82,6 +84,11 @@ command itself.
 
 The review workspace keeps the plan, anchored comments, revision history, and
 handoff preview visible in one local browser session.
+
+HTML plans open in a scriptless, network-blocked Preview. Switch to Source for
+exact line and text comments, side questions, iteration, and revision diffs;
+the final handoff always contains the original active HTML source, never a DOM
+serialization of the preview.
 
 <p>
   <img src="docs/screenshots/handoff-preview.png" alt="PlanMaxx handoff preview" width="360">
@@ -105,7 +112,8 @@ handoff.
 
 ## Codex Integration
 
-Basic review works with any markdown plan file.
+Basic review works with Markdown (`.md`, `.markdown`) and HTML (`.html`, `.htm`)
+plan files. Unknown extensions retain the historical Markdown behavior.
 
 Side questions and section rewrites require a Codex app-server context. When
 `CODEX_THREAD_ID` is available, PlanMaxx starts:

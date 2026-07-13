@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlhasanIQ/planmaxx/internal/planformat"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 )
 
@@ -20,7 +21,7 @@ func TestFormatIncludesPromptPlanAndDigest(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Continue from this approved PlanMaxx review.",
+		"Continue the user's approved plan work.",
 		"```markdown",
 		"# Final Plan",
 		"```json",
@@ -72,44 +73,12 @@ func TestFormatWithCommentsOmitsNoCommentsInstruction(t *testing.T) {
 	}
 }
 
-func TestFormatRejectedIncludesReiterationInstructionPlanAndDigest(t *testing.T) {
-	s := session.New("plan-1", "# Rejected Plan")
-	s.SetDigest(session.Digest{
-		Summary:           "Reviewer rejected the plan because the rollout order is wrong.",
-		ReviewerDecisions: []string{"Do not implement before revising the migration step."},
-	})
-
-	out, err := FormatRejected(*s)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, want := range []string{
-		"PlanMaxx review rejected.",
-		"The user rejected this plan with comments.",
-		"Address the comments in the rejection digest, then reiterate the plan until the user is satisfied.",
-		"Rejected plan:",
-		"```markdown",
-		"# Rejected Plan",
-		"Rejected review digest:",
-		"```json",
-		"Reviewer rejected the plan because the rollout order is wrong.",
-		"Do not implement before revising the migration step.",
-	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected rejection handoff to contain %q\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "Continue from this approved PlanMaxx review.") {
-		t.Fatalf("expected rejection handoff not to approve continuation\n%s", out)
-	}
-	if strings.Contains(out, "Do not continue implementation") {
-		t.Fatalf("expected rejection handoff to avoid implementation-specific stop wording\n%s", out)
-	}
-}
-
-func TestFormatMatchesExactOutput(t *testing.T) {
+func TestFormatAddsModelFacingReviewContext(t *testing.T) {
 	s := session.New("plan-1", "# Final Plan")
+	thread := s.AddThreadWithSelectedText(session.Anchor{StartLine: 1, StartChar: 2, EndLine: 1, EndChar: 7}, "Use Go with Cobra for CLI commands.", "Final")
+	s.PlanPath = "/repo/PLAN.md"
+	promoted := s.AddSideAnswer(thread.ID, "Why Cobra?", "It keeps commands consistent.")
+	s.PromoteSideAnswer(promoted.ID)
 	s.SetDigest(session.Digest{
 		Summary:             "Reviewer approved the CLI-first implementation.",
 		ReviewerDecisions:   []string{"Use Go with Cobra for CLI commands."},
@@ -121,24 +90,39 @@ func TestFormatMatchesExactOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := `Continue from this approved PlanMaxx review.
-
-Use the final plan and approved review digest below. Treat reviewer decisions as human feedback and distinguish them from the agent-generated plan text.
-
-Final plan:
-
-` + "```markdown\n# Final Plan\n```\n\nApproved review digest:\n\n```json\n" + `{
-  "summary": "Reviewer approved the CLI-first implementation.",
-  "reviewerDecisions": [
-    "Use Go with Cobra for CLI commands."
-  ],
-  "promotedSideAnswers": [
-    "Promote answer about CLI contract."
-  ]
+	for _, want := range []string{
+		"Model-facing review context",
+		`<planmaxx_review version="1" format="markdown">`,
+		`<review_target threads="thread-1">Final</review_target>`,
+		`<thread id="thread-1" target="1:3-1:8">`,
+		"Use Go with Cobra for CLI commands.",
+		"It keeps commands consistent.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected review context to contain %q\n%s", want, out)
+		}
+	}
 }
-` + "```\n"
-	if out != want {
-		t.Fatalf("expected exact handoff output:\n%q\ngot:\n%q", want, out)
+
+func TestFormatPreservesHTMLPlanAndUsesHTMLFence(t *testing.T) {
+	s := session.NewWithFormat("plan-1", "<h1>Final Plan</h1>\n", planformat.HTML)
+	s.PlanPath = "/repo/plan.html"
+	s.AddThreadWithSelectedText(session.Anchor{StartLine: 1, EndLine: 1}, "Keep the heading.", "<h1>Final Plan</h1>")
+	s.SetDigest(session.Digest{Summary: "Approved with comments.", ReviewerDecisions: []string{"Keep the heading."}})
+
+	out, err := Format(*s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"```html\n<h1>Final Plan</h1>\n```",
+		`<planmaxx_review version="1" format="html">`,
+		`file="/repo/plan.html"`,
+		"This request includes an HTML plan",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected HTML handoff to contain %q\n%s", want, out)
+		}
 	}
 }
 

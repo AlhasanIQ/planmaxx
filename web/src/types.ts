@@ -44,12 +44,24 @@ export interface Digest {
 
 export interface Revision {
   id: string;
+  commitId?: string;
   parentId?: string;
-  source: "initial" | "turn" | "immediate";
+  source: "initial" | "turn" | "immediate" | "external";
   createdAt: string;
   plan: string;
   anchor?: Anchor;
   summary?: string;
+  feedback?: RevisionFeedback[];
+}
+
+export interface RevisionFeedback {
+  revisionId: string;
+  threadId: string;
+  anchor: Anchor;
+  resultAnchor: Anchor;
+  selectedText?: string;
+  kind: ThreadKind;
+  messages: Message[];
 }
 
 export interface SectionProposal {
@@ -57,6 +69,8 @@ export interface SectionProposal {
   parentId: string;
   threadId?: string;
   anchor: Anchor;
+  appliedAnchor?: Anchor;
+  replacementAnchor?: Anchor;
   originalSection: string;
   proposedSection: string;
   proposedPlan: string;
@@ -64,6 +78,7 @@ export interface SectionProposal {
   instruction: string;
   rawResponse: string;
   includedThreadIds?: string[];
+  obsolete?: boolean;
   createdAt: string;
 }
 
@@ -74,10 +89,21 @@ export interface DiffLine {
   text: string;
 }
 
+export interface RevisionComparison {
+  from: string;
+  to: string;
+  lines: DiffLine[];
+  beforePlan: string;
+  afterPlan: string;
+  feedback: RevisionFeedback[];
+  isDirect: boolean;
+}
+
 export interface Session {
   id: string;
   plan: string;
   planPath: string;
+  planFormat: PlanFormat;
   currentRevisionId: string;
   revisions: Revision[];
   pendingProposal?: SectionProposal | null;
@@ -85,6 +111,8 @@ export interface Session {
   sideAnswers: SideAnswer[];
   digest: Digest;
 }
+
+export type PlanFormat = "markdown" | "html";
 
 // A reviewer's comment can be a "decision" (instructions/feedback that should
 // reach Codex in the next turn) or a "note" (private to the reviewer, kept out

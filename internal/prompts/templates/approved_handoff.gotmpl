@@ -1,6 +1,8 @@
-Continue from this approved PlanMaxx review.
+Continue the user's approved plan work.
 
 Use the final plan and approved review digest below. Treat reviewer decisions as human feedback and distinguish them from the agent-generated plan text.
+
+{{.ProtocolDocumentation}}
 
 {{if .NoReviewItems -}}
 No reviewer comments were submitted. Continue from the final plan as written; do not make additional edits, cleanup passes, or "one last pass" changes unless the user explicitly asks.
@@ -11,4 +13,9 @@ Final plan:
 {{.PlanBlock}}
 Approved review digest:
 
-{{.DigestBlock -}}
+{{.DigestBlock}}
+{{if not .NoReviewItems -}}
+Model-facing review context (the XML tags are metadata, not plan text):
+
+{{.ReviewContext -}}
+{{end -}}

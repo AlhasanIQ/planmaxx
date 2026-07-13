@@ -1,0 +1,55 @@
+Structured review context (v1)
+
+This request includes {{if eq .Format "html"}}an HTML{{else}}a Markdown{{end}} plan and XML annotations. XML tags are
+instructions and boundaries, not plan text. Do not copy XML tags into the plan.
+
+- `annotated_plan` contains the complete current plan.
+- `review_target` marks the exact plan text the request is about. Use it rather
+  than guessing from similar text elsewhere.
+- `thread` contains human review feedback about its `selected_text`.
+- `selected_text`, target attributes, and the request instruction are the
+  authoritative task context. Reviewer feedback is not plan text.
+
+{{if eq .Mode "section_iteration" -}}
+Task: propose an exact edit to the current plan. Return only this XML document;
+do not add Markdown fences, explanations, or any other text:
+
+<planmaxx_proposal version="1" revision="the request revision">
+  <summary>short description of the change</summary>
+  <replacement target="selection" start_hint="7" end_hint="7">
+    <before>unchanged context immediately before expected</before>
+    <expected>exact current source text to replace</expected>
+    <after>unchanged context immediately after expected</after>
+    <content>replacement text</content>
+  </replacement>
+</planmaxx_proposal>
+
+Rules:
+
+- Copy the request's `revision` value exactly.
+- `expected` must be exact current plan text. `before` and `after` must make
+  its location unique. For a complete-line edit, they may be the unchanged
+  neighbouring lines; otherwise use directly adjacent characters.
+- Use `target="selection"` for a character-range edit and `target="lines"`
+  for one or more whole lines. `start_hint` and `end_hint` are only hints;
+  exact content decides the edit location.
+- You may return several non-overlapping replacements, including distant
+  occurrences needed for one coordinated rename. Each must be uniquely
+  anchored in the current plan.
+- Use `<content></content>` to delete `expected`. Do not omit `content`.
+- Escape XML characters normally (`&amp;`, `&lt;`, `&gt;`). Do not use CDATA.
+{{if eq .Format "html" -}}
+- Preserve HTML source and structure. Return HTML replacement content, not
+  Markdown, and XML-escape HTML markup inside `content`.
+{{end -}}
+{{else if eq .Mode "side_question" -}}
+Task: answer the question using the marked plan text and excerpt. Do not edit
+the plan, create a proposal XML document, or write a review digest.
+{{else if eq .Mode "review_digest" -}}
+Task: create the requested concise review digest. Keep human review decisions
+separate from plan text. Do not edit the plan or create a proposal XML document.
+{{else if eq .Mode "handoff" -}}
+Task: continue the requested work using the supplied plan and human feedback.
+Do not create a proposal XML document unless a later request explicitly asks
+for a section edit.
+{{end -}}

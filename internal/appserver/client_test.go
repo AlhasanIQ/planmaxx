@@ -155,16 +155,16 @@ func TestBuildSideQuestionPromptIncludesProvenance(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"PlanMaxx side question",
+		"Question about the plan",
 		"What should move first?",
 		"/repo/plan.md",
 		"/repo/plan.md:10:4-10:7",
 		"CLI",
 		"1. CLI",
 		"2. UI",
-		"selected plan text",
-		"Do not change the plan",
-		"produce a final review digest",
+		"marked plan text and excerpt",
+		"planmaxx_side_question",
+		"<selected_text>CLI</selected_text>",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected prompt to contain %q\n%s", want, prompt)
@@ -490,7 +490,7 @@ func TestSideQuestionAskerInitializesReadsForksAndStartsTurn(t *testing.T) {
 	prompt := input[0].(map[string]any)["text"].(string)
 	if !strings.Contains(prompt, "What first?") ||
 		!strings.Contains(prompt, "/repo/plan.md:5:1-5:6") ||
-		!strings.Contains(prompt, "Selected text:\n1. CLI") {
+		!strings.Contains(prompt, "<selected_text>1. CLI</selected_text>") {
 		t.Fatalf("expected prompt context in turn/start, got %q", prompt)
 	}
 }

@@ -312,7 +312,7 @@ func (c *Client) waitForTurnAnswerLocked(ctx context.Context, threadID string, t
 }
 
 func BuildSideQuestionPrompt(req sidequestions.Request) string {
-	return prompts.SideQuestion(req.Question, req.FilePath, req.Reference, req.SelectedText, req.PlanExcerpt)
+	return prompts.SideQuestion(req.Question, req.FilePath, req.Reference, req.SelectedText, req.PlanExcerpt, req.Format)
 }
 
 type SideQuestionAsker struct {

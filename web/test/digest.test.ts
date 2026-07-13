@@ -32,6 +32,23 @@ describe("digest helpers", () => {
       ephemeral: 0,
     });
   });
+
+  test("keeps promoted answers from historical threads out of the next handoff", () => {
+    const session = sessionFixture([
+      threadFixture("open", "decision", "open", "Current feedback."),
+      threadFixture("resolved", "decision", "resolved", "Handled feedback."),
+      threadFixture("stale", "decision", "stale", "Changed feedback."),
+    ]);
+    session.sideAnswers = [
+      sideAnswer("open-answer", "open", "Open answer"),
+      sideAnswer("resolved-answer", "resolved", "Resolved answer"),
+      sideAnswer("stale-answer", "stale", "Stale answer"),
+    ];
+
+    expect(buildDigestDraft(session).promotedSideAnswers).toHaveLength(1);
+    expect(buildDigestDraft(session).promotedSideAnswers[0]).toContain("Open answer");
+    expect(countHandoff(session)).toMatchObject({ promoted: 1, ephemeral: 2 });
+  });
 });
 
 function sessionFixture(threads: Thread[]): Session {
@@ -48,6 +65,17 @@ function sessionFixture(threads: Thread[]): Session {
       reviewerDecisions: [],
       promotedSideAnswers: [],
     },
+  };
+}
+
+function sideAnswer(id: string, threadId: string, answer: string) {
+  return {
+    id,
+    threadId,
+    question: "Question?",
+    answer,
+    promoted: true,
+    createdAt: new Date(0).toISOString(),
   };
 }
 

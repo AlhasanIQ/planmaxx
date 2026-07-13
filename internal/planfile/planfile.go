@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/AlhasanIQ/planmaxx/internal/planformat"
 )
 
 type Plan struct {
 	Path     string
 	Markdown string
+	Format   planformat.Format
 }
 
 func Load(path string) (Plan, error) {
@@ -21,5 +24,5 @@ func Load(path string) (Plan, error) {
 	if strings.TrimSpace(markdown) == "" {
 		return Plan{}, errors.New("plan file is empty")
 	}
-	return Plan{Path: path, Markdown: markdown}, nil
+	return Plan{Path: path, Markdown: markdown, Format: planformat.Detect(path)}, nil
 }
