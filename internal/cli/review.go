@@ -42,8 +42,10 @@ var openBrowser = browser.Open
 var userCacheDir = os.UserCacheDir
 var userDataDir = os.UserConfigDir
 
+const defaultAppServerRequestTimeout = 30 * time.Minute
+
 func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
-	opts := reviewOptions{host: "127.0.0.1", sideQuestionTimeout: 45 * time.Second}
+	opts := reviewOptions{host: "127.0.0.1", sideQuestionTimeout: defaultAppServerRequestTimeout}
 
 	cmd := &cobra.Command{
 		Use:   "review <plan-file>",
@@ -59,6 +61,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 				planPath = plan.Path
 			}
 			document := review.NewDocument(planPath, plan.Markdown)
+			document.PlanFormat = plan.Format
 			planPath = document.CanonicalPath
 
 			autosavePath := opts.autosaveOut
@@ -66,7 +69,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			if !explicitAutosave {
 				autosavePath = defaultAutosavePath(planPath)
 			}
-			reviewSession := session.New("session-1", plan.Markdown)
+			reviewSession := session.NewWithFormat("session-1", plan.Markdown, plan.Format)
 			loadedPath := autosavePath
 			candidates := []string{autosavePath}
 			fallbackPath := ""
@@ -178,7 +181,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.host, "host", opts.host, "host interface for the local review server")
 	cmd.Flags().IntVar(&opts.port, "port", opts.port, "port for the local review server; 0 chooses a random port")
 	cmd.Flags().BoolVar(&opts.noBrowser, "no-browser", opts.noBrowser, "print the review URL without opening a browser")
-	cmd.Flags().DurationVar(&opts.sideQuestionTimeout, "side-question-timeout", opts.sideQuestionTimeout, "maximum duration for one side-question request")
+	cmd.Flags().DurationVar(&opts.sideQuestionTimeout, "side-question-timeout", opts.sideQuestionTimeout, "maximum duration for one Codex app-server request")
 	cmd.Flags().StringVar(&opts.handoffOut, "handoff-out", opts.handoffOut, "write handoff output to this file as well as stdout")
 	cmd.Flags().StringVar(&opts.autosaveOut, "autosave-out", opts.autosaveOut, "write recoverable review autosave JSON to this file")
 	return cmd

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Increased the default Codex app-server timeout for `/btw` questions and
+  iterations from 45 seconds to 30 minutes; the timeout remains configurable
+  with `--side-question-timeout`.
+
 - Added revision-bound XML patch protocol v1 with exact content anchors,
   multi-hunk atomic application, and safe character-range edits.
 - Added Git-backed immutable plan revisions, append-only restore, compact

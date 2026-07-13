@@ -32,7 +32,7 @@ Do not continue implementation after a canceled review.
 - `--port <port>`: bind a fixed port. Default: `0`, meaning a random available port.
 - `--handoff-out <path>`: write the final handoff to a file as well as stdout.
 - `--autosave-out <path>`: write recoverable review state to a specific file.
-- `--side-question-timeout <duration>`: timeout for one Codex side question. Default: `45s`.
+- `--side-question-timeout <duration>`: timeout for one Codex side question or iteration. Default: `30m`.
 
 ## Codex Side Actions
 

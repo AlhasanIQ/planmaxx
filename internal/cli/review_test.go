@@ -351,6 +351,21 @@ func TestReviewSideQuestionTimeoutFlagIsApplied(t *testing.T) {
 	}
 }
 
+func TestReviewDefaultAppServerRequestTimeoutIsThirtyMinutes(t *testing.T) {
+	cmd := NewRootCommand(io.Discard, io.Discard)
+	reviewCmd, _, err := cmd.Find([]string{"review"})
+	if err != nil {
+		t.Fatalf("find review command: %v", err)
+	}
+	flag := reviewCmd.Flags().Lookup("side-question-timeout")
+	if flag == nil {
+		t.Fatal("side-question-timeout flag missing")
+	}
+	if got, want := flag.DefValue, "30m0s"; got != want {
+		t.Fatalf("default timeout = %q, want %q", got, want)
+	}
+}
+
 func TestReviewHandoffOutMirrorsStdoutOnFinalize(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "")
 	var stdout lockedBuffer
