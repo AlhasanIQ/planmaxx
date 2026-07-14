@@ -98,8 +98,6 @@ func TestIterationIncludesExactTargetAndAllRelevantReviewThreads(t *testing.T) {
 		`source="3:3-3:8"`,
 		`<review_target target="selection">rough</review_target>`,
 		"Polish it",
-		`id="inside"`,
-		`id="outside"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected iteration XML to contain %q\n%s", want, got)
@@ -107,6 +105,9 @@ func TestIterationIncludesExactTargetAndAllRelevantReviewThreads(t *testing.T) {
 	}
 	if strings.Contains(got, `id="private"`) {
 		t.Fatalf("unexpected unrelated thread in iteration XML\n%s", got)
+	}
+	if strings.Contains(got, `<thread id=`) {
+		t.Fatalf("unexpected out-of-scope thread in iteration XML\n%s", got)
 	}
 }
 

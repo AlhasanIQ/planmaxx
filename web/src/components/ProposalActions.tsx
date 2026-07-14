@@ -40,6 +40,9 @@ export function ProposalActions({
           <p className="text-[11px] text-foreground-muted">
             {anchorLabel(proposal.anchor)} · current revision stays unchanged until Apply
           </p>
+		  <p className="text-[11px] text-foreground-muted">
+			Feedback is locked while this proposal is pending. Apply or discard it to continue editing comments.
+		  </p>
         </div>
       </div>
       {proposal.summary ? <p className="inline-proposal-summary">{proposal.summary}</p> : null}

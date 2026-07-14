@@ -59,23 +59,6 @@ function anchorReference(filePath: string, anchor: Anchor): string {
   return `${path}:${anchor.startLine}:${column(anchor.startChar)}-${anchor.endLine}:${column(anchor.endChar)}`;
 }
 
-export function promotedSideAnswerText(session: Session, answerId: string): string | null {
-  const answer = session.sideAnswers.find((a) => a.id === answerId);
-  if (!answer) return null;
-  const thread = session.threads.find((t) => t.id === answer.threadId);
-  const parts: string[] = [];
-  if (thread) {
-    const context = sideQuestionContext(session, thread);
-    parts.push(`/btw context: ${context.reference}`);
-    if (context.selectedText.trim()) {
-      parts.push(`Selected text:\n${context.selectedText}`);
-    }
-  }
-  parts.push(`Question:\n${answer.question}`);
-  parts.push(`Answer:\n${answer.answer}`);
-  return parts.join("\n");
-}
-
 function hasCharacterRange(anchor: Anchor): boolean {
   return (anchor.startChar ?? 0) !== 0 || (anchor.endChar ?? 0) !== 0;
 }

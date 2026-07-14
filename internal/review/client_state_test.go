@@ -15,7 +15,7 @@ func TestBuildClientStateHasVersionedNonNullContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{`"schemaVersion":2`, `"revisions":[`, `"threads":[]`, `"sideAnswers":[]`, `"reviewerDecisions":[]`, `"promotedSideAnswers":[]`, `"phase":"active"`} {
+	for _, expected := range []string{`"schemaVersion":3`, `"revisions":[`, `"threads":[]`, `"sideAnswers":[]`, `"reviewerDecisions":[]`, `"promotedSideAnswers":[]`, `"counts":{`, `"canIterate":true`, `"phase":"active"`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("client state missing %s: %s", expected, text)
 		}
@@ -52,6 +52,33 @@ func TestBuildClientStateProjectsPendingProposalAndCommentPlacement(t *testing.T
 	}
 	if state.Capabilities.CanFinalize || state.Capabilities.CanEditFeedback || !state.Capabilities.CanApplyProposal {
 		t.Fatalf("unexpected proposal capabilities %+v", state.Capabilities)
+	}
+	if state.Capabilities.CanIterate || len(state.ActiveChange.ReviewStops) != 2 {
+		t.Fatalf("pending proposal actions/stops = caps=%+v stops=%+v", state.Capabilities, state.ActiveChange.ReviewStops)
+	}
+}
+
+func TestBuildClientStateOwnsCommentBucketsCapabilitiesAndCounts(t *testing.T) {
+	s := session.New("plan", "one\ntwo\nthree")
+	instruction := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "instruction")
+	private, _ := s.AddThreadWithIntent(session.Anchor{StartLine: 2, EndLine: 2}, "private", "", session.ThreadIntentPrivate)
+	detached := s.AddThread(session.Anchor{StartLine: 3, EndLine: 3}, "detached")
+	_ = s.DetachThread(detached.ID)
+	answer := s.AddSideAnswer(instruction.ID, "why?", "because")
+	_ = s.IncludeSideAnswer(answer.ID)
+	state := buildClientState(*s, false)
+	if state.Counts.ActiveInstructions != 1 || state.Counts.ActivePrivateNotes != 1 || state.Counts.DetachedFeedback != 1 || state.Counts.IncludedAnswers != 1 {
+		t.Fatalf("counts = %+v", state.Counts)
+	}
+	byID := map[string]threadView{}
+	for _, thread := range state.Threads {
+		byID[thread.ID] = thread
+	}
+	if byID[instruction.ID].Bucket != "active" || !byID[instruction.ID].Capabilities.CanIterate || byID[private.ID].Delivery != "private" {
+		t.Fatalf("active projections = %+v", state.Threads)
+	}
+	if byID[detached.ID].Bucket != "attention" || !byID[detached.ID].Capabilities.CanReanchor || byID[detached.ID].Capabilities.CanReply {
+		t.Fatalf("detached projection = %+v", byID[detached.ID])
 	}
 }
 
@@ -100,6 +127,29 @@ func TestMigrateLoadedSessionRecognizesRefinedLegacyWholePlanProposal(t *testing
 	}
 	if len(proposal.ConsumedSideAnswerIDs) != 1 || proposal.ConsumedSideAnswerIDs[0] != openAnswer.ID {
 		t.Fatalf("expected only promoted open-thread answer to be consumed, got %+v", proposal.ConsumedSideAnswerIDs)
+	}
+}
+
+func TestMigrateLoadedSessionMakesLegacyAnswersOnNonActiveThreadsPrivate(t *testing.T) {
+	s := session.New("plan-1", "alpha\nbeta")
+	resolved := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "resolved")
+	detached := s.AddThread(session.Anchor{StartLine: 2, EndLine: 2}, "detached")
+	resolvedAnswer := s.AddSideAnswer(resolved.ID, "resolved?", "yes")
+	detachedAnswer := s.AddSideAnswer(detached.ID, "detached?", "yes")
+	s.Threads[0].Status = session.ThreadStatusResolved
+	s.Threads[1].Status = session.ThreadStatusStale
+	s.SideAnswers[0].Promoted = true
+	s.SideAnswers[1].Promoted = true
+
+	_, changed, err := migrateLoadedSession(s, "active", true)
+	if err != nil || !changed {
+		t.Fatalf("migration failed: changed=%v err=%v", changed, err)
+	}
+	if s.SideAnswers[0].ID != resolvedAnswer.ID || s.SideAnswers[0].Promoted || s.SideAnswers[1].ID != detachedAnswer.ID || s.SideAnswers[1].Promoted {
+		t.Fatalf("legacy answer inclusion was not normalized: %+v", s.SideAnswers)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("normalized legacy session is invalid: %v", err)
 	}
 }
 

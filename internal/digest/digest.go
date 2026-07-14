@@ -10,12 +10,14 @@ import (
 )
 
 func BuildPrompt(s session.Session) string {
-	return prompts.ReviewDigest(s.Plan, threadMessages(s), promotedAnswers(s), reviewxml.Handoff(s), s.PlanFormat)
+	selection := session.SelectContext(s, session.ContextOptions{})
+	return prompts.ReviewDigest(s.Plan, selection.InstructionMessages(), selectedAnswers(s, selection), reviewxml.Handoff(s), s.PlanFormat)
 }
 
 func DraftFromState(s session.Session) session.Digest {
-	decisions := threadMessages(s)
-	answers := promotedAnswers(s)
+	selection := session.SelectContext(s, session.ContextOptions{})
+	decisions := selection.InstructionMessages()
+	answers := selectedAnswers(s, selection)
 	summary := "Approved without comments."
 	if len(decisions) > 0 || len(answers) > 0 {
 		summary = "Approved with review comments."
@@ -27,29 +29,10 @@ func DraftFromState(s session.Session) session.Digest {
 	}
 }
 
-func threadMessages(s session.Session) []string {
-	var out []string
-	for _, thread := range s.Threads {
-		if thread.Kind != "" && thread.Kind != session.ThreadKindDecision {
-			continue
-		}
-		if thread.Status != "" && thread.Status != session.ThreadStatusOpen {
-			continue
-		}
-		for _, message := range thread.Messages {
-			out = append(out, message.Body)
-		}
-	}
-	return out
-}
-
-func promotedAnswers(s session.Session) []string {
-	var out []string
-	for _, answer := range s.SideAnswers {
-		thread, ok := findThread(s, answer.ThreadID)
-		if answer.Promoted && ok && (thread.Status == "" || thread.Status == session.ThreadStatusOpen) {
-			out = append(out, promotedAnswerContext(s, answer))
-		}
+func selectedAnswers(s session.Session, selection session.ContextSelection) []string {
+	out := make([]string, 0, len(selection.IncludedAnswers))
+	for _, answer := range selection.IncludedAnswers {
+		out = append(out, promotedAnswerContext(s, answer))
 	}
 	return out
 }

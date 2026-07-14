@@ -4,10 +4,10 @@ complete plan and keep unaffected content accurate and coherent.
 Review summary:
 {{.Summary}}
 {{end}}{{if .ReviewerDecisions}}
-Reviewer decisions:
+Feedback for iteration:
 {{range .ReviewerDecisions}}- {{.}}
 {{end}}{{end}}{{if .PromotedSideAnswers}}
-Promoted /btw Q+A:
+Included /btw context:
 {{range .PromotedSideAnswers}}- {{.}}
 {{end}}{{end}}{{if .Refinement}}
 Refinement request:

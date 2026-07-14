@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Code2, Columns2, Eye, GitCompareArrows, ListTree, Loader2, MessageSquarePlus, Search, Sparkles } from "lucide-react";
 import { renderPlanLines, renderSourceLines } from "../lib/markdown";
 import { htmlPreviewDocument } from "../lib/htmlPreview";
-import type { Anchor, ChangeView, DocumentSnapshot, PendingProposalSummary, PlanFormat, RevisionComparison, RevisionFeedback, SideAnswer, Thread, ThreadKind } from "../types";
+import type { Anchor, ChangeView, DocumentSnapshot, PendingProposalSummary, PlanFormat, ReviewStop, RevisionComparison, RevisionFeedback, SideAnswer, Thread, ThreadIntent } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
 import { comparisonGutterValues, comparisonLineIdentity } from "../lib/comparisonLines";
@@ -12,6 +12,7 @@ import { CommentThreadStack, useCommentRailMetrics, type CommentView } from "./C
 import { ProposalActions } from "./ProposalActions";
 import { RevisionFeedbackList, RevisionFeedbackSummary } from "./RevisionFeedback";
 import { RenderedLine } from "./RenderedLine";
+import { ReviewNavigator } from "./ReviewNavigator";
 import { DraftBoundaryHandles, draftFromSelection, restoreNativeSelection, selectedTextForAnchorInArticle, usePlanHighlights } from "./SelectionLayer";
 
 export type { CommentView } from "./CommentLayer";
@@ -34,10 +35,10 @@ interface PlanProps {
   commentFilter: string;
   onCommentViewChange: (view: CommentView) => void;
   onCommentFilterChange: (filter: string) => void;
-  onCreateComment: (anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
+  onCreateComment: (anchor: Anchor, body: string, selectedText: string, intent: ThreadIntent) => Promise<boolean>;
   onUpdateComment: (threadId: string, anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
   onAskSideFromDraft: (anchor: Anchor, body: string, selectedText: string) => Promise<boolean>;
-  onIterateDraft: (anchor: Anchor, instruction: string) => Promise<boolean>;
+  onIterateDraft: (anchor: Anchor, instruction: string, selectedText: string) => Promise<boolean>;
   disabled: boolean;
   proposalDisabled: boolean;
   proposalIterating: boolean;
@@ -47,14 +48,15 @@ interface PlanProps {
   onEditDone: () => void;
   onFocusThread: (threadId: string) => void;
   onHoverThread: (threadId: string | null) => void;
-  onSetThreadKind: (threadId: string, kind: ThreadKind) => void | Promise<void>;
+  onSetThreadIntent: (threadId: string, intent: ThreadIntent) => void | Promise<void>;
   onReplyThread: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
   onEditThread: (threadId: string) => void;
+  onCreateFollowUp: (threadId: string) => void;
   onAskSide: (thread: Thread) => void;
   onIterateThread: (thread: Thread) => void | Promise<void>;
-  onPromoteAnswer: (answerId: string) => void;
-  onUnpromoteAnswer: (answerId: string) => void;
+  onIncludeAnswer: (answerId: string) => void;
+  onKeepAnswerPrivate: (answerId: string) => void;
   threadAgentActions: Record<string, "asking" | "iterating">;
   sideQuestionsEnabled: boolean;
 }
@@ -64,6 +66,7 @@ interface CommentDraft {
   anchor: Anchor;
   selectedText: string;
   body: string;
+  intent: ThreadIntent;
 }
 
 export const ReviewDocument = memo(function ReviewDocument({
@@ -97,14 +100,15 @@ export const ReviewDocument = memo(function ReviewDocument({
   onEditDone,
   onFocusThread,
   onHoverThread,
-  onSetThreadKind,
+  onSetThreadIntent,
   onReplyThread,
   onDeleteThread,
   onEditThread,
+  onCreateFollowUp,
   onAskSide,
   onIterateThread,
-  onPromoteAnswer,
-  onUnpromoteAnswer,
+  onIncludeAnswer,
+  onKeepAnswerPrivate,
   threadAgentActions,
   sideQuestionsEnabled,
 }: PlanProps) {
@@ -114,6 +118,10 @@ export const ReviewDocument = memo(function ReviewDocument({
   const lines = useMemo(() => renderLines(plan), [plan, renderLines]);
   const highlightedCode = useHighlightedCode(planFormat === "markdown" ? plan : "", theme);
 	const activeChange = proposal ? proposalChange : comparison;
+  const [activeReviewStop, setActiveReviewStop] = useState<ReviewStop | null>(null);
+	useEffect(() => {
+	  if (!activeChange) setActiveReviewStop(null);
+	}, [activeChange]);
   const comparisonBeforeLines = useMemo(
 	() => (activeChange ? renderLines(snapshotRenderText(activeChange.before)) : []),
 	[activeChange, renderLines],
@@ -131,7 +139,8 @@ export const ReviewDocument = memo(function ReviewDocument({
         anchorLineNumber: index + 1,
         beforeLineNumber: undefined,
         afterLineNumber: undefined,
-		clusterId: undefined,
+        clusterId: undefined,
+		rowId: `line-${index + 1}`,
       }));
     }
 	const diffLines = activeChange.rows;
@@ -149,6 +158,7 @@ export const ReviewDocument = memo(function ReviewDocument({
         beforeLineNumber: comparisonIdentity?.beforeLineNumber,
         afterLineNumber: comparisonIdentity?.afterLineNumber,
 		clusterId: diffLine.clusterId,
+		rowId: diffLine.id,
       };
     });
 	}, [activeChange, comparison, comparisonAfterLines, comparisonBeforeLines, lines, renderLines]);
@@ -179,9 +189,11 @@ export const ReviewDocument = memo(function ReviewDocument({
     () => visibleThreads(threads, sideAnswers, commentFilter, focusedThreadId),
     [commentFilter, focusedThreadId, sideAnswers, threads],
   );
+	const activeDisplayedThreads = useMemo(() => displayedThreads.filter((thread) => thread.bucket === "active"), [displayedThreads]);
+	const overviewThreads = useMemo(() => displayedThreads.filter((thread) => thread.bucket === "attention" || (!comparison && thread.bucket === "history")), [comparison, displayedThreads]);
 	const threadsAtPlacement = useMemo(
-	  () => activeChange ? threadsByBackendPlacement(displayedThreads, activeChange.threadPlacements) : threadsByAnchorEnd(displayedThreads),
-	  [activeChange, displayedThreads],
+	  () => activeChange ? threadsByBackendPlacement(activeDisplayedThreads, activeChange.threadPlacements) : threadsByAnchorEnd(activeDisplayedThreads),
+	  [activeChange, activeDisplayedThreads],
 	);
 	const commentRailLines = useMemo(() => [...threadsAtPlacement.keys()].sort((a, b) => a - b), [threadsAtPlacement]);
   const commentRailMetrics = useCommentRailMetrics(articleRef, commentRailRef, commentView, commentRailLines);
@@ -189,12 +201,12 @@ export const ReviewDocument = memo(function ReviewDocument({
   const hoveredAnchor = useMemo(() => {
     if (!hoveredThreadId) return null;
     const t = threads.find((x) => x.id === hoveredThreadId);
-    return t?.status === "open" ? t.anchor : null;
+    return t?.lifecycle === "active" ? t.anchor : null;
   }, [hoveredThreadId, threads]);
   const focusedAnchor = useMemo(() => {
     if (!focusedThreadId) return null;
     const t = threads.find((x) => x.id === focusedThreadId);
-    return t?.status === "open" ? t.anchor : null;
+    return t?.lifecycle === "active" ? t.anchor : null;
   }, [focusedThreadId, threads]);
   const activeAnchor = hoveredAnchor ?? focusedAnchor;
 
@@ -202,14 +214,19 @@ export const ReviewDocument = memo(function ReviewDocument({
 
   useEffect(() => {
     if (!editingThread) return;
+	const maxLine = Math.max(1, lines.length);
+	const editAnchor = editingThread.lifecycle === "detached"
+	  ? { startLine: Math.min(Math.max(1, editingThread.anchor.startLine), maxLine), endLine: Math.min(Math.max(1, editingThread.anchor.endLine), maxLine) }
+	  : editingThread.anchor;
     setDraft({
       threadId: editingThread.id,
-      anchor: editingThread.anchor,
+	  anchor: editAnchor,
       selectedText:
-        editingThread.selectedText || selectedTextForAnchorInArticle(articleRef.current, editingThread.anchor),
+		editingThread.lifecycle === "detached" ? selectedTextForAnchorInArticle(articleRef.current, editAnchor) : editingThread.selectedText || selectedTextForAnchorInArticle(articleRef.current, editAnchor),
       body: editingThread.messages[0]?.body ?? "",
+      intent: editingThread.intent,
     });
-  }, [editingThread]);
+  }, [editingThread, lines.length]);
 
   // Selecting text opens a convenience composer, but it remains a draft until
   // the reviewer explicitly submits it. A click away drops only an untouched
@@ -230,6 +247,7 @@ export const ReviewDocument = memo(function ReviewDocument({
   const lineToThread = useMemo(() => {
     const map = new Map<number, string>();
     for (const t of threads) {
+	  if (t.lifecycle !== "active") continue;
       for (let i = t.anchor.startLine; i <= t.anchor.endLine; i++) {
         if (!map.has(i)) map.set(i, t.id);
       }
@@ -244,6 +262,7 @@ export const ReviewDocument = memo(function ReviewDocument({
       anchor,
       selectedText: selectedTextForAnchorInArticle(articleRef.current, anchor),
       body: "",
+      intent: "instruction",
     });
   }
 
@@ -252,7 +271,8 @@ export const ReviewDocument = memo(function ReviewDocument({
     if ((e.target as HTMLElement | null)?.closest(".inline-comment-composer")) return;
     if ((e.target as HTMLElement | null)?.closest(".draft-boundary-handle")) return;
     const selection = window.getSelection();
-    const next = draftFromSelection(selection);
+    const selectionDraft = draftFromSelection(selection);
+    const next = selectionDraft ? { ...selectionDraft, intent: "instruction" as const } : null;
     if (!next) return;
     setDraft(next);
     requestAnimationFrame(() => restoreNativeSelection(articleRef.current, next.anchor));
@@ -268,7 +288,7 @@ export const ReviewDocument = memo(function ReviewDocument({
     try {
       const ok = draft.threadId
         ? await onUpdateComment(draft.threadId, draft.anchor, draft.body.trim(), currentSelectedText(draft))
-        : await onCreateComment(draft.anchor, draft.body.trim(), currentSelectedText(draft));
+        : await onCreateComment(draft.anchor, draft.body.trim(), currentSelectedText(draft), draft.intent);
       if (!ok) return;
       if (draft.threadId) onEditDone();
       setDraft(null);
@@ -296,7 +316,7 @@ export const ReviewDocument = memo(function ReviewDocument({
     setSubmittingDraft(true);
     setDraftAgentAction("iterating");
     try {
-      const ok = await onIterateDraft(draft.anchor, draft.body.trim());
+      const ok = await onIterateDraft(draft.anchor, draft.body.trim(), currentSelectedText(draft));
       if (!ok) return;
       setDraft(null);
     } finally {
@@ -389,6 +409,29 @@ export const ReviewDocument = memo(function ReviewDocument({
           />
         </label>
       </header>
+	  {overviewThreads.length > 0 ? <div className="comment-state-overview">
+		<CommentThreadStack
+		  threads={overviewThreads}
+		  sideAnswersByThread={sideAnswersByThread}
+		  focusedThreadId={focusedThreadId}
+		  reviewTargetThreadId={activeReviewStop?.kind === "comment" ? activeReviewStop.threadId : undefined}
+		  onHover={onHoverThread}
+		  onSetIntent={onSetThreadIntent}
+		  onReply={onReplyThread}
+		  onDelete={onDeleteThread}
+		  onEdit={onEditThread}
+		  onCreateFollowUp={onCreateFollowUp}
+		  onAskSide={onAskSide}
+		  onIterate={onIterateThread}
+		  onInclude={onIncludeAnswer}
+		  onKeepPrivate={onKeepAnswerPrivate}
+		  agentActions={threadAgentActions}
+		  disabled={disabled}
+		  sideQuestionsEnabled={sideQuestionsEnabled}
+		  placement="inline"
+		  historyOpen={Boolean(commentFilter.trim() || overviewThreads.some((thread) => thread.id === focusedThreadId))}
+		/>
+	  </div> : null}
 	  {proposal?.kind === "review" ? (
 	    <ProposalActions
 	      proposal={proposal}
@@ -412,6 +455,14 @@ export const ReviewDocument = memo(function ReviewDocument({
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClearComparison}>Hide changes</button>
         </div>
       ) : null}
+	  {activeChange ? (
+		<ReviewNavigator
+		  identity={`${activeChange.baseId}:${activeChange.targetId}`}
+		  stops={activeChange.reviewStops}
+		  onFocusThread={onFocusThread}
+		  onActiveChange={setActiveReviewStop}
+		/>
+	  ) : null}
 	  {!proposal && comparison && !comparison.isDirect && comparison.feedback.length > 0 ? (
 		<RevisionFeedbackSummary feedback={comparison.feedback} />
       ) : null}
@@ -439,7 +490,7 @@ export const ReviewDocument = memo(function ReviewDocument({
             ? comparisonGutterValues(row.beforeLineNumber, row.afterLineNumber)
             : null;
           return (
-            <div key={`${row.diffKind}-${row.beforeLineNumber ?? "-"}-${row.afterLineNumber ?? "-"}-${idx}`} className="plan-row-with-comments">
+			<div key={`${row.diffKind}-${row.beforeLineNumber ?? "-"}-${row.afterLineNumber ?? "-"}-${idx}`} className={`plan-row-with-comments${activeReviewStop?.kind === "change" && activeReviewStop.clusterId === row.clusterId ? " is-review-target" : ""}`}>
               <div
                 className="plan-row-main"
                 style={
@@ -452,6 +503,7 @@ export const ReviewDocument = memo(function ReviewDocument({
                   data-line={commentable ? lineNumber : undefined}
 				  data-comment-placement={commentPlacement}
 				  data-change-cluster={row.clusterId}
+				  data-change-row={row.rowId}
                   className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
                     line.kind === "table-header" ? " is-table-header" : ""
                   }${line.kind === "table-divider" ? " is-table-divider" : ""}${
@@ -511,7 +563,7 @@ export const ReviewDocument = memo(function ReviewDocument({
                 </div>
 
 				{comparison && feedbackByRow.get(idx)?.length ? (
-				  <RevisionFeedbackList feedback={feedbackByRow.get(idx) ?? []} />
+				  <RevisionFeedbackList feedback={feedbackByRow.get(idx) ?? []} activeFeedbackId={activeReviewStop?.kind === "feedback" ? `${activeReviewStop.revisionId}:${activeReviewStop.threadId}` : undefined} />
                 ) : null}
 
                 {commentable && draft && draftComposerPlacement?.afterLine === lineNumber ? (
@@ -533,15 +585,17 @@ export const ReviewDocument = memo(function ReviewDocument({
                     threads={lineThreads}
                     sideAnswersByThread={sideAnswersByThread}
                     focusedThreadId={focusedThreadId}
+					reviewTargetThreadId={activeReviewStop?.kind === "comment" ? activeReviewStop.threadId : undefined}
                     onHover={onHoverThread}
-                    onSetKind={onSetThreadKind}
+					onSetIntent={onSetThreadIntent}
                     onReply={onReplyThread}
                     onDelete={onDeleteThread}
                     onEdit={onEditThread}
+					onCreateFollowUp={onCreateFollowUp}
                     onAskSide={onAskSide}
                     onIterate={onIterateThread}
-                    onPromote={onPromoteAnswer}
-                    onUnpromote={onUnpromoteAnswer}
+					onInclude={onIncludeAnswer}
+					onKeepPrivate={onKeepAnswerPrivate}
                     agentActions={threadAgentActions}
                     disabled={disabled}
                     sideQuestionsEnabled={sideQuestionsEnabled}
@@ -581,15 +635,17 @@ export const ReviewDocument = memo(function ReviewDocument({
 			  threads={threadsAtPlacement.get(lineNumber) ?? []}
               sideAnswersByThread={sideAnswersByThread}
               focusedThreadId={focusedThreadId}
+			  reviewTargetThreadId={activeReviewStop?.kind === "comment" ? activeReviewStop.threadId : undefined}
               onHover={onHoverThread}
-              onSetKind={onSetThreadKind}
+			  onSetIntent={onSetThreadIntent}
               onReply={onReplyThread}
               onDelete={onDeleteThread}
               onEdit={onEditThread}
+			  onCreateFollowUp={onCreateFollowUp}
               onAskSide={onAskSide}
               onIterate={onIterateThread}
-              onPromote={onPromoteAnswer}
-              onUnpromote={onUnpromoteAnswer}
+			  onInclude={onIncludeAnswer}
+			  onKeepPrivate={onKeepAnswerPrivate}
               agentActions={threadAgentActions}
               disabled={disabled}
               sideQuestionsEnabled={sideQuestionsEnabled}
@@ -709,6 +765,11 @@ function InlineCommentComposer({
           <span>{agentAction === "asking" ? "Codex is thinking about this /btw…" : "Codex is iterating on this selection…"}</span>
         </div>
       ) : null}
+	  {!isEditing ? <fieldset className="composer-intent" aria-label="Comment intent">
+		<legend>After saving</legend>
+		<button type="button" className={`kind-pill${draft.intent === "instruction" ? " is-active is-go" : ""}`} onClick={() => setDraft({ ...draft, intent: "instruction" })} disabled={submitting || disabled} aria-pressed={draft.intent === "instruction"}>Use in iteration</button>
+		<button type="button" className={`kind-pill${draft.intent === "private" ? " is-active is-stay" : ""}`} onClick={() => setDraft({ ...draft, intent: "private" })} disabled={submitting || disabled} aria-pressed={draft.intent === "private"}>Private note</button>
+	  </fieldset> : null}
       <div className="flex justify-end gap-2">
         <button type="button" className="btn" onClick={onCancel} disabled={submitting || disabled}>
           Cancel

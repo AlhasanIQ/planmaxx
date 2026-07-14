@@ -410,7 +410,7 @@ export function usePlanHighlights(
     ensureHighlightStyles();
 
     const threadRanges = threads
-      .filter((thread) => thread.status === "open")
+      .filter((thread) => thread.lifecycle === "active")
       .flatMap((thread) => rangesForAnchor(root, thread.anchor));
     const draftRanges = draftAnchor ? rangesForAnchor(root, draftAnchor) : [];
     const hoverRanges = hoveredAnchor ? rangesForAnchor(root, hoveredAnchor) : [];

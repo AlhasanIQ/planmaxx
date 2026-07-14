@@ -494,7 +494,7 @@ func TestStateReloadRunsSessionMigrationsAndValidation(t *testing.T) {
 	if state.PendingProposal == nil || state.PendingProposal.Kind != session.ProposalKindReview || state.Phase != "proposal_pending" {
 		t.Fatalf("legacy proposal was not migrated during reload: %+v", state.PendingProposal)
 	}
-	if len(state.Threads) != 1 || state.Threads[0].Status != session.ThreadStatusStale {
+	if len(state.Threads) != 1 || state.Threads[0].Lifecycle != session.ThreadLifecycleDetached {
 		t.Fatalf("invalid open anchor was not repaired: %+v", state.Threads)
 	}
 	if server.autosaveStatus != "active" || server.finished {
@@ -1782,6 +1782,55 @@ func TestThreadKindRouteRejectsInvalidKindWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestThreadIntentRouteUsesDomainVocabularyAndBackendCapabilities(t *testing.T) {
+	s := session.New("plan", "# Plan")
+	thread := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Instruction")
+	server := NewServer(s)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/threads/"+thread.ID+"/intent", strings.NewReader(`{"intent":"private"}`)))
+	if recorder.Code != http.StatusOK || s.Threads[0].Intent() != session.ThreadIntentPrivate {
+		t.Fatalf("intent update = %d %s thread=%+v", recorder.Code, recorder.Body.String(), s.Threads[0])
+	}
+	state := buildClientState(*s, false)
+	if state.Counts.ActivePrivateNotes != 1 || state.Counts.ActiveInstructions != 0 || state.Threads[0].Delivery != "private" {
+		t.Fatalf("intent projection = counts=%+v thread=%+v", state.Counts, state.Threads[0])
+	}
+}
+
+func TestAddressedFeedbackRejectsEditAndCreatesFollowUp(t *testing.T) {
+	s := session.New("plan", "# Plan")
+	thread := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Original")
+	if err := s.AddressThread(thread.ID, thread.Anchor); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(s)
+	edit := serveEditThread(server, thread.ID, `{"anchor":{"startLine":1,"endLine":1},"body":"Changed"}`)
+	if edit.Code != http.StatusConflict {
+		t.Fatalf("addressed edit = %d %s", edit.Code, edit.Body.String())
+	}
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/threads/"+thread.ID+"/follow-up", strings.NewReader(`{}`)))
+	if recorder.Code != http.StatusOK || len(s.Threads) != 2 || s.Threads[1].Lifecycle() != session.ThreadLifecycleActive {
+		t.Fatalf("follow-up = %d %s threads=%+v", recorder.Code, recorder.Body.String(), s.Threads)
+	}
+}
+
+func TestFinalizeUsesCanonicalDraftContextInsteadOfSubmittedArrays(t *testing.T) {
+	s := session.New("plan", "# Plan")
+	s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Canonical feedback")
+	server := NewServer(s)
+	result, err := server.finalize(session.Digest{Summary: "Approved", ReviewerDecisions: []string{"Injected"}, PromotedSideAnswers: []string{"Injected answer"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Session.Digest.ReviewerDecisions; len(got) != 1 || got[0] != "Canonical feedback" {
+		t.Fatalf("final digest accepted client arrays: %+v", result.Session.Digest)
+	}
+	if len(result.Session.Digest.PromotedSideAnswers) != 0 {
+		t.Fatalf("final digest accepted injected answer: %+v", result.Session.Digest)
+	}
+}
+
 func TestRevisionRoutesListAndDiffAppliedRevisions(t *testing.T) {
 	s := session.New("plan-1", "# Plan\n\n- Old")
 	s.AddTurnRevision("# Plan\n\n- New", "Codex turn")
@@ -1967,6 +2016,9 @@ func TestFinalReviewIterationPersistsLifecycleAcrossRefinementAndApply(t *testin
 	}
 	if blocked := serveReplyThread(server, decision.ID, `{"body":"mutate after proposal"}`); blocked.Code != http.StatusConflict {
 		t.Fatalf("expected pending proposal to freeze feedback, got %d: %s", blocked.Code, blocked.Body.String())
+	}
+	if blocked := serveMoveThread(server, decision.ID, `{"x":240,"y":360}`); blocked.Code != http.StatusConflict {
+		t.Fatalf("expected pending proposal to freeze comment placement, got %d: %s", blocked.Code, blocked.Body.String())
 	}
 	if blocked := serveProposeSection(server, `{"anchor":{"startLine":2,"endLine":2},"instruction":"replace pending proposal"}`); blocked.Code != http.StatusConflict {
 		t.Fatalf("expected pending proposal to block a different iteration, got %d: %s", blocked.Code, blocked.Body.String())

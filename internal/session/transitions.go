@@ -123,6 +123,13 @@ func (s *Session) Validate() error {
 		if !threadIDs[answer.ThreadID] {
 			return invariant("side answer references missing thread")
 		}
+		if answer.Promoted {
+			for _, thread := range s.Threads {
+				if thread.ID == answer.ThreadID && thread.Lifecycle() != ThreadLifecycleActive {
+					return invariant("non-active thread retains included side answer " + answer.ID)
+				}
+			}
+		}
 		sideIDs[answer.ID] = true
 	}
 	if proposal := s.PendingProposal; proposal != nil {
@@ -161,6 +168,9 @@ func (s *Session) RepairInvalidOpenAnchors() bool {
 			thread.Status = ThreadStatusStale
 			changed = true
 		}
+	}
+	if changed {
+		s.normalizeAnswerDelivery()
 	}
 	return changed
 }

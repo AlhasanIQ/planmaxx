@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added backend-authored review navigation across included feedback, accepted
+  feedback, and every otherwise-uncovered diff cluster, with exact scrolling
+  and highlighting in both in-place and alongside layouts.
+- Reframed comment state as orthogonal intent and lifecycle: active feedback is
+  either used in iteration or private, detached feedback visibly needs
+  re-anchoring, and addressed feedback is read-only revision history. Go now
+  owns buckets, delivery, capabilities, aggregate counts, and model context.
+- Moved Iterate into the top bar and replaced the duplicated Finalize/Iterate
+  workflow with concise, mode-specific submission reviews backed by the
+  authoritative server digest.
 - Moved revision history into a top-bar picker that shows the checked-out
   revision, leaving the page sidebar exclusively for alongside comments and
   preventing the plan from being squeezed into an accidental third column.
@@ -60,15 +70,14 @@
 - Show accepted-proposal and historical-revision diffs in the main Markdown
   editor, including rendered table rows; the revision rail is now only the
   comparison selector.
-- Clearly group resolved and stale feedback as historical, disable further
-  agent actions for it, and exclude any promoted `/btw` answers attached to it
-  from future handoffs.
+- Keep addressed feedback collapsed as history while surfacing detached
+  feedback separately as an attention state; included `/btw` answers become
+  private whenever their parent feedback is no longer active.
 - Preserve native text selection when opening the convenience comment composer;
   an untouched new composer now disappears on click-away without saving a
   comment.
-- Refined active comment cards into a compact feedback workflow and restyled
-  resolved or stale threads as a distinct archival section with no active
-  iteration controls.
+- Refined active comment cards into a compact feedback workflow with an explicit
+  default intent and capability-driven controls.
 - Preserve immutable snapshots of feedback used for accepted proposals and
   display that feedback next to direct revision changes; multi-revision
   comparisons group feedback by the intervening accepted revision.

@@ -102,8 +102,8 @@ func TestReviewDigestRendersTemplate(t *testing.T) {
 		"Create a concise review digest for the plan below.",
 		"Structured review context (v1)",
 		"Agent-generated plan:\n# Plan",
-		"Reviewer decisions:\nUse Cobra for CLI.",
-		"Promoted side-question answers:\nCobra gives clean subcommands.",
+		"Feedback for iteration or approval:\nUse Cobra for CLI.",
+		"Included side-question answers:\nCobra gives clean subcommands.",
 		"Model-facing review context",
 		"planmaxx_review",
 	} {

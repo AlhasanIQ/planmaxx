@@ -7,9 +7,8 @@ import { ToastStack, type Toast } from "./components/Toasts";
 import { CompletedScreen } from "./components/CompletedScreen";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
-import { FinalizeDialog } from "./components/dialogs/FinalizeDialog";
-import type { Anchor, Digest, RevisionComparison, Session, Thread, ThreadKind } from "./types";
-import { countHandoff } from "./lib/digest";
+import { SubmissionReviewDialog, type SubmissionMode } from "./components/dialogs/SubmissionReviewDialog";
+import type { Anchor, Digest, RevisionComparison, Session, Thread, ThreadIntent } from "./types";
 import { anchorLabel } from "./lib/anchors";
 import { sideQuestionContext } from "./lib/selectionContext";
 import {
@@ -31,8 +30,7 @@ type DialogState =
   | { kind: "reply"; threadId: string }
   | { kind: "delete"; threadId: string }
   | { kind: "ask"; thread: Thread }
-  | { kind: "finalize"; digest: Digest }
-  | { kind: "iteratePlan"; digest: Digest }
+  | { kind: "submission"; mode: SubmissionMode; digest: Digest }
   | { kind: "revisions" }
   | { kind: "confirmCancel" };
 
@@ -107,52 +105,23 @@ function useReviewController() {
     refresh();
   }, [refresh]);
 
-  const updateThreadKind = useCallback(
-    async (threadId: string, kind: ThreadKind) => {
-      if (!session) return;
-      const previousKind = session.threads.find((thread) => thread.id === threadId)?.kind;
-      setSession((current) => current ? {
-        ...current,
-        threads: current.threads.map((thread) => (thread.id === threadId ? { ...thread, kind } : thread)),
-      } : current);
-      try {
-        await api.setThreadKind(threadId, kind);
-      } catch (e) {
-        if (isSourceChangeConflict(e)) {
-          await refresh();
-          pushToast("error", "The plan changed outside PlanMaxx. Review state was refreshed.");
-          return;
-        }
-        setSession((current) => current && previousKind ? {
-          ...current,
-          threads: current.threads.map((thread) =>
-            thread.id === threadId && thread.kind === kind ? { ...thread, kind: previousKind } : thread,
-          ),
-        } : current);
-        const msg = e instanceof Error ? e.message : "Failed to update thread kind";
-        pushToast("error", msg);
-      }
-    },
-    [pushToast, refresh, session],
-  );
+  const updateThreadIntent = useCallback(async (threadId: string, intent: ThreadIntent) => {
+    const ok = await withBusy("Updating feedback…", () => api.setThreadIntent(threadId, intent));
+    if (ok) await refresh();
+  }, [refresh]);
 
-  const counts = useMemo(
-    () =>
-      session
-        ? countHandoff(session)
-        : { decisions: 0, notes: 0, promoted: 0, ephemeral: 0 },
-    [session],
-  );
-
-  const openFinalize = useCallback(async () => {
+  const openSubmission = useCallback(async (mode: SubmissionMode) => {
     if (!session) return;
     if (session.pendingProposal) {
-      pushToast("error", "Apply or discard the pending proposal before finalizing");
+      pushToast("error", "Apply or discard the pending proposal first");
       return;
     }
-    const digest = await withBusy("Preparing final review…", () => api.digestDraft());
-    if (digest) setDialog({ kind: "finalize", digest });
+    const digest = await withBusy(mode === "iterate" ? "Preparing iteration review…" : "Preparing approval review…", () => api.digestDraft());
+    if (digest) setDialog({ kind: "submission", mode, digest });
   }, [pushToast, session]);
+  const openFinalize = useCallback(() => openSubmission("finalize"), [openSubmission]);
+  const openIterate = useCallback(() => openSubmission("iterate"), [openSubmission]);
+  const counts = session?.counts ?? { activeInstructions: 0, activePrivateNotes: 0, includedAnswers: 0, privateAnswers: 0, detachedFeedback: 0, addressedHistory: 0 };
 
   // Keyboard shortcuts.
   useEffect(() => {
@@ -201,16 +170,16 @@ function useReviewController() {
     }
   }
 
-  async function handleCreateThread(anchor: Anchor, body: string, selectedText: string): Promise<boolean> {
+  async function handleCreateThread(anchor: Anchor, body: string, selectedText: string, intent: ThreadIntent = "instruction"): Promise<boolean> {
     const result = await withBusy("Adding comment…", async () => {
-      const thread = await api.createThread(anchor, body, selectedText);
+      const thread = await api.createThread(anchor, body, selectedText, intent);
       return thread;
     });
     if (result) {
-      setSession((current) => current ? { ...current, threads: [...current.threads, result] } : current);
+	  await refresh();
 	  await reloadVisibleComparison();
       setFocusedThreadId(result.id);
-      pushToast("success", "Comment added — sent to next turn");
+      pushToast("success", intent === "instruction" ? "Feedback added — ready for iteration" : "Private note added");
       return true;
     }
     return false;
@@ -219,15 +188,23 @@ function useReviewController() {
   async function handleCreateThreadAndAsk(anchor: Anchor, body: string, selectedText: string): Promise<boolean> {
     if (!session) return false;
     const result = await withBusy("Adding /btw comment…", async () =>
-      api.createThread(anchor, body, selectedText),
+      api.createThread(anchor, body, selectedText, "instruction"),
     );
-    if (!result) return false;
+	if (!result) return false;
 
-    const nextSession = { ...session, threads: [...session.threads, result] };
-    setSession((current) => current ? { ...current, threads: [...current.threads, result] } : current);
+	const nextSession = { ...session, threads: [...session.threads, result] };
+	await refresh();
 	await reloadVisibleComparison();
     setFocusedThreadId(result.id);
     return askSideQuestion(result, body, nextSession);
+  }
+
+  async function handleIterateDraft(anchor: Anchor, instruction: string, selectedText: string): Promise<boolean> {
+    const created = await withBusy("Saving feedback…", () => api.createThread(anchor, instruction, selectedText, "instruction"));
+    if (!created) return false;
+    await refresh();
+    setFocusedThreadId(created.id);
+    return handleIterateSection(anchor, instruction, created.id);
   }
 
   async function handleIterateSection(anchor: Anchor, instruction: string, threadId?: string): Promise<boolean> {
@@ -266,21 +243,7 @@ function useReviewController() {
   async function handleUpdateThread(threadId: string, anchor: Anchor, body: string, selectedText: string): Promise<boolean> {
     const ok = await withBusy("Saving comment…", () => api.editThread(threadId, anchor, body, selectedText));
     if (ok) {
-      setSession((current) => current ? {
-        ...current,
-        threads: current.threads.map((t) =>
-          t.id === threadId
-            ? {
-                ...t,
-                anchor,
-                selectedText,
-                messages: t.messages.map((message, index) =>
-                  index === 0 ? { ...message, body } : message,
-                ),
-              }
-            : t,
-        ),
-      } : current);
+	  await refresh();
 	  await reloadVisibleComparison();
       setFocusedThreadId(threadId);
       pushToast("success", "Comment updated");
@@ -322,18 +285,8 @@ function useReviewController() {
     setFocusedThreadId(thread.id);
     setThreadAgentActions((prev) => ({ ...prev, [thread.id]: "asking" }));
     try {
-      const answer = await api.sideQuestion(thread.id, question, sideQuestionContext(sourceSession, thread));
-      setSession((current) =>
-        current
-          ? {
-              ...current,
-              sideAnswers: [
-                ...current.sideAnswers.filter((a) => a.id !== answer.id),
-                answer,
-              ],
-            }
-          : current,
-      );
+	  await api.sideQuestion(thread.id, question, sideQuestionContext(sourceSession, thread));
+	  await refresh();
       pushToast("success", "/btw answer received (stays here unless you opt in)");
       setStatus({ label: "Codex paused — review in progress", kind: "idle" });
       return true;
@@ -357,18 +310,26 @@ function useReviewController() {
   }
 
   async function handlePromote(answerId: string) {
-    const ok = await withBusy("Adding answer to handoff…", () => api.promote(answerId));
+    const ok = await withBusy("Including answer…", () => api.promote(answerId));
     if (ok) {
       await refresh();
-      pushToast("success", "/btw answer → next turn");
+      pushToast("success", "/btw answer will be used for iteration or approval");
     }
   }
   async function handleUnpromote(answerId: string) {
-    const ok = await withBusy("Removing from handoff…", () => api.unpromote(answerId));
+    const ok = await withBusy("Keeping answer private…", () => api.unpromote(answerId));
     if (ok) {
       await refresh();
-      pushToast("info", "Answer kept ephemeral");
+      pushToast("info", "Answer kept private");
     }
+  }
+
+  async function handleCreateFollowUp(threadId: string) {
+    const thread = await withBusy("Creating follow-up…", () => api.createFollowUp(threadId));
+    if (!thread) return;
+    await refresh();
+    setFocusedThreadId(thread.id);
+    pushToast("success", "Follow-up created as active feedback");
   }
 
   async function handleApplyProposal(proposalId: string) {
@@ -418,10 +379,6 @@ function useReviewController() {
     }
   }
 
-  function openPlanIteration(digest: Digest) {
-    setDialog({ kind: "iteratePlan", digest });
-  }
-
   async function handlePlanIteration(digest: Digest) {
     if (!session) return;
     setDialog(null);
@@ -467,10 +424,12 @@ function useReviewController() {
     handleRestoreRevision,
     handleCreateThread,
     handleCreateThreadAndAsk,
+	 handleCreateFollowUp,
     handleDelete,
     handleDiscardProposal,
     handleFinalize,
     handleIterateSection,
+	 handleIterateDraft,
     handleIterateThread,
     handlePromote,
     handlePlanIteration,
@@ -480,7 +439,7 @@ function useReviewController() {
     hoveredThreadId,
     loadError,
     openFinalize,
-    openPlanIteration,
+	openIterate,
     refresh,
     revisionDiff,
     revisionDiffError,
@@ -496,7 +455,7 @@ function useReviewController() {
     status,
     theme,
     toasts,
-    updateThreadKind,
+	updateThreadIntent,
   };
 }
 
@@ -534,10 +493,12 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleRestoreRevision,
     handleCreateThread,
     handleCreateThreadAndAsk,
+	handleCreateFollowUp,
     handleDelete,
     handleDiscardProposal,
     handleFinalize,
     handleIterateSection,
+	handleIterateDraft,
     handleIterateThread,
     handlePromote,
     handlePlanIteration,
@@ -547,7 +508,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     hoveredThreadId,
     loadError,
     openFinalize,
-    openPlanIteration,
+	openIterate,
     refresh,
     revisionDiff,
     revisionDiffError,
@@ -563,7 +524,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     status,
     theme,
     toasts,
-    updateThreadKind,
+	updateThreadIntent,
   } = controller;
   const setThemeMode = theme.setMode;
   const changeThemeMode = useCallback(() => {
@@ -612,18 +573,19 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
       <TopBar
         statusLabel={status.label}
         statusKind={status.kind}
-        decisionCount={counts.decisions}
-        promotedCount={counts.promoted}
-        noteCount={counts.notes}
-        ephemeralCount={counts.ephemeral}
+		forIterationCount={counts.activeInstructions + counts.includedAnswers}
+		privateCount={counts.activePrivateNotes + counts.privateAnswers}
+		attentionCount={counts.detachedFeedback}
         themeMode={theme.mode}
         resolvedTheme={theme.resolved}
         onThemeModeChange={changeThemeMode}
         currentRevisionId={session.currentRevisionId}
         onOpenRevisions={() => setDialog({ kind: "revisions" })}
         onCancel={() => setDialog({ kind: "confirmCancel" })}
+		onIterate={openIterate}
         onFinalize={openFinalize}
         disabled={busy}
+		iterateDisabled={!session.capabilities.canIterate}
 		finalizeDisabled={!session.capabilities.canFinalize}
       />
 
@@ -646,10 +608,10 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           commentFilter={filter}
           onCommentViewChange={setCommentView}
           onCommentFilterChange={setFilter}
-          onCreateComment={handleCreateThread}
+		  onCreateComment={handleCreateThread}
           onUpdateComment={handleUpdateThread}
           onAskSideFromDraft={handleCreateThreadAndAsk}
-          onIterateDraft={(anchor, instruction) => handleIterateSection(anchor, instruction)}
+		  onIterateDraft={handleIterateDraft}
           disabled={busy || Boolean(session.pendingProposal)}
 		  proposalDisabled={busy || !session.capabilities.canApplyProposal}
           proposalIterating={iteratingSection}
@@ -659,17 +621,18 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           onEditDone={clearEditingThread}
           onFocusThread={focusThreadTemporarily}
           onHoverThread={setHoveredThreadId}
-          onSetThreadKind={updateThreadKind}
+		  onSetThreadIntent={updateThreadIntent}
           onReplyThread={(id) => setDialog({ kind: "reply", threadId: id })}
           onDeleteThread={(id) => setDialog({ kind: "delete", threadId: id })}
           onEditThread={(id) => {
             setEditingThreadId(id);
             setFocusedThreadId(id);
           }}
+		  onCreateFollowUp={handleCreateFollowUp}
           onAskSide={(thread) => setDialog({ kind: "ask", thread })}
           onIterateThread={handleIterateThread}
-          onPromoteAnswer={handlePromote}
-          onUnpromoteAnswer={handleUnpromote}
+		  onIncludeAnswer={handlePromote}
+		  onKeepAnswerPrivate={handleUnpromote}
           threadAgentActions={threadAgentActions}
           sideQuestionsEnabled={sideQuestionsEnabled}
         />
@@ -720,7 +683,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
       {dialog?.kind === "ask" && (
         <PromptDialog
           title="Ask Codex an ephemeral /btw question"
-          description={`Anchored to ${anchorLabel(dialog.thread.anchor)}. Pre-filled with the latest comment in this thread; edit if you want to ask something different. Answers stay out of the handoff until you opt them in.`}
+          description={`Anchored to ${anchorLabel(dialog.thread.anchor)}. Pre-filled with the latest comment in this thread; edit if you want to ask something different. Answers stay private unless you include them.`}
           label="Question"
           submitLabel="Ask /btw"
           placeholder="What should we ask Codex on the side?"
@@ -729,21 +692,13 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           onSubmit={(value) => handleAsk(dialog.thread, value)}
         />
       )}
-      {dialog?.kind === "finalize" && (
-        <FinalizeDialog
+      {dialog?.kind === "submission" && (
+        <SubmissionReviewDialog
+          mode={dialog.mode}
           initial={dialog.digest}
+		  detachedCount={session.counts.detachedFeedback}
           onCancel={() => setDialog(null)}
-          onIterate={openPlanIteration}
-          onSubmit={handleFinalize}
-        />
-      )}
-      {dialog?.kind === "iteratePlan" && (
-        <ConfirmDialog
-          title="Iterate the complete plan?"
-          body="PlanMaxx will ask Codex for one whole-plan proposal using the feedback shown in the final review. You can approve, discard, or iterate again after reviewing that proposal."
-          confirmLabel="Iterate plan"
-          onCancel={() => setDialog(null)}
-          onConfirm={() => handlePlanIteration(dialog.digest)}
+		  onSubmit={dialog.mode === "iterate" ? handlePlanIteration : handleFinalize}
         />
       )}
       {dialog?.kind === "confirmCancel" && (
@@ -810,17 +765,17 @@ function ReplyDialog({
   onCancel: () => void;
   onSubmit: (value: string) => void;
 }) {
-  const isDecision = (thread?.kind ?? "decision") === "decision";
+  const isInstruction = thread?.intent !== "private";
   return (
     <PromptDialog
-      title={isDecision ? "Add note for next turn" : "Add private note"}
+      title={isInstruction ? "Add iteration feedback" : "Add private note"}
       description={
-        isDecision
-          ? "This note is included in the next handoff because the thread is marked Decision."
-          : "This note stays private unless you switch the thread to Decision."
+        isInstruction
+          ? "This reply will be used when you iterate or approve."
+          : "This reply stays private unless you change the feedback intent."
       }
       label="Note"
-      submitLabel={isDecision ? "Send to next turn" : "Save private note"}
+      submitLabel={isInstruction ? "Add feedback" : "Save private note"}
       placeholder="Type a note…"
       onCancel={onCancel}
       onSubmit={onSubmit}

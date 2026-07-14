@@ -69,6 +69,46 @@ func TestBuildKeepsMultiRevisionFeedbackAsSummaryOnly(t *testing.T) {
 	}
 }
 
+func TestReviewStopsKeepRemoteCommentAndDistantChanges(t *testing.T) {
+	threads := []session.Thread{{ID: "comment", Anchor: session.Anchor{StartLine: 1, EndLine: 1}}}
+	view := Build(BuildInput{Mode: ModeProposal, Before: "one\ntwo\nthree\nfour\nfive", After: "one\nTWO\nthree\nfour\nFIVE", Threads: threads, ReviewThreadIDs: []string{"comment"}})
+	if len(view.ReviewStops) != 3 {
+		t.Fatalf("review stops = %+v", view.ReviewStops)
+	}
+	if view.ReviewStops[0].Kind != ReviewStopComment || view.ReviewStops[1].Kind != ReviewStopChange || view.ReviewStops[2].Kind != ReviewStopChange {
+		t.Fatalf("remote comment hid distant changes: %+v", view.ReviewStops)
+	}
+}
+
+func TestReviewStopsDoNotDuplicateClusterCoveredByComments(t *testing.T) {
+	threads := []session.Thread{{ID: "one", Anchor: session.Anchor{StartLine: 2, EndLine: 2}}, {ID: "two", Anchor: session.Anchor{StartLine: 2, EndLine: 2}}}
+	view := Build(BuildInput{Mode: ModeProposal, Before: "one\nold\nthree", After: "one\nnew\nthree", Threads: threads, ReviewThreadIDs: []string{"one", "two"}})
+	if len(view.ReviewStops) != 2 || view.ReviewStops[0].Kind != ReviewStopComment || view.ReviewStops[1].Kind != ReviewStopComment {
+		t.Fatalf("covered cluster produced redundant change stop: %+v", view.ReviewStops)
+	}
+}
+
+func TestReviewStopsUseFeedbackOnlyForDirectComparisons(t *testing.T) {
+	feedback := []session.RevisionFeedback{{RevisionID: "rev-2", ThreadID: "thread", Anchor: session.Anchor{StartLine: 2, EndLine: 2}, ResultAnchor: session.Anchor{StartLine: 2, EndLine: 2}}}
+	direct := Build(BuildInput{Mode: ModeRevision, IsDirect: true, Before: "a\nold", After: "a\nnew", Feedback: feedback})
+	if len(direct.ReviewStops) != 1 || direct.ReviewStops[0].Kind != ReviewStopFeedback {
+		t.Fatalf("direct stops = %+v", direct.ReviewStops)
+	}
+	multi := Build(BuildInput{Mode: ModeRevision, IsDirect: false, Before: "a\nold", After: "a\nnew", Feedback: feedback})
+	if len(multi.ReviewStops) != 1 || multi.ReviewStops[0].Kind != ReviewStopChange {
+		t.Fatalf("multi-hop stops = %+v", multi.ReviewStops)
+	}
+}
+
+func TestReviewStopsAreNonNilAndEmptyForUnchangedDocuments(t *testing.T) {
+	for _, document := range []string{"", "unchanged\ntext"} {
+		view := Build(BuildInput{Mode: ModeRevision, Before: document, After: document})
+		if view.ReviewStops == nil || len(view.ReviewStops) != 0 {
+			t.Fatalf("review stops for %q = %#v", document, view.ReviewStops)
+		}
+	}
+}
+
 func reconstruct(rows []ChangeRow, after bool) string {
 	parts := []string{}
 	for _, row := range rows {

@@ -2,7 +2,7 @@ import { chromium } from "../web/node_modules/playwright/index.mjs";
 
 const url = process.argv[2];
 const mode = process.argv[3] ?? "proposal";
-if (!url) throw new Error("usage: e2e-browser.mjs <review-url> [proposal|revision]");
+if (!url) throw new Error("usage: e2e-browser.mjs <review-url> [proposal|revision|states]");
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ colorScheme: "dark" });
@@ -29,6 +29,10 @@ try {
     }
     await revisionDialog.getByRole("button", { name: "Close", exact: true }).click();
     await page.getByText("Showing changes: rev-1 → rev-2", { exact: false }).waitFor();
+	const revisionNavigator = page.getByRole("navigation", { name: "Review comments and changes" });
+	await revisionNavigator.getByRole("button", { name: "Next" }).click();
+	await revisionNavigator.getByText("1 of 1", { exact: true }).waitFor();
+	if (!(await revisionNavigator.getByRole("button", { name: "Next" }).isDisabled())) throw new Error("revision navigation does not stop at the end");
     const feedback = page.getByText("revision placement comment", { exact: true });
     if (await feedback.count() !== 1) {
       throw new Error("accepted revision feedback was missing or duplicated");
@@ -46,13 +50,55 @@ try {
 	await page.getByRole("button", { name: "Comment on line 1" }).click();
 	await page.getByPlaceholder("Leave a comment for this selection...").fill("comparison live comment");
 	await page.getByRole("button", { name: "Add comment" }).click();
-	await page.getByText("comparison live comment", { exact: true }).waitFor();
+    await page.getByText("comparison live comment", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Iterate", exact: true }).click();
+    const iterateDialog = page.getByRole("dialog", { name: "Review iteration" });
+    await iterateDialog.waitFor();
+    if (await iterateDialog.getByRole("button", { name: "Create proposal" }).count() !== 1) throw new Error("iteration quick review is missing its primary action");
+    if (await iterateDialog.getByText("comparison live comment", { exact: true }).count() !== 1) throw new Error("iteration digest content was missing or duplicated");
+    await iterateDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.getByRole("button", { name: "Finalize", exact: true }).click();
+    const finalizeDialog = page.getByRole("dialog", { name: "Review approval" });
+    await finalizeDialog.waitFor();
+    if (await finalizeDialog.getByRole("button", { name: "Approve and submit" }).count() !== 1) throw new Error("approval quick review is missing its primary action");
+    if (await finalizeDialog.getByText("comparison live comment", { exact: true }).count() !== 1) throw new Error("approval digest content was missing or duplicated");
+    await finalizeDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    if (consoleErrors.length) throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
+  } else if (mode === "states") {
+    await page.getByText("active instruction", { exact: true }).waitFor();
+    await page.getByText("active private", { exact: true }).waitFor();
+    await page.getByText("Needs attention", { exact: true }).waitFor();
+    await page.getByText("detached feedback", { exact: true }).waitFor();
+    const history = page.getByText("Show addressed feedback (1)", { exact: true });
+    await history.click();
+    await page.getByText("addressed feedback", { exact: true }).waitFor();
+    if (await page.getByRole("button", { name: "Use in iteration", exact: true }).count() !== 2) throw new Error("active intent controls are not scoped to active feedback");
+    if (await page.getByRole("button", { name: "Create follow-up" }).count() !== 1) throw new Error("addressed feedback is missing follow-up action");
     if (consoleErrors.length) throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
   } else if (mode !== "proposal") {
     throw new Error(`unknown browser E2E mode: ${mode}`);
   } else {
   await page.getByText("Pending whole-plan iteration", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Apply as new revision" }).waitFor();
+  if (!(await page.getByRole("button", { name: "Iterate", exact: true }).isDisabled()) || !(await page.getByRole("button", { name: "Finalize", exact: true }).isDisabled())) {
+    throw new Error("submission actions are enabled while a proposal is pending");
+  }
+
+  const navigator = page.getByRole("navigation", { name: "Review comments and changes" });
+  await navigator.waitFor();
+  if (await navigator.getByText("5 to review", { exact: true }).count() !== 1) throw new Error("proposal review queue count is incorrect");
+  await page.getByPlaceholder("Filter comments").fill("no matching comment");
+  await navigator.getByRole("button", { name: "Next" }).click();
+  await navigator.getByText("1 of 5", { exact: true }).waitFor();
+  if (await page.getByText("replace both lines", { exact: true }).count() !== 1) throw new Error("navigation did not reveal a filtered comment");
+  for (let step = 2; step <= 5; step++) {
+    await navigator.getByRole("button", { name: "Next" }).click();
+    await navigator.getByText(`${step} of 5`, { exact: true }).waitFor();
+  }
+  if (!(await navigator.getByRole("button", { name: "Next" }).isDisabled())) throw new Error("review navigation wraps past the final stop");
+  await navigator.getByRole("button", { name: "Previous" }).click();
+  await navigator.getByText("4 of 5", { exact: true }).waitFor();
+  await page.getByPlaceholder("Filter comments").fill("");
 
   const addedTableRows = page.locator(".line-row.is-proposal-add.is-table-row");
   if (await addedTableRows.count() < 2) {

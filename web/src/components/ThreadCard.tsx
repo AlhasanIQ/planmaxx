@@ -1,7 +1,5 @@
-import { useState } from "react";
 import {
   AlertTriangle,
-  Archive,
   ArrowRight,
   CheckCircle2,
   EyeOff,
@@ -11,24 +9,25 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import type { SideAnswer, Thread, ThreadKind } from "../types";
+import type { SideAnswer, Thread, ThreadIntent } from "../types";
 import { relativeTime } from "../lib/time";
 import { anchorLabel } from "../lib/anchors";
 
 interface ThreadCardProps {
   thread: Thread;
-  kind: ThreadKind;
   sideAnswers: SideAnswer[];
   isFocused: boolean;
+  isReviewTarget?: boolean;
   onHover: (id: string | null) => void;
-  onSetKind: (id: string, kind: ThreadKind) => void;
+  onSetIntent: (id: string, intent: ThreadIntent) => void;
   onReply: (id: string) => void;
   onDelete: (id: string) => void;
   onEdit: (id: string) => void;
+  onCreateFollowUp: (id: string) => void;
   onAskSide: (thread: Thread) => void;
   onIterate: (thread: Thread) => void | Promise<void>;
-  onPromote: (answerId: string) => void;
-  onUnpromote: (answerId: string) => void;
+  onInclude: (answerId: string) => void;
+  onKeepPrivate: (answerId: string) => void;
   agentAction?: "asking" | "iterating";
   disabled: boolean;
   sideQuestionsEnabled: boolean;
@@ -37,252 +36,87 @@ interface ThreadCardProps {
 
 export function ThreadCard(props: ThreadCardProps) {
   const {
-    thread,
-    kind,
-    sideAnswers,
-    isFocused,
-    onHover,
-    onSetKind,
-    onReply,
-    onDelete,
-    onEdit,
-    onAskSide,
-    onIterate,
-    onPromote,
-    onUnpromote,
-    agentAction,
-    disabled,
-    sideQuestionsEnabled,
-    presentation = "rail",
+    thread, sideAnswers, isFocused, isReviewTarget, onHover, onSetIntent, onReply, onDelete,
+    onEdit, onCreateFollowUp, onAskSide, onIterate, onInclude, onKeepPrivate,
+    agentAction, disabled, sideQuestionsEnabled, presentation = "rail",
   } = props;
-
-  const status = thread.status ?? "open";
-  const isOpen = status === "open";
-  const isDecisionIntent = kind === "decision";
-  const isProcessing = Boolean(agentAction) || disabled;
-  const replyLabel = isDecisionIntent ? "Add to next turn" : "Add private note";
-  const replyTitle = isDecisionIntent
-    ? "This note is included in the next handoff because this thread is marked Decision"
-    : "This note stays private unless this thread is switched to Decision";
+  const active = thread.lifecycle === "active";
+  const detached = thread.lifecycle === "detached";
+  const instruction = thread.intent === "instruction";
+  const processing = Boolean(agentAction) || disabled;
 
   return (
     <section
-      className={`thread is-flow${presentation === "inline" ? " is-inline-comment" : ""}${isFocused ? " is-focus" : ""}${isDecisionIntent ? " is-decision" : " is-note"}${!isOpen ? " is-closed is-historical" : ""}`}
+      className={`thread is-flow${presentation === "inline" ? " is-inline-comment" : ""}${isFocused ? " is-focus" : ""}${isReviewTarget ? " is-review-target" : ""} is-${thread.lifecycle} is-${thread.intent}`}
       data-thread-id={thread.id}
-      data-thread-kind={kind}
+      data-thread-intent={thread.intent}
+      data-thread-lifecycle={thread.lifecycle}
       onMouseEnter={() => onHover(thread.id)}
       onMouseLeave={() => onHover(null)}
     >
       <header className="thread-card-header">
         <div className="thread-card-heading">
-          <span className={`thread-card-eyebrow${isOpen ? "" : " is-historical"}`}>
-            {isOpen ? "Active feedback" : <><Archive size={11} /> Archived feedback</>}
-          </span>
+          {!active ? <span className={`thread-card-eyebrow is-${thread.lifecycle}`}>
+            {detached ? <><AlertTriangle size={11} /> Needs re-anchor</> : <><CheckCircle2 size={11} /> Addressed feedback</>}
+          </span> : null}
           <h3>{anchorLabel(thread.anchor)}</h3>
         </div>
         <div className="thread-card-tools">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => onEdit(thread.id)}
-            disabled={isProcessing}
-            aria-label={isOpen ? "Edit comment" : "Inspect or re-anchor archived comment"}
-            title={isOpen ? "Edit comment and selected text" : "Inspect or re-anchor archived comment"}
-          >
-            <Pencil size={13} />
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm btn-danger"
-            onClick={() => onDelete(thread.id)}
-            disabled={isProcessing}
-            aria-label="Delete thread"
-            title="Delete"
-          >
-            <Trash2 size={13} />
-          </button>
+          {thread.capabilities.canEdit ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onEdit(thread.id)} disabled={processing} aria-label={detached ? "Edit and re-anchor feedback" : "Edit comment"} title={detached ? "Edit and re-anchor feedback" : "Edit comment and selected text"}><Pencil size={13} /></button> : null}
+          {thread.capabilities.canDelete ? <button type="button" className="btn btn-ghost btn-sm btn-danger" onClick={() => onDelete(thread.id)} disabled={processing} aria-label="Delete thread" title="Delete"><Trash2 size={13} /></button> : null}
         </div>
       </header>
 
-      <div className={`thread-card-meta${isOpen ? "" : " is-historical"}`}>
-        {isOpen ? (
-          <>
-            <KindToggle kind={kind} onChange={(k) => onSetKind(thread.id, k)} disabled={isProcessing} />
-            <span className="thread-intent-copy">
-              {isDecisionIntent ? "Included in the next iteration" : "Private to this review"}
-            </span>
-          </>
-        ) : (
-          <>
-            <ThreadStatusPill status={status} />
-            <span className="thread-intent-copy">Not included in the next iteration</span>
-          </>
-        )}
+      <div className="thread-card-meta">
+        {active ? <>
+          <IntentToggle intent={thread.intent} onChange={(intent) => onSetIntent(thread.id, intent)} disabled={processing || !thread.capabilities.canChangeIntent} />
+          <span className="thread-intent-copy">{instruction ? "Used when you iterate or approve" : "Private to this review"}</span>
+        </> : <span className="thread-intent-copy">{detached ? "Not submitted until re-anchored" : `Recorded${thread.addressedRevisionId ? ` in ${thread.addressedRevisionId}` : " in revision history"}`}</span>}
       </div>
 
-      {!isOpen ? (
-        <p className="thread-history-note">
-          {status === "resolved"
-            ? "Handled in a newer revision. This is history and is not sent to Codex."
-            : "The anchored text changed. This is history and is not sent to Codex."}
-        </p>
-      ) : null}
+      {detached ? <p className="thread-history-note">The anchored text could not be mapped safely. Edit this feedback to select a current location.</p> : null}
+      {thread.lifecycle === "addressed" ? <p className="thread-history-note">This feedback is read-only. Create a follow-up for additional changes.</p> : null}
 
       <ul className="thread-message-list">
-        {thread.messages.map((m) => (
-          <li key={m.id} className="thread-message">
-            <div className="thread-message-meta">
-              <span className="chip">{m.author}</span>
-              <span className="text-[11px] text-foreground-muted">{relativeTime(m.createdAt)}</span>
-            </div>
-            <p className="whitespace-pre-wrap break-words text-foreground">{m.body}</p>
-          </li>
-        ))}
+        {thread.messages.map((message) => <li key={message.id} className="thread-message">
+          <div className="thread-message-meta"><span className="chip">{message.author}</span><span className="text-[11px] text-foreground-muted">{relativeTime(message.createdAt)}</span></div>
+          <p className="whitespace-pre-wrap break-words text-foreground">{message.body}</p>
+        </li>)}
       </ul>
 
-      {sideAnswers.length > 0 ? (
-        <ul className="thread-side-answer-list">
-          {sideAnswers.map((ans) => (
-            <li
-              key={ans.id}
-              className={`thread-side-answer ${
-                ans.promoted
-                  ? "is-promoted"
-                  : ""
-              }`}
-            >
-              <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                <span className="chip">
-                  <Sparkles size={11} /> /btw
-                </span>
-                {!isOpen ? (
-                  <span className="pill pill-stay">
-                    <EyeOff size={10} /> archived with this thread
-                  </span>
-                ) : ans.promoted ? (
-                  <span className="pill pill-go">
-                    <ArrowRight size={10} /> Q+A in handoff
-                  </span>
-                ) : (
-                  <span className="pill pill-stay">
-                    <EyeOff size={10} /> ephemeral, stays here
-                  </span>
-                )}
-              </div>
-              <p className="mt-1 font-medium text-foreground">{ans.question}</p>
-              <p className="mt-1 whitespace-pre-wrap text-foreground-muted">{ans.answer}</p>
-              {isOpen ? <div className="mt-2 flex justify-end">
-                {ans.promoted ? (
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => onUnpromote(ans.id)}
-                    disabled={isProcessing}
-                    title="Drop this /btw Q+A from the next Codex turn"
-                  >
-                    Remove from handoff
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => onPromote(ans.id)}
-                    disabled={isProcessing}
-                    title="Include the /btw question and answer in the next Codex turn"
-                  >
-                    <ArrowRight size={12} /> Send Q+A to next turn
-                  </button>
-                )}
-              </div> : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      {sideAnswers.length > 0 ? <ul className="thread-side-answer-list">
+        {sideAnswers.map((answer) => <li key={answer.id} className={`thread-side-answer${answer.included ? " is-promoted" : ""}`}>
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="chip"><Sparkles size={11} /> /btw</span>
+            {answer.delivery === "none" ? <span className="pill pill-stay"><EyeOff size={10} /> retained with feedback</span>
+              : answer.included ? <span className="pill pill-go"><ArrowRight size={10} /> included</span>
+              : <span className="pill pill-stay"><EyeOff size={10} /> private</span>}
+          </div>
+          <p className="mt-1 font-medium text-foreground">{answer.question}</p>
+          <p className="mt-1 whitespace-pre-wrap text-foreground-muted">{answer.answer}</p>
+          {answer.capabilities.canInclude || answer.capabilities.canKeepPrivate ? <div className="mt-2 flex justify-end">
+            {answer.included ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onKeepPrivate(answer.id)} disabled={processing}>Keep answer private</button>
+              : <button type="button" className="btn btn-sm" onClick={() => onInclude(answer.id)} disabled={processing}><ArrowRight size={12} /> Include answer</button>}
+          </div> : null}
+        </li>)}
+      </ul> : null}
 
-      {agentAction && isOpen ? (
-        <div className="btw-thinking mt-3" role="status" aria-live="polite">
-          <Sparkles size={13} />
-          <span>{agentAction === "asking" ? "Codex is thinking about this /btw…" : "Codex is iterating on this comment…"}</span>
-        </div>
-      ) : null}
+      {agentAction && active ? <div className="btw-thinking mt-3" role="status" aria-live="polite"><Sparkles size={13} /><span>{agentAction === "asking" ? "Codex is considering this /btw…" : "Codex is iterating on this feedback…"}</span></div> : null}
 
-      {isOpen ? <div className="thread-card-actions">
-        <button
-          type="button"
-          className="btn btn-sm flex-1"
-          onClick={() => onReply(thread.id)}
-          disabled={isProcessing}
-          title={replyTitle}
-        >
-          <Reply size={13} /> {replyLabel}
-        </button>
-        {sideQuestionsEnabled ? (
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => onAskSide(thread)}
-            disabled={isProcessing}
-            title="Ask Codex an ephemeral /btw question; stays out of the handoff unless you opt in"
-          >
-            <MessageCircleQuestion size={13} /> {agentAction === "asking" ? "Asking…" : "Ask /btw"}
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => onIterate(thread)}
-          disabled={isProcessing}
-          title="Ask Codex to rewrite this anchored section now"
-        >
-          <Sparkles size={13} /> {agentAction === "iterating" ? "Iterating…" : "Iterate"}
-        </button>
+      {active ? <div className="thread-card-actions">
+        {thread.capabilities.canReply ? <button type="button" className="btn btn-sm flex-1" onClick={() => onReply(thread.id)} disabled={processing}><Reply size={13} /> {instruction ? "Add iteration feedback" : "Add private note"}</button> : null}
+        {sideQuestionsEnabled && thread.capabilities.canAsk ? <button type="button" className="btn btn-sm" onClick={() => onAskSide(thread)} disabled={processing}><MessageCircleQuestion size={13} /> {agentAction === "asking" ? "Asking…" : "Ask /btw"}</button> : null}
+        {thread.capabilities.canIterate ? <button type="button" className="btn btn-sm" onClick={() => onIterate(thread)} disabled={processing}><Sparkles size={13} /> {agentAction === "iterating" ? "Iterating…" : "Iterate now"}</button> : null}
       </div> : null}
+      {thread.capabilities.canCreateFollowUp ? <div className="thread-card-actions"><button type="button" className="btn btn-sm" onClick={() => onCreateFollowUp(thread.id)} disabled={processing}><Reply size={13} /> Create follow-up</button></div> : null}
     </section>
   );
 }
 
-function ThreadStatusPill({ status }: { status: string }) {
-  const resolved = status === "resolved";
-  return (
-    <span className={`status-pill ${resolved ? "is-resolved" : "is-stale"}`}>
-      {resolved ? <CheckCircle2 size={11} /> : <AlertTriangle size={11} />}
-      {resolved ? "Resolved" : "Stale"}
-    </span>
-  );
-}
-
-function KindToggle({
-  kind,
-  onChange,
-  disabled,
-}: {
-  kind: ThreadKind;
-  onChange: (kind: ThreadKind) => void;
-  disabled: boolean;
-}) {
-  const isDecision = kind === "decision";
-  return (
-    <fieldset className="kind-toggle" aria-label="Comment kind">
-      <button
-        type="button"
-        className={`kind-pill ${isDecision ? "is-active is-go" : ""}`}
-        onClick={() => onChange("decision")}
-        disabled={disabled}
-        title="This comment goes to Codex in the next turn"
-        aria-pressed={isDecision}
-      >
-        <ArrowRight size={11} /> Decision
-      </button>
-      <button
-        type="button"
-        className={`kind-pill ${!isDecision ? "is-active is-stay" : ""}`}
-        onClick={() => onChange("note")}
-        disabled={disabled}
-        title="Keep private; this comment stays out of the handoff"
-        aria-pressed={!isDecision}
-      >
-        <EyeOff size={11} /> Note
-      </button>
-    </fieldset>
-  );
+function IntentToggle({ intent, onChange, disabled }: { intent: ThreadIntent; onChange: (intent: ThreadIntent) => void; disabled: boolean }) {
+  const instruction = intent === "instruction";
+  return <fieldset className="kind-toggle" aria-label="Comment intent">
+    <button type="button" className={`kind-pill ${instruction ? "is-active is-go" : ""}`} onClick={() => onChange("instruction")} disabled={disabled} title="Use this feedback when iterating or approving" aria-pressed={instruction}><ArrowRight size={11} /> Use in iteration</button>
+    <button type="button" className={`kind-pill ${!instruction ? "is-active is-stay" : ""}`} onClick={() => onChange("private")} disabled={disabled} title="Keep this note private to the review" aria-pressed={!instruction}><EyeOff size={11} /> Private note</button>
+  </fieldset>;
 }

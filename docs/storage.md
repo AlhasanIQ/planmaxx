@@ -27,7 +27,7 @@ Do not weaken these rules without an explicit migration and tests.
 
 The versioned JSON envelope stores the complete review workspace: working
 plan, revision metadata and Git commit IDs, comments and anchors, replies,
-positions, side answers, promotions, digest, and pending proposal. It also
+positions, side answers and their inclusion choice, digest, and pending proposal. It also
 stores the canonical source path and last externally observed source text/hash
 separately from the working review plan.
 
@@ -96,30 +96,32 @@ stored source baseline.
   from the source file because a proposal was accepted in PlanMaxx.
 - If changed by an editor or another agent, persist an `external` revision,
   retain all review artifacts, and require the client to refresh before retry.
-- Reanchor a comment only for one unambiguous matching target. Preserve
-  ambiguous or deleted comments and mark them `stale`; an explicit edit or
-  reanchor reopens them.
+- Reanchor active feedback only for one unambiguous matching target. Preserve
+  ambiguous or deleted feedback as **detached / needs re-anchor**; an explicit
+  edit or reanchor reactivates it. Addressed feedback is immutable history and
+  is never reconciled against a newer source document.
 - An external change makes a pending section proposal obsolete and discardable;
   it must not be silently applied or discarded.
-- Comments, replies, side answers, promotions, and proposal creation do not
+- Comments, replies, side answers, inclusion choices, and proposal creation do not
   write the source file. Applying a proposal changes only the working
   review revision.
 
 ## Final-review iteration lifecycle
 
-- Choosing **Iterate plan** stores a pending whole-plan proposal against the
+- Choosing the top-bar **Iterate** action stores a pending whole-plan proposal against the
   current revision. Proposal creation and refinement do not append a revision.
 - While a proposal is pending, its feedback snapshot is frozen: comments,
-  replies, kinds, anchors, `/btw` answers/promotions, revision restore, a second
+  replies, intents, anchors, `/btw` answers/inclusion, revision restore, a second
   unrelated iteration, and finalization wait for Apply or Discard. Cancel
   remains available.
 - Refining that proposal keeps the original final-review digest authoritative
   and continues to compare the complete pending plan, not only one patch hunk.
 - **Apply as new revision** atomically appends an `iteration` revision, stores
-  immutable snapshots of consumed decision threads, resolves those mutable
-  threads, clears their obsolete text selections, resets consumed `/btw`
-  promotions and any stored final digest, and removes the pending proposal.
-- Discarding the proposal leaves comments, promotions, digest, plan, and
+  immutable snapshots of consumed instruction threads, marks those mutable
+  threads addressed, clears obsolete selections, makes the consumed `/btw`
+  answers private, normalizes answers on any feedback that became non-active,
+  clears any stored final digest, and removes the pending proposal.
+- Discarding the proposal leaves comments, inclusion choices, digest, plan, and
   revision history unchanged.
 - Deliberately reopening a finalized or canceled autosave starts an `active`
   cycle and clears the prior terminal digest while preserving plan revisions
@@ -129,12 +131,16 @@ stored source baseline.
 ## Review API projection
 
 - `/api/state` is a versioned client projection, not the persisted `Session`
-  record. Collections are always arrays, review phase and capabilities come
-  from the backend, revision bodies are omitted, and pending proposals expose a
+  record. Thread intent (`instruction | private`), lifecycle (`active |
+  addressed | detached`), display bucket, delivery, per-item capabilities, and
+  aggregate counts come from Go. Collections are always arrays, revision bodies
+  are omitted, and pending proposals expose a
   lightweight summary plus an `activeChange`.
 - Pending proposals and `/api/revisions/{from}/diff/{to}` use the same Go-owned
   change view: exact before/after document snapshots, stable rows, replacement
-  clusters, comment placements, and immutable accepted-feedback placements.
+  clusters, comment placements, immutable accepted-feedback placements, and a
+  deterministic `reviewStops` queue. A feedback stop covers only its colocated
+  change cluster; all distant or otherwise uncovered clusters remain stops.
 - The browser renders complete before/after documents for Markdown context but
   does not compute diffs, reconstruct documents, or infer comment placement.
 

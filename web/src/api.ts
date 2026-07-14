@@ -1,5 +1,5 @@
 import type { SideQuestionContext } from "./lib/selectionContext";
-import type { Anchor, ChangeView, Digest, Revision, SectionProposal, Session, SideAnswer, Thread, ThreadKind } from "./types";
+import type { Anchor, ChangeView, Digest, Revision, SectionProposal, Session, SideAnswer, Thread, ThreadIntent } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
@@ -29,7 +29,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function normalizeSession(raw: Session): Session {
-  if (raw.schemaVersion !== 2) {
+  if (raw.schemaVersion !== 3) {
     throw new Error(`Unsupported PlanMaxx API schema ${String(raw.schemaVersion ?? "missing")}; reload the rebuilt app.`);
   }
   return raw;
@@ -45,18 +45,19 @@ function normalizeDigest(raw: Digest): Digest {
 
 export const api = {
   getState: async () => normalizeSession(await request<Session>("/api/state")),
-  createThread: async (anchor: Anchor, body: string, selectedText = "") => {
-    const t = await request<Thread>("/api/threads", {
+  createThread: async (anchor: Anchor, body: string, selectedText = "", intent: ThreadIntent = "instruction") => {
+    return request<Thread>("/api/threads", {
       method: "POST",
-      body: JSON.stringify({ anchor, body, selectedText }),
+      body: JSON.stringify({ anchor, body, selectedText, intent }),
     });
-    return { ...t, kind: t.kind ?? "decision", status: t.status ?? "open", messages: t.messages ?? [] };
   },
-  setThreadKind: (threadId: string, kind: ThreadKind) =>
-    request<{ status: string }>(`/api/threads/${encodeURIComponent(threadId)}/kind`, {
+  setThreadIntent: (threadId: string, intent: ThreadIntent) =>
+    request<{ status: string }>(`/api/threads/${encodeURIComponent(threadId)}/intent`, {
       method: "POST",
-      body: JSON.stringify({ kind }),
+      body: JSON.stringify({ intent }),
     }),
+  createFollowUp: (threadId: string) =>
+    request<Thread>(`/api/threads/${encodeURIComponent(threadId)}/follow-up`, { method: "POST", body: "{}" }),
   reply: (threadId: string, body: string) =>
     request<{ status: string }>(`/api/threads/${encodeURIComponent(threadId)}/reply`, {
       method: "POST",

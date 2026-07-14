@@ -179,11 +179,15 @@ func (s *Session) AddThread(anchor Anchor, body string) Thread {
 }
 
 func (s *Session) AddThreadWithSelectedText(anchor Anchor, body string, selectedText string) Thread {
+	return s.addThread(anchor, body, selectedText, ThreadKindDecision)
+}
+
+func (s *Session) addThread(anchor Anchor, body string, selectedText string, kind string) Thread {
 	thread := Thread{
 		ID:           fmt.Sprintf("thread-%d", s.NextThreadID+1),
 		Anchor:       anchor,
 		SelectedText: selectedText,
-		Kind:         ThreadKindDecision,
+		Kind:         kind,
 		Status:       ThreadStatusOpen,
 		Position: Position{
 			X: 720,
@@ -197,13 +201,7 @@ func (s *Session) AddThreadWithSelectedText(anchor Anchor, body string, selected
 }
 
 func (s *Session) AddReply(threadID string, body string) bool {
-	for i := range s.Threads {
-		if s.Threads[i].ID == threadID {
-			s.Threads[i].Messages = append(s.Threads[i].Messages, s.newMessage("reviewer", body))
-			return true
-		}
-	}
-	return false
+	return s.AddReplyChecked(threadID, body) == nil
 }
 
 func (s *Session) DeleteThread(threadID string) bool {
@@ -218,24 +216,17 @@ func (s *Session) DeleteThread(threadID string) bool {
 }
 
 func (s *Session) SetThreadKind(threadID string, kind string) bool {
-	if kind != ThreadKindDecision && kind != ThreadKindNote {
-		return false
-	}
-	for i := range s.Threads {
-		if s.Threads[i].ID == threadID {
-			s.Threads[i].Kind = kind
-			return true
-		}
-	}
-	return false
+	intent, ok := intentForLegacyKind(kind)
+	return ok && s.SetThreadIntent(threadID, intent) == nil
 }
 
 func (s *Session) ResolveThread(threadID string) bool {
-	return s.setThreadStatus(threadID, ThreadStatusResolved)
+	thread, err := s.threadPointer(threadID)
+	return err == nil && s.AddressThread(threadID, lineAnchor(thread.Anchor)) == nil
 }
 
 func (s *Session) MarkThreadStale(threadID string) bool {
-	return s.setThreadStatus(threadID, ThreadStatusStale)
+	return s.DetachThread(threadID) == nil
 }
 
 func (s *Session) MoveThread(threadID string, position Position) bool {
@@ -249,14 +240,7 @@ func (s *Session) MoveThread(threadID string, position Position) bool {
 }
 
 func (s *Session) ReanchorThread(threadID string, anchor Anchor) bool {
-	for i := range s.Threads {
-		if s.Threads[i].ID == threadID {
-			s.Threads[i].Anchor = anchor
-			s.Threads[i].Status = ThreadStatusOpen
-			return true
-		}
-	}
-	return false
+	return s.ReanchorThreadChecked(threadID, anchor) == nil
 }
 
 func (s *Session) EditThread(threadID string, anchor Anchor, body string) bool {
@@ -264,22 +248,14 @@ func (s *Session) EditThread(threadID string, anchor Anchor, body string) bool {
 }
 
 func (s *Session) EditThreadWithSelectedText(threadID string, anchor Anchor, body string, selectedText string) bool {
-	for i := range s.Threads {
-		if s.Threads[i].ID == threadID {
-			if len(s.Threads[i].Messages) == 0 {
-				return false
-			}
-			s.Threads[i].Anchor = anchor
-			s.Threads[i].SelectedText = selectedText
-			s.Threads[i].Status = ThreadStatusOpen
-			s.Threads[i].Messages[0].Body = body
-			return true
-		}
-	}
-	return false
+	return s.EditThreadChecked(threadID, anchor, body, selectedText) == nil
 }
 
 func (s *Session) AddSideAnswer(threadID string, question string, answer string) SideAnswer {
+	return s.addSideAnswer(threadID, question, answer)
+}
+
+func (s *Session) addSideAnswer(threadID string, question string, answer string) SideAnswer {
 	sideAnswer := SideAnswer{
 		ID:        fmt.Sprintf("side-%d", s.NextSideAnswerID+1),
 		ThreadID:  threadID,
@@ -293,23 +269,11 @@ func (s *Session) AddSideAnswer(threadID string, question string, answer string)
 }
 
 func (s *Session) PromoteSideAnswer(sideAnswerID string) bool {
-	for i := range s.SideAnswers {
-		if s.SideAnswers[i].ID == sideAnswerID {
-			s.SideAnswers[i].Promoted = true
-			return true
-		}
-	}
-	return false
+	return s.IncludeSideAnswer(sideAnswerID) == nil
 }
 
 func (s *Session) UnpromoteSideAnswer(sideAnswerID string) bool {
-	for i := range s.SideAnswers {
-		if s.SideAnswers[i].ID == sideAnswerID {
-			s.SideAnswers[i].Promoted = false
-			return true
-		}
-	}
-	return false
+	return s.KeepSideAnswerPrivate(sideAnswerID) == nil
 }
 
 func (s *Session) SetDigest(digest Digest) {
@@ -336,20 +300,23 @@ func (s *Session) AddExternalRevision(plan string, summary string) Revision {
 func (s *Session) ReconcileExternalPlan(previousSource string, nextSource string) {
 	for i := range s.Threads {
 		thread := &s.Threads[i]
+		if thread.Lifecycle() != ThreadLifecycleActive {
+			continue
+		}
 		selected := thread.SelectedText
 		if selected == "" {
 			// Legacy full-line anchors point at the mutable working revision.
 			// Once it differs from the source baseline, guessing from source
 			// line numbers could attach the comment to unrelated content.
 			if s.Plan != previousSource {
-				thread.Status = ThreadStatusStale
+				_ = s.DetachThread(thread.ID)
 				continue
 			}
 			selected = textForAnchor(previousSource, thread.Anchor)
 		}
 		anchor, ok := uniqueAnchorForText(nextSource, selected, thread.Anchor)
 		if !ok {
-			thread.Status = ThreadStatusStale
+			_ = s.DetachThread(thread.ID)
 			continue
 		}
 		thread.Anchor = anchor
@@ -421,6 +388,8 @@ func (s *Session) ApplyProposalChecked(proposalID string) (Revision, error) {
 	} else {
 		s.adjustThreadsForAppliedProposal(proposal, delta)
 	}
+	s.consumeIncludedAnswers(proposal.ConsumedSideAnswerIDs)
+	s.normalizeAnswerDelivery()
 	s.PendingProposal = nil
 	if err := s.Validate(); err != nil {
 		*s = before
@@ -565,16 +534,6 @@ func (s *Session) deleteSideAnswersForThread(threadID string) {
 	s.SideAnswers = kept
 }
 
-func (s *Session) setThreadStatus(threadID string, status string) bool {
-	for i := range s.Threads {
-		if s.Threads[i].ID == threadID {
-			s.Threads[i].Status = status
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Session) addRevision(parentID string, source string, plan string, anchor Anchor, summary string) Revision {
 	return s.addRevisionWithFeedback(parentID, source, plan, anchor, summary, nil)
 }
@@ -604,7 +563,7 @@ func (s *Session) feedbackForProposal(proposal SectionProposal) []RevisionFeedba
 	feedback := make([]RevisionFeedback, 0, len(proposal.IncludedThreadIDs))
 	for _, threadID := range proposal.IncludedThreadIDs {
 		for _, thread := range s.Threads {
-			if thread.ID != threadID {
+			if thread.ID != threadID || thread.Lifecycle() != ThreadLifecycleActive {
 				continue
 			}
 			feedback = append(feedback, RevisionFeedback{
@@ -645,6 +604,9 @@ func (s *Session) adjustThreadsForReviewProposal(proposal SectionProposal, previ
 	}
 	for i := range s.Threads {
 		thread := &s.Threads[i]
+		if thread.Lifecycle() != ThreadLifecycleActive {
+			continue
+		}
 		resultAnchor, ok := reanchorThreadInPlan(*thread, previousPlan, proposal.ProposedPlan)
 		if included[thread.ID] {
 			if !ok {
@@ -661,9 +623,7 @@ func (s *Session) adjustThreadsForReviewProposal(proposal SectionProposal, previ
 			thread.Anchor = resultAnchor
 			continue
 		}
-		if thread.Status == ThreadStatusOpen {
-			thread.Status = ThreadStatusStale
-		}
+		_ = s.DetachThread(thread.ID)
 	}
 }
 
@@ -702,6 +662,9 @@ func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delt
 	}
 	for i := range s.Threads {
 		thread := &s.Threads[i]
+		if thread.Lifecycle() != ThreadLifecycleActive {
+			continue
+		}
 		switch {
 		case thread.Anchor.EndLine < applied.StartLine:
 			continue
@@ -710,7 +673,7 @@ func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delt
 		case included[thread.ID]:
 			resolveThreadAfterProposal(thread, proposal.ReplacementAnchor)
 		default:
-			thread.Status = ThreadStatusStale
+			_ = s.DetachThread(thread.ID)
 		}
 	}
 }
@@ -725,21 +688,24 @@ func (s *Session) completeReviewIteration(proposal SectionProposal) {
 	}
 	for i := range s.Threads {
 		thread := &s.Threads[i]
-		if !included[thread.ID] || thread.Status == ThreadStatusResolved {
+		if !included[thread.ID] || thread.Lifecycle() != ThreadLifecycleActive {
 			continue
 		}
 		resolveThreadAfterProposal(thread, lineAnchor(thread.Anchor))
 	}
-	consumedAnswers := make(map[string]bool, len(proposal.ConsumedSideAnswerIDs))
-	for _, answerID := range proposal.ConsumedSideAnswerIDs {
-		consumedAnswers[answerID] = true
+	s.Digest = Digest{}
+}
+
+func (s *Session) consumeIncludedAnswers(answerIDs []string) {
+	consumed := make(map[string]bool, len(answerIDs))
+	for _, answerID := range answerIDs {
+		consumed[answerID] = true
 	}
-	for i := range s.SideAnswers {
-		if consumedAnswers[s.SideAnswers[i].ID] {
-			s.SideAnswers[i].Promoted = false
+	for index := range s.SideAnswers {
+		if consumed[s.SideAnswers[index].ID] {
+			s.SideAnswers[index].Promoted = false
 		}
 	}
-	s.Digest = Digest{}
 }
 
 func (s *Session) adjustThreadsForAppliedHunks(proposal SectionProposal) {
@@ -749,6 +715,9 @@ func (s *Session) adjustThreadsForAppliedHunks(proposal SectionProposal) {
 	}
 	for i := range s.Threads {
 		thread := &s.Threads[i]
+		if thread.Lifecycle() != ThreadLifecycleActive {
+			continue
+		}
 		affected := false
 		for _, hunk := range proposal.AppliedHunks {
 			if anchorsOverlap(thread.Anchor, hunk.Anchor) {
@@ -760,7 +729,7 @@ func (s *Session) adjustThreadsForAppliedHunks(proposal SectionProposal) {
 			if included[thread.ID] {
 				resolveThreadAfterProposal(thread, replacementAnchorForThread(thread.Anchor, proposal))
 			} else {
-				thread.Status = ThreadStatusStale
+				_ = s.DetachThread(thread.ID)
 			}
 			continue
 		}
@@ -1025,6 +994,7 @@ func (s *Session) restoreThreadDefaults() {
 			s.Threads[i].Status = ThreadStatusOpen
 		}
 	}
+	s.normalizeAnswerDelivery()
 }
 
 func (s *Session) restoreRevisionDefaults() {

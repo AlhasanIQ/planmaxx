@@ -46,7 +46,7 @@ Rules:
 Task: answer the question using the marked plan text and excerpt. Do not edit
 the plan, create a proposal XML document, or write a review digest.
 {{else if eq .Mode "review_digest" -}}
-Task: create the requested concise review digest. Keep human review decisions
+Task: create the requested concise review digest. Keep human review feedback
 separate from plan text. Do not edit the plan or create a proposal XML document.
 {{else if eq .Mode "handoff" -}}
 Task: continue the requested work using the supplied plan and human feedback.

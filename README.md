@@ -118,17 +118,21 @@ serialization of the preview.
   <img src="docs/screenshots/thread-card.png" alt="PlanMaxx annotated thread card with btw answer" width="320">
 </p>
 
-The live handoff preview shows what will be sent back to Codex, while thread
-cards can include ephemeral `/btw` answers that can be promoted into the next
-handoff.
+The submission review shows what will be sent back to Codex. Feedback defaults
+to **Use in iteration**, private notes stay local, and `/btw` answers remain
+private unless you explicitly include them.
 
 ## What It Does
 
 - Renders long plans in a readable local review UI.
 - Adds threaded comments anchored to lines or text ranges.
 - Keeps private notes out of the final handoff.
-- Lets you promote useful side-question answers into the handoff.
+- Lets you include useful side-question answers in the next iteration or approval.
 - Supports focused section rewrites and proposal diffs before final approval.
+- Provides Previous/Next navigation across feedback and every otherwise
+  uncovered change in a proposal or revision comparison.
+- Separates active feedback, items that need re-anchoring, and addressed
+  revision history without conflating them into one status.
 - Turns final-review feedback into a whole-plan proposal; the checked-out plan
   stays unchanged until **Apply as new revision** is clicked.
 - Autosaves review state next to the plan file as

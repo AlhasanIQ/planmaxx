@@ -722,8 +722,8 @@ func TestSessionDeleteUnknownThreadReturnsFalse(t *testing.T) {
 
 func TestSessionPromotesSideAnswer(t *testing.T) {
 	s := New("plan-1", "# Plan")
-
-	answer := s.AddSideAnswer("thread-1", "Why this order?", "Because CLI contract is first.")
+	thread := s.AddThread(Anchor{StartLine: 1, EndLine: 1}, "Review")
+	answer := s.AddSideAnswer(thread.ID, "Why this order?", "Because CLI contract is first.")
 	s.PromoteSideAnswer(answer.ID)
 
 	if !s.SideAnswers[0].Promoted {
@@ -733,8 +733,8 @@ func TestSessionPromotesSideAnswer(t *testing.T) {
 
 func TestSessionUnpromotesSideAnswer(t *testing.T) {
 	s := New("plan-1", "# Plan")
-
-	answer := s.AddSideAnswer("thread-1", "Why this order?", "Because CLI contract is first.")
+	thread := s.AddThread(Anchor{StartLine: 1, EndLine: 1}, "Review")
+	answer := s.AddSideAnswer(thread.ID, "Why this order?", "Because CLI contract is first.")
 	s.PromoteSideAnswer(answer.ID)
 
 	if !s.UnpromoteSideAnswer(answer.ID) {

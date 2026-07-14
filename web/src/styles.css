@@ -74,6 +74,9 @@
   .btn:disabled {
     @apply cursor-not-allowed opacity-50;
   }
+  .btn[aria-disabled="true"] {
+    @apply pointer-events-none cursor-not-allowed opacity-50;
+  }
   .btn-primary {
     background: var(--color-accent);
     border-color: var(--color-accent);
@@ -199,6 +202,37 @@
   gap: 6px;
   min-width: 0;
 }
+.review-navigator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-accent) 4%, var(--color-surface-elevated));
+  font-size: 12px;
+}
+.review-navigator-summary {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-foreground);
+  font-weight: 650;
+}
+.review-navigator-progress {
+  margin-left: auto;
+  color: var(--color-foreground-muted);
+  font-variant-numeric: tabular-nums;
+}
+.plan-row-with-comments.is-review-target .line-row,
+.comparison-feedback-card.is-review-target,
+.thread.is-review-target {
+  border-color: var(--color-accent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 20%, transparent) !important;
+}
+[data-thread-id], [data-feedback-id], [data-change-cluster] {
+  scroll-margin-top: 76px;
+}
 .comparison-line-key {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -291,6 +325,14 @@
 .plan-thread-stack.is-inline {
   margin: 10px 14px 16px 58px;
 }
+.comment-state-overview {
+  padding: 10px 12px 0;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-surface-muted) 32%, var(--color-surface-elevated));
+}
+.comment-state-overview .plan-thread-stack.is-inline {
+  margin: 0 0 10px;
+}
 .inline-thread-stack-label {
   padding: 1px 2px 2px;
   color: var(--color-foreground-muted);
@@ -334,6 +376,22 @@
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.historical-thread-label { cursor: pointer; }
+.attention-thread-group {
+  display: grid;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-warning) 7%, var(--color-surface-elevated));
+}
+.attention-thread-label {
+  color: var(--color-warning);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .07em;
   text-transform: uppercase;
 }
 .plan-thread-stack.is-alongside .historical-thread-group {
@@ -770,10 +828,24 @@
   border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
   box-shadow: 0 3px 12px color-mix(in srgb, var(--color-foreground) 8%, transparent);
 }
-.thread.is-decision {
+.thread.is-instruction {
   border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
   background: color-mix(in srgb, var(--color-accent) 3%, var(--color-surface-elevated));
 }
+.thread.is-private {
+  background: color-mix(in srgb, var(--color-surface-muted) 62%, var(--color-surface-elevated));
+  border-color: color-mix(in srgb, var(--color-border-strong) 72%, var(--color-border));
+}
+.thread.is-addressed {
+  border-style: dashed;
+  color: var(--color-foreground-muted);
+  box-shadow: none;
+}
+.thread.is-detached {
+  border-color: color-mix(in srgb, var(--color-warning) 46%, var(--color-border));
+}
+.thread-card-eyebrow.is-detached { color: var(--color-warning); }
+.thread-card-eyebrow.is-addressed { color: var(--color-foreground-muted); }
 .thread.is-focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent), var(--shadow-soft);
@@ -863,6 +935,34 @@
   padding-top: 10px;
   border-top: 1px solid var(--color-border);
 }
+.composer-intent {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 9px 0;
+}
+.composer-intent legend {
+  float: left;
+  margin-right: 5px;
+  color: var(--color-foreground-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+.submission-review { max-height: min(62vh, 620px); overflow: auto; padding-right: 2px; }
+.submission-digest-section {
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-surface-muted) 42%, var(--color-surface-elevated));
+  padding: 10px 11px;
+}
+.submission-digest-section h3 { display: flex; align-items: center; gap: 6px; color: var(--color-foreground); font-size: 12px; font-weight: 700; }
+.submission-digest-section h3 span { margin-left: auto; color: var(--color-foreground-muted); font-variant-numeric: tabular-nums; }
+.submission-digest-section ul { display: grid; gap: 6px; margin-top: 8px; }
+.submission-digest-section li { padding-left: 12px; color: var(--color-foreground-muted); font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+.submission-digest-section li::before { content: "•"; margin-left: -12px; margin-right: 7px; }
+.submission-digest-section p { margin-top: 7px; color: var(--color-foreground-muted); font-size: 12px; }
+.submission-attention { border-radius: 7px; background: color-mix(in srgb, var(--color-warning) 10%, transparent); color: var(--color-warning); padding: 8px 9px; font-size: 12px; }
+.pill-attention { color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 32%, var(--color-border)); }
 .btw-thinking {
   display: flex;
   align-items: center;
@@ -910,35 +1010,6 @@
   }
 }
 
-/* Thread kind: "note" threads are de-emphasized so the eye picks up which
-   comments actually drive Codex's next turn vs which ones stay private. */
-.thread.is-note {
-  background: color-mix(in srgb, var(--color-surface-muted) 62%, var(--color-surface-elevated));
-  border-color: color-mix(in srgb, var(--color-border-strong) 72%, var(--color-border));
-}
-.thread.is-note h3 span {
-  color: var(--color-foreground-muted);
-}
-.thread.is-closed {
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
-  box-shadow: none;
-}
-.thread.is-historical {
-  color: var(--color-foreground-muted);
-}
-.thread.is-historical:hover {
-  border-color: transparent;
-  box-shadow: none;
-}
-.thread-card-eyebrow.is-historical {
-  color: var(--color-foreground-muted);
-}
-.thread-card-meta.is-historical {
-  margin-top: 7px;
-}
 .thread-history-note {
   margin-top: 7px;
   padding: 0;
@@ -948,29 +1019,7 @@
   font-size: 11px;
   line-height: 1.45;
 }
-.thread.is-historical .thread-message-list {
-  margin-top: 9px;
-}
-.thread.is-historical .thread-message {
-  color: var(--color-foreground-muted);
-  font-size: 12px;
-}
-.thread.is-historical .thread-side-answer-list {
-  margin-top: 9px;
-  padding-top: 8px;
-}
-.thread.is-historical .thread-side-answer {
-  padding: 8px 9px;
-  border-color: color-mix(in srgb, var(--color-border) 78%, transparent);
-  background: color-mix(in srgb, var(--color-surface-elevated) 40%, transparent);
-}
-.thread.is-historical .chip,
-.thread.is-historical .pill {
-  filter: grayscale(0.8);
-  opacity: 0.8;
-}
-
-/* Decision/Note toggle inside the thread card. */
+/* Intent toggle inside the thread card. */
 .kind-toggle {
   display: inline-flex;
   gap: 4px;
@@ -1007,28 +1056,6 @@
   color: var(--color-foreground);
   box-shadow: inset 0 0 0 1px var(--color-border-strong);
 }
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border-radius: 999px;
-  border: 1px solid var(--color-border);
-  padding: 3px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-}
-.status-pill.is-resolved {
-  border-color: color-mix(in srgb, var(--color-success) 42%, transparent);
-  background: color-mix(in srgb, var(--color-success) 10%, transparent);
-  color: var(--color-success);
-}
-.status-pill.is-stale {
-  border-color: color-mix(in srgb, var(--color-warning) 42%, transparent);
-  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
-  color: var(--color-warning);
-}
-
 .handoff-arrow {
   display: inline-grid;
   place-items: center;

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/AlhasanIQ/planmaxx/internal/review"
@@ -17,15 +18,23 @@ func TestBrowserDiffRegression(t *testing.T) {
 		t.Skip("set PLANMAXX_BROWSER_E2E=1 to run the Playwright regression")
 	}
 	t.Run("pending proposal comments and tables", func(t *testing.T) {
-		before := "# Regression fixture\n\nold first\nold second\n\n| Capability | Status |\n| --- | --- |\n| Old row | no |\n| Keep row | yes |\n\nTail"
-		after := "# Regression fixture\n\nnew first\nnew second\n\n| Capability | Status |\n| --- | --- |\n| New row | ready |\n| Added row | ready |\n| Keep row | yes |\n\nTail"
+		filler := make([]string, 35)
+		for index := range filler {
+			filler[index] = "Filler line"
+		}
+		beforeLines := append([]string{"# Regression fixture", "", "old first", "old second", "", "| Capability | Status |", "| --- | --- |", "| Old row | no |", "| Keep row | yes |", ""}, filler...)
+		beforeLines = append(beforeLines, "Tail unchanged", "old footer")
+		afterLines := append([]string{"# Regression fixture", "", "new first", "new second", "", "| Capability | Status |", "| --- | --- |", "| New row | ready |", "| Added row | ready |", "| Keep row | yes |", ""}, filler...)
+		afterLines = append(afterLines, "Tail unchanged", "new footer")
+		before, after := strings.Join(beforeLines, "\n"), strings.Join(afterLines, "\n")
 		s := session.New("browser-regression", before)
 		first := s.AddThread(session.Anchor{StartLine: 3, EndLine: 4}, "replace both lines")
 		second := s.AddThread(session.Anchor{StartLine: 3, EndLine: 3}, "overlapping replacement")
+		remote := s.AddThread(session.Anchor{StartLine: len(beforeLines) - 1, EndLine: len(beforeLines) - 1}, "unchanged anchor with distant edits")
 		s.CreateSectionProposal(session.SectionProposalInput{
-			Kind: session.ProposalKindReview, Anchor: session.Anchor{StartLine: 1, EndLine: 11},
+			Kind: session.ProposalKindReview, Anchor: session.Anchor{StartLine: 1, EndLine: len(beforeLines)},
 			OriginalSection: before, ProposedSection: after, ProposedPlan: after,
-			Summary: "Exercise comments and added table rows.", IncludedThreadIDs: []string{first.ID, second.ID},
+			Summary: "Exercise comments, distant changes, and added table rows.", IncludedThreadIDs: []string{first.ID, second.ID, remote.ID},
 		})
 		runBrowserRegression(t, s, "proposal")
 	})
@@ -46,6 +55,17 @@ func TestBrowserDiffRegression(t *testing.T) {
 			t.Fatal("apply revision fixture proposal")
 		}
 		runBrowserRegression(t, s, "revision")
+	})
+
+	t.Run("comment state buckets", func(t *testing.T) {
+		s := session.New("browser-comment-states", "one\ntwo\nthree\nfour")
+		s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "active instruction")
+		s.AddThreadWithIntent(session.Anchor{StartLine: 2, EndLine: 2}, "active private", "", session.ThreadIntentPrivate)
+		detached := s.AddThread(session.Anchor{StartLine: 3, EndLine: 3}, "detached feedback")
+		addressed := s.AddThread(session.Anchor{StartLine: 4, EndLine: 4}, "addressed feedback")
+		_ = s.DetachThread(detached.ID)
+		_ = s.AddressThread(addressed.ID, addressed.Anchor)
+		runBrowserRegression(t, s, "states")
 	})
 }
 

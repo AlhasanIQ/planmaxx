@@ -21,10 +21,25 @@ export interface Thread {
   id: string;
   anchor: Anchor;
   selectedText?: string;
-  kind: ThreadKind;
-  status: ThreadStatus;
+  intent: ThreadIntent;
+  lifecycle: ThreadLifecycle;
+  bucket: ThreadBucket;
+  delivery: "iteration" | "private" | "none";
+  addressedRevisionId?: string;
   position: Position;
   messages: Message[];
+  capabilities: ThreadCapabilities;
+}
+
+export interface ThreadCapabilities {
+  canEdit: boolean;
+  canReply: boolean;
+  canChangeIntent: boolean;
+  canAsk: boolean;
+  canIterate: boolean;
+  canReanchor: boolean;
+  canDelete: boolean;
+  canCreateFollowUp: boolean;
 }
 
 export interface SideAnswer {
@@ -32,8 +47,13 @@ export interface SideAnswer {
   threadId: string;
   question: string;
   answer: string;
-  promoted: boolean;
+  included: boolean;
+  delivery: "iteration" | "private" | "none";
   createdAt: string;
+  capabilities: {
+    canInclude: boolean;
+    canKeepPrivate: boolean;
+  };
 }
 
 export interface Digest {
@@ -160,12 +180,27 @@ export interface ChangeView {
   threadPlacements: ThreadPlacement[];
   feedback: RevisionFeedback[];
   feedbackPlacements: FeedbackPlacement[];
+  reviewStops: ReviewStop[];
+}
+
+export interface ReviewStop {
+  id: string;
+  kind: "comment" | "feedback" | "change";
+  rowId: string;
+  rowIndex: number;
+  threadId?: string;
+  revisionId?: string;
+  clusterId?: string;
+  beforeStart?: number;
+  beforeEnd?: number;
+  afterStart?: number;
+  afterEnd?: number;
 }
 
 export type RevisionComparison = ChangeView;
 
 export interface Session {
-  schemaVersion: 2;
+  schemaVersion: 3;
   id: string;
   plan: string;
   planPath: string;
@@ -176,9 +211,18 @@ export interface Session {
   threads: Thread[];
   sideAnswers: SideAnswer[];
   digest: Digest;
+  counts: {
+    activeInstructions: number;
+    activePrivateNotes: number;
+    includedAnswers: number;
+    privateAnswers: number;
+    detachedFeedback: number;
+    addressedHistory: number;
+  };
   phase: "active" | "proposal_pending" | "terminal";
   capabilities: {
     canFinalize: boolean;
+    canIterate: boolean;
     canEditFeedback: boolean;
     canRestoreRevision: boolean;
     canApplyProposal: boolean;
@@ -188,8 +232,8 @@ export interface Session {
 
 export type PlanFormat = "markdown" | "html";
 
-// A reviewer's comment can be a "decision" (instructions/feedback that should
-// reach Codex in the next turn) or a "note" (private to the reviewer, kept out
-// of the handoff).
+// Persisted revision-feedback snapshots retain the legacy kind vocabulary.
 export type ThreadKind = "decision" | "note";
-export type ThreadStatus = "open" | "resolved" | "stale";
+export type ThreadIntent = "instruction" | "private";
+export type ThreadLifecycle = "active" | "addressed" | "detached";
+export type ThreadBucket = "active" | "attention" | "history";

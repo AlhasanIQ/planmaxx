@@ -2,6 +2,7 @@ package reviewmodel
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	plandiff "github.com/AlhasanIQ/planmaxx/internal/diff"
@@ -11,6 +12,10 @@ import (
 const (
 	ModeProposal = "proposal"
 	ModeRevision = "revision"
+
+	ReviewStopComment  = "comment"
+	ReviewStopFeedback = "feedback"
+	ReviewStopChange   = "change"
 )
 
 // DocumentSnapshot keeps the original document intact while exposing the
@@ -34,6 +39,7 @@ type ChangeView struct {
 	ThreadPlacements   []ThreadPlacement          `json:"threadPlacements"`
 	Feedback           []session.RevisionFeedback `json:"feedback"`
 	FeedbackPlacements []FeedbackPlacement        `json:"feedbackPlacements"`
+	ReviewStops        []ReviewStop               `json:"reviewStops"`
 }
 
 type ChangeRow struct {
@@ -69,16 +75,34 @@ type FeedbackPlacement struct {
 	RowIndex   int    `json:"rowIndex"`
 }
 
+// ReviewStop is the backend-owned queue used to inspect a proposal or
+// comparison. Comments only cover a change cluster when their actual rendered
+// placement is inside that cluster; a remote comment never hides distant edits.
+type ReviewStop struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	RowID       string `json:"rowId"`
+	RowIndex    int    `json:"rowIndex"`
+	ThreadID    string `json:"threadId,omitempty"`
+	RevisionID  string `json:"revisionId,omitempty"`
+	ClusterID   string `json:"clusterId,omitempty"`
+	BeforeStart int    `json:"beforeStart,omitempty"`
+	BeforeEnd   int    `json:"beforeEnd,omitempty"`
+	AfterStart  int    `json:"afterStart,omitempty"`
+	AfterEnd    int    `json:"afterEnd,omitempty"`
+}
+
 type BuildInput struct {
-	Mode     string
-	IsDirect bool
-	BaseID   string
-	TargetID string
-	Format   string
-	Before   string
-	After    string
-	Threads  []session.Thread
-	Feedback []session.RevisionFeedback
+	Mode            string
+	IsDirect        bool
+	BaseID          string
+	TargetID        string
+	Format          string
+	Before          string
+	After           string
+	Threads         []session.Thread
+	ReviewThreadIDs []string
+	Feedback        []session.RevisionFeedback
 }
 
 func Build(input BuildInput) ChangeView {
@@ -94,6 +118,7 @@ func Build(input BuildInput) ChangeView {
 		ThreadPlacements:   []ThreadPlacement{},
 		Feedback:           cloneFeedback(input.Feedback),
 		FeedbackPlacements: []FeedbackPlacement{},
+		ReviewStops:        []ReviewStop{},
 	}
 	for index, line := range plandiff.Lines(normalizeNewlines(input.Before), normalizeNewlines(input.After)) {
 		view.Rows = append(view.Rows, ChangeRow{
@@ -115,7 +140,94 @@ func Build(input BuildInput) ChangeView {
 	if input.Mode != ModeRevision || input.IsDirect {
 		view.FeedbackPlacements = placeFeedback(view.Feedback, view.Rows, view.Clusters)
 	}
+	view.ReviewStops = buildReviewStops(input, view)
 	return view
+}
+
+func buildReviewStops(input BuildInput, view ChangeView) []ReviewStop {
+	placements := make(map[string]ThreadPlacement, len(view.ThreadPlacements))
+	for _, placement := range view.ThreadPlacements {
+		placements[placement.ThreadID] = placement
+	}
+	feedbackPlacements := make(map[string]FeedbackPlacement, len(view.FeedbackPlacements))
+	for _, placement := range view.FeedbackPlacements {
+		feedbackPlacements[placement.RevisionID+":"+placement.ThreadID] = placement
+	}
+	covered := map[string]bool{}
+	stops := make([]ReviewStop, 0, len(input.ReviewThreadIDs)+len(view.FeedbackPlacements)+len(view.Clusters))
+	sequence := 0
+	type orderedStop struct {
+		stop     ReviewStop
+		sequence int
+	}
+	ordered := []orderedStop{}
+	appendStop := func(stop ReviewStop) {
+		ordered = append(ordered, orderedStop{stop: stop, sequence: sequence})
+		sequence++
+	}
+	for _, threadID := range input.ReviewThreadIDs {
+		placement, ok := placements[threadID]
+		if !ok {
+			continue
+		}
+		stop := stopAtRow(ReviewStop{ID: "comment:" + threadID, Kind: ReviewStopComment, ThreadID: threadID}, placement.RowIndex, view)
+		if stop.ClusterID != "" {
+			covered[stop.ClusterID] = true
+		}
+		appendStop(stop)
+	}
+	for _, feedback := range view.Feedback {
+		placement, ok := feedbackPlacements[feedback.RevisionID+":"+feedback.ThreadID]
+		if !ok {
+			continue
+		}
+		stop := stopAtRow(ReviewStop{ID: "feedback:" + feedback.RevisionID + ":" + feedback.ThreadID, Kind: ReviewStopFeedback, ThreadID: feedback.ThreadID, RevisionID: feedback.RevisionID}, placement.RowIndex, view)
+		if stop.ClusterID != "" {
+			covered[stop.ClusterID] = true
+		}
+		appendStop(stop)
+	}
+	for _, cluster := range view.Clusters {
+		if covered[cluster.ID] {
+			continue
+		}
+		row := view.Rows[cluster.FirstRow]
+		appendStop(ReviewStop{ID: "change:" + cluster.ID, Kind: ReviewStopChange, RowID: row.ID, RowIndex: cluster.FirstRow, ClusterID: cluster.ID, BeforeStart: cluster.BeforeStart, BeforeEnd: cluster.BeforeEnd, AfterStart: cluster.AfterStart, AfterEnd: cluster.AfterEnd})
+	}
+	sort.SliceStable(ordered, func(left, right int) bool {
+		if ordered[left].stop.RowIndex == ordered[right].stop.RowIndex {
+			return ordered[left].sequence < ordered[right].sequence
+		}
+		return ordered[left].stop.RowIndex < ordered[right].stop.RowIndex
+	})
+	for _, item := range ordered {
+		stops = append(stops, item.stop)
+	}
+	return stops
+}
+
+func stopAtRow(stop ReviewStop, rowIndex int, view ChangeView) ReviewStop {
+	if rowIndex < 0 || rowIndex >= len(view.Rows) {
+		return stop
+	}
+	row := view.Rows[rowIndex]
+	stop.RowID, stop.RowIndex, stop.ClusterID = row.ID, rowIndex, row.ClusterID
+	if row.ClusterID != "" {
+		for _, cluster := range view.Clusters {
+			if cluster.ID == row.ClusterID {
+				stop.BeforeStart, stop.BeforeEnd = cluster.BeforeStart, cluster.BeforeEnd
+				stop.AfterStart, stop.AfterEnd = cluster.AfterStart, cluster.AfterEnd
+				return stop
+			}
+		}
+	}
+	if row.Before > 0 {
+		stop.BeforeStart, stop.BeforeEnd = row.Before, row.Before
+	}
+	if row.After > 0 {
+		stop.AfterStart, stop.AfterEnd = row.After, row.After
+	}
+	return stop
 }
 
 // WithThreadPlacements overlays mutable current-review threads onto an

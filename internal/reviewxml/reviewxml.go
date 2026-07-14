@@ -18,14 +18,16 @@ import (
 const ProtocolVersion = "1"
 
 type IterationInput struct {
-	RevisionID  string
-	FilePath    string
-	Plan        string
-	Target      session.Anchor
-	Instruction string
-	Threads     []session.Thread
-	SideAnswers []session.SideAnswer
-	Format      planformat.Format
+	RevisionID       string
+	FilePath         string
+	Plan             string
+	Target           session.Anchor
+	Instruction      string
+	Threads          []session.Thread
+	SideAnswers      []session.SideAnswer
+	Selection        *session.ContextSelection
+	ExplicitThreadID string
+	Format           planformat.Format
 }
 
 type SideQuestionInput struct {
@@ -39,28 +41,50 @@ type SideQuestionInput struct {
 // Handoff returns XML that pairs an annotated copy of the plan with the
 // review threads that are actually included in a handoff.
 func Handoff(s session.Session) string {
-	threads := includedThreads(s)
-	return render("planmaxx_review", s.PlanPath, planformat.Normalize(s.PlanFormat, s.PlanPath), s.Plan, threads, s.SideAnswers, "", session.Anchor{}, 0, 0, "")
+	selection := session.SelectContext(s, session.ContextOptions{})
+	return render("planmaxx_review", s.PlanPath, planformat.Normalize(s.PlanFormat, s.PlanPath), s.Plan, renderThreads(selection), selection.IncludedAnswers, "", session.Anchor{}, 0, 0, "")
 }
 
 // Iteration returns XML that identifies the exact current replacement target
 // and every relevant open review thread. The protocol intentionally does not
 // impose a proximity window: content anchors validate any affected plan area.
 func Iteration(input IterationInput) string {
-	threads := includedThreads(session.Session{Threads: input.Threads, SideAnswers: input.SideAnswers})
+	selection := input.Selection
+	if selection == nil {
+		selected := session.SelectContext(session.Session{Threads: input.Threads, SideAnswers: input.SideAnswers}, session.ContextOptions{Anchor: &input.Target, ExplicitThreadID: input.ExplicitThreadID})
+		selection = &selected
+	}
 	return render(
 		"planmaxx_iteration",
 		input.FilePath,
 		planformat.Normalize(input.Format, input.FilePath),
 		input.Plan,
-		threads,
-		input.SideAnswers,
+		renderThreads(*selection),
+		selection.IncludedAnswers,
 		input.RevisionID,
 		input.Target,
 		0,
 		0,
 		input.Instruction,
 	)
+}
+
+func renderThreads(selection session.ContextSelection) []session.Thread {
+	messageIDs := make(map[string]bool, len(selection.ThreadIDs))
+	for _, threadID := range selection.ThreadIDs {
+		messageIDs[threadID] = true
+	}
+	threads := make([]session.Thread, len(selection.ContextThreads))
+	copy(threads, selection.ContextThreads)
+	for index := range threads {
+		if messageIDs[threads[index].ID] {
+			// render only the canonical instruction set's messages. This clone is
+			// never persisted; it reuses the established renderer contract.
+			threads[index].Kind = session.ThreadKindDecision
+			threads[index].Status = session.ThreadStatusOpen
+		}
+	}
+	return threads
 }
 
 // SideQuestion serializes the already-exact side-question context with the
@@ -153,24 +177,6 @@ func render(root, filePath string, format planformat.Format, plan string, thread
 	out.WriteString(root)
 	out.WriteString(">")
 	return out.String()
-}
-
-func includedThreads(s session.Session) []session.Thread {
-	withPromotedAnswer := map[string]bool{}
-	for _, answer := range s.SideAnswers {
-		if answer.Promoted {
-			withPromotedAnswer[answer.ThreadID] = true
-		}
-	}
-	var out []session.Thread
-	for _, thread := range s.Threads {
-		openDecision := (thread.Kind == "" || thread.Kind == session.ThreadKindDecision) &&
-			(thread.Status == "" || thread.Status == session.ThreadStatusOpen)
-		if openDecision || withPromotedAnswer[thread.ID] {
-			out = append(out, thread)
-		}
-	}
-	return out
 }
 
 func messagesForThread(thread session.Thread) []session.Message {

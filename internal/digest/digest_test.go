@@ -17,7 +17,7 @@ func TestBuildPromptDistinguishesReviewerAndPlan(t *testing.T) {
 
 	prompt := BuildPrompt(*s)
 	for _, want := range []string{
-		"Reviewer decisions",
+		"Feedback for iteration or approval",
 		"Agent-generated plan",
 		"Use Cobra for CLI.",
 		"# Plan",

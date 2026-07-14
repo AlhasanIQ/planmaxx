@@ -1,4 +1,5 @@
 import {
+	AlertTriangle,
   ArrowRight,
   CheckCircle2,
   ChevronDown,
@@ -7,7 +8,8 @@ import {
   Loader2,
   Monitor,
   Moon,
-  Pause,
+	Pause,
+	Sparkles,
   Sun,
   XOctagon,
 } from "lucide-react";
@@ -16,41 +18,41 @@ import type { ResolvedTheme, ThemeMode } from "../lib/theme";
 interface Props {
   statusLabel: string;
   statusKind: "idle" | "busy" | "error" | "success";
-  decisionCount: number;
-  promotedCount: number;
-  noteCount: number;
-  ephemeralCount: number;
+  forIterationCount: number;
+  privateCount: number;
+  attentionCount: number;
   themeMode: ThemeMode;
   resolvedTheme: ResolvedTheme;
   onThemeModeChange: () => void;
   currentRevisionId: string;
   onOpenRevisions: () => void;
   onCancel: () => void;
+  onIterate: () => void;
   onFinalize: () => void;
   disabled: boolean;
   finalizeDisabled?: boolean;
+  iterateDisabled?: boolean;
 }
 
 export function TopBar(props: Props) {
   const {
     statusLabel,
     statusKind,
-    decisionCount,
-    promotedCount,
-    noteCount,
-    ephemeralCount,
+    forIterationCount,
+    privateCount,
+    attentionCount,
     themeMode,
     resolvedTheme,
     onThemeModeChange,
     currentRevisionId,
     onOpenRevisions,
     onCancel,
+    onIterate,
     onFinalize,
     disabled,
     finalizeDisabled = false,
+    iterateDisabled = false,
   } = props;
-  const goingTo = decisionCount + promotedCount;
-  const stayingHere = noteCount + ephemeralCount;
   const ThemeIcon = themeMode === "system" ? Monitor : resolvedTheme === "dark" ? Moon : Sun;
   const themeLabel = themeMode === "system" ? "System" : resolvedTheme === "dark" ? "Dark" : "Light";
   return (
@@ -84,16 +86,17 @@ export function TopBar(props: Props) {
         <div className="ml-2 hidden gap-2 sm:flex">
           <span
             className="pill pill-go"
-            title={`${decisionCount} decisions + ${promotedCount} promoted /btw Q+A will be sent to Codex`}
+            title="Active feedback and included /btw answers used for iteration or approval"
           >
-            <ArrowRight size={11} /> {goingTo} → next turn
+            <ArrowRight size={11} /> {forIterationCount} for iteration
           </span>
           <span
             className="pill pill-stay"
-            title={`${noteCount} private notes + ${ephemeralCount} ephemeral /btw answers stay here`}
+            title="Active private notes and private /btw answers stay in this review"
           >
-            <EyeOff size={11} /> {stayingHere} stay here
+            <EyeOff size={11} /> {privateCount} private
           </span>
+          {attentionCount > 0 ? <span className="pill pill-attention" title="Detached feedback needs re-anchoring before it can be used"><AlertTriangle size={11} /> {attentionCount} need attention</span> : null}
         </div>
         <div className="ml-auto flex items-center gap-3">
           <StatusBadge kind={statusKind} label={statusLabel} />
@@ -109,6 +112,14 @@ export function TopBar(props: Props) {
           </button>
           <button type="button" className="btn" onClick={onCancel} disabled={disabled}>
             Cancel
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={onIterate}
+            disabled={disabled || iterateDisabled}
+          >
+            <Sparkles size={14} /> Iterate
           </button>
           <button
             type="button"

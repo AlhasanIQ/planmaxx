@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { promotedSideAnswerText, sideQuestionContext } from "../src/lib/selectionContext";
+import { sideQuestionContext } from "../src/lib/selectionContext";
 import type { Session, Thread } from "../src/types";
 
 describe("sideQuestionContext", () => {
@@ -16,23 +16,6 @@ describe("sideQuestionContext", () => {
     expect(context.planExcerpt).toBe("Select a specific word here.");
   });
 
-  test("promoted handoff text includes the /btw question and answer", () => {
-    const thread = threadFixture({
-      selectedText: "specific",
-      anchor: { startLine: 2, startChar: 9, endLine: 2, endChar: 17 },
-    });
-    const session = sessionFixture(thread);
-
-    expect(promotedSideAnswerText(session, "side-1")).toBe(
-      [
-        "/btw context: /repo/plan.md:2:10-2:18",
-        "Selected text:\nspecific",
-        "Question:\nWhy this word?",
-        "Answer:\nBecause it is the smallest actionable scope.",
-      ].join("\n"),
-    );
-  });
-
   test("prefers the current anchored characters over a trimmed stored quote", () => {
     const thread = threadFixture({
       selectedText: "specific",
@@ -46,24 +29,36 @@ describe("sideQuestionContext", () => {
 
 function sessionFixture(thread: Thread): Session {
   return {
+    schemaVersion: 3,
     id: "session-1",
     plan: "# Plan\nSelect a specific word here.",
     planPath: "/repo/plan.md",
     threads: [thread],
-    sideAnswers: [
-      {
-        id: "side-1",
-        threadId: thread.id,
-        question: "Why this word?",
-        answer: "Because it is the smallest actionable scope.",
-        promoted: true,
-        createdAt: new Date(0).toISOString(),
-      },
-    ],
+    planFormat: "markdown",
+    currentRevisionId: "rev-1",
+    revisions: [],
+    pendingProposal: null,
+    sideAnswers: [],
     digest: {
       summary: "",
       reviewerDecisions: [],
       promotedSideAnswers: [],
+    },
+    counts: {
+      activeInstructions: 1,
+      activePrivateNotes: 0,
+      includedAnswers: 0,
+      privateAnswers: 0,
+      detachedFeedback: 0,
+      addressedHistory: 0,
+    },
+    phase: "active",
+    capabilities: {
+      canFinalize: true,
+      canIterate: true,
+      canEditFeedback: true,
+      canRestoreRevision: true,
+      canApplyProposal: false,
     },
   };
 }
@@ -73,8 +68,22 @@ function threadFixture(overrides: Partial<Thread>): Thread {
     id: "thread-1",
     anchor: { startLine: 2, endLine: 2 },
     selectedText: "",
+    intent: "instruction",
+    lifecycle: "active",
+    bucket: "active",
+    delivery: "iteration",
     position: { x: 0, y: 0 },
     messages: [],
+    capabilities: {
+      canEdit: true,
+      canReply: true,
+      canChangeIntent: true,
+      canAsk: true,
+      canIterate: true,
+      canReanchor: false,
+      canDelete: true,
+      canCreateFollowUp: false,
+    },
     ...overrides,
   };
 }

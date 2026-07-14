@@ -1,6 +1,6 @@
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import type React from "react";
-import type { SideAnswer, Thread, ThreadKind } from "../types";
+import type { SideAnswer, Thread, ThreadIntent } from "../types";
 import { ThreadCard } from "./ThreadCard";
 
 export type CommentView = "inline" | "alongside";
@@ -11,22 +11,24 @@ interface CommentRailMetric {
 }
 
 export function CommentThreadStack({
-  threads, sideAnswersByThread, focusedThreadId, onHover, onSetKind, onReply, onDelete, onEdit,
-  onAskSide, onIterate, onPromote, onUnpromote, agentActions, disabled, sideQuestionsEnabled,
-  placement, anchorLine, top, hidden,
+  threads, sideAnswersByThread, focusedThreadId, reviewTargetThreadId, onHover, onSetIntent, onReply, onDelete, onEdit,
+  onCreateFollowUp, onAskSide, onIterate, onInclude, onKeepPrivate, agentActions, disabled, sideQuestionsEnabled,
+  placement, anchorLine, top, hidden, historyOpen,
 }: {
   threads: Thread[];
   sideAnswersByThread: Map<string, SideAnswer[]>;
   focusedThreadId: string | null;
+  reviewTargetThreadId?: string;
   onHover: (threadId: string | null) => void;
-  onSetKind: (threadId: string, kind: ThreadKind) => void | Promise<void>;
+  onSetIntent: (threadId: string, intent: ThreadIntent) => void | Promise<void>;
   onReply: (threadId: string) => void;
   onDelete: (threadId: string) => void;
   onEdit: (threadId: string) => void;
+  onCreateFollowUp: (threadId: string) => void;
   onAskSide: (thread: Thread) => void;
   onIterate: (thread: Thread) => void | Promise<void>;
-  onPromote: (answerId: string) => void;
-  onUnpromote: (answerId: string) => void;
+  onInclude: (answerId: string) => void;
+  onKeepPrivate: (answerId: string) => void;
   agentActions: Record<string, "asking" | "iterating">;
   disabled: boolean;
   sideQuestionsEnabled: boolean;
@@ -34,15 +36,21 @@ export function CommentThreadStack({
   anchorLine?: number;
   top?: number;
   hidden?: boolean;
+  historyOpen?: boolean;
 }) {
-  const activeThreads = threads.filter((thread) => (thread.status ?? "open") === "open");
-  const historicalThreads = threads.filter((thread) => (thread.status ?? "open") !== "open");
+	const [historyExpanded, setHistoryExpanded] = useState(false);
+	useEffect(() => {
+	  if (historyOpen) setHistoryExpanded(true);
+	}, [historyOpen]);
+  const activeThreads = threads.filter((thread) => thread.bucket === "active");
+  const attentionThreads = threads.filter((thread) => thread.bucket === "attention");
+  const historicalThreads = threads.filter((thread) => thread.bucket === "history");
   const renderThread = (thread: Thread) => (
     <ThreadCard
-      key={thread.id} thread={thread} kind={thread.kind ?? "decision"}
-      sideAnswers={sideAnswersByThread.get(thread.id) ?? []} isFocused={focusedThreadId === thread.id}
-      onHover={onHover} onSetKind={onSetKind} onReply={onReply} onDelete={onDelete} onEdit={onEdit}
-      onAskSide={onAskSide} onIterate={onIterate} onPromote={onPromote} onUnpromote={onUnpromote}
+      key={thread.id} thread={thread}
+      sideAnswers={sideAnswersByThread.get(thread.id) ?? []} isFocused={focusedThreadId === thread.id} isReviewTarget={reviewTargetThreadId === thread.id}
+      onHover={onHover} onSetIntent={onSetIntent} onReply={onReply} onDelete={onDelete} onEdit={onEdit} onCreateFollowUp={onCreateFollowUp}
+      onAskSide={onAskSide} onIterate={onIterate} onInclude={onInclude} onKeepPrivate={onKeepPrivate}
       agentAction={agentActions[thread.id]} disabled={disabled} sideQuestionsEnabled={sideQuestionsEnabled}
       presentation={placement === "inline" ? "inline" : "rail"}
     />
@@ -56,11 +64,17 @@ export function CommentThreadStack({
         <div className="inline-thread-stack-label">{activeThreads.length === 1 ? "Comment" : `${activeThreads.length} comments`}</div>
       ) : null}
       {activeThreads.map(renderThread)}
-      {historicalThreads.length > 0 ? (
-        <div className="historical-thread-group">
-          <div className="historical-thread-label">Earlier feedback · not sent to Codex</div>
-          {historicalThreads.map(renderThread)}
+      {attentionThreads.length > 0 ? (
+        <div className="attention-thread-group">
+          <div className="attention-thread-label">Needs attention</div>
+          {attentionThreads.map(renderThread)}
         </div>
+      ) : null}
+      {historicalThreads.length > 0 ? (
+        <details className="historical-thread-group" open={historyExpanded} onToggle={(event) => setHistoryExpanded(event.currentTarget.open)}>
+          <summary className="historical-thread-label">Show addressed feedback ({historicalThreads.length})</summary>
+          {historicalThreads.map(renderThread)}
+        </details>
       ) : null}
     </section>
   );
