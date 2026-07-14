@@ -36,6 +36,19 @@ func TestLinesPreservesTrailingBlankLineAsEmptyLine(t *testing.T) {
 	assertLines(t, got, want)
 }
 
+func TestLinesAlignsRepeatedLinesDeterministically(t *testing.T) {
+	got := Lines("same\nold\nsame\ntail", "same\nnew\nsame\ntail")
+
+	want := []Line{
+		{Kind: KindContext, Before: 1, After: 1, Text: "same"},
+		{Kind: KindRemove, Before: 2, Text: "old"},
+		{Kind: KindAdd, After: 2, Text: "new"},
+		{Kind: KindContext, Before: 3, After: 3, Text: "same"},
+		{Kind: KindContext, Before: 4, After: 4, Text: "tail"},
+	}
+	assertLines(t, got, want)
+}
+
 func assertLines(t *testing.T, got []Line, want []Line) {
 	t.Helper()
 	if len(got) != len(want) {

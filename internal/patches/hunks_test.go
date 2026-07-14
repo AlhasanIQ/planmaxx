@@ -37,6 +37,89 @@ func TestResolveAllowsEmptyReplacementForDeletion(t *testing.T) {
 	}
 }
 
+func TestResolveRemovesLineDelimiterForFullLineDeletion(t *testing.T) {
+	tests := map[string]struct {
+		base string
+		want string
+	}{
+		"middle": {base: "one\nremove\nthree", want: "one\nthree"},
+		"first":  {base: "remove\ntwo\nthree", want: "two\nthree"},
+		"last":   {base: "one\ntwo\nremove", want: "one\ntwo"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			resolved, err := Resolve(test.base, []Hunk{{Target: "lines", Expected: "remove", Content: ""}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Apply(test.base, resolved); got != test.want {
+				t.Fatalf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveDoesNotExpandMidLineDeletionLabeledAsLines(t *testing.T) {
+	base := "say remove\nkeep"
+	resolved, err := Resolve(base, []Hunk{{Target: "lines", Expected: "remove", Content: ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Apply(base, resolved); got != "say \nkeep" {
+		t.Fatalf("mid-line deletion consumed a delimiter: %q", got)
+	}
+}
+
+func TestResolveRemovesCRLFDelimiterForFullLineDeletion(t *testing.T) {
+	base := "one\r\nremove\r\nthree"
+	resolved, err := Resolve(base, []Hunk{{Target: "lines", Expected: "remove", Content: ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Apply(base, resolved); got != "one\r\nthree" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResolveAdjacentTrailingLineDeletionsDoNotOverlap(t *testing.T) {
+	base := "a\nb\nc"
+	resolved, err := Resolve(base, []Hunk{
+		{Target: "lines", Expected: "b", Content: ""},
+		{Target: "lines", Expected: "c", Content: ""},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Apply(base, resolved); got != "a" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestResolveLineDeletionPreservesExistingTerminalNewline(t *testing.T) {
+	tests := map[string]struct {
+		base  string
+		hunks []Hunk
+		want  string
+	}{
+		"single LF":     {base: "a\nb\n", hunks: []Hunk{{Target: "lines", Expected: "b", Content: ""}}, want: "a\n"},
+		"adjacent LF":   {base: "a\nb\nc\n", hunks: []Hunk{{Target: "lines", Expected: "b", Content: ""}, {Target: "lines", Expected: "c", Content: ""}}, want: "a\n"},
+		"blank before":  {base: "a\n\nremove", hunks: []Hunk{{Target: "lines", Expected: "remove", Content: ""}}, want: "a\n"},
+		"single CRLF":   {base: "a\r\nb\r\n", hunks: []Hunk{{Target: "lines", Expected: "b", Content: ""}}, want: "a\r\n"},
+		"adjacent CRLF": {base: "a\r\nb\r\nc\r\n", hunks: []Hunk{{Target: "lines", Expected: "b", Content: ""}, {Target: "lines", Expected: "c", Content: ""}}, want: "a\r\n"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			resolved, err := Resolve(test.base, test.hunks)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Apply(test.base, resolved); got != test.want {
+				t.Fatalf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestResolveUsesUniqueExpectedTextWhenModelContextIsWrong(t *testing.T) {
 	base := "# Plan\n- Product name: Old\n- Keep"
 	resolved, err := Resolve(base, []Hunk{

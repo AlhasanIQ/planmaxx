@@ -1,0 +1,18 @@
+Use the final-review feedback below as the authoritative instruction. Revise the
+complete plan and keep unaffected content accurate and coherent.
+{{if .Summary}}
+Review summary:
+{{.Summary}}
+{{end}}{{if .ReviewerDecisions}}
+Reviewer decisions:
+{{range .ReviewerDecisions}}- {{.}}
+{{end}}{{end}}{{if .PromotedSideAnswers}}
+Promoted /btw Q+A:
+{{range .PromotedSideAnswers}}- {{.}}
+{{end}}{{end}}{{if .Refinement}}
+Refinement request:
+{{.Refinement}}
+
+Keep the final-review feedback above authoritative while refining the pending
+whole-plan proposal.
+{{end}}

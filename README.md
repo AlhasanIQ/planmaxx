@@ -106,6 +106,8 @@ handoff.
 - Keeps private notes out of the final handoff.
 - Lets you promote useful side-question answers into the handoff.
 - Supports focused section rewrites and proposal diffs before final approval.
+- Turns final-review feedback into a whole-plan proposal; the checked-out plan
+  stays unchanged until **Apply as new revision** is clicked.
 - Autosaves review state next to the plan file as
   `<plan-file>.planmaxx-review.json`, with a cache-directory fallback if that
   location is not writable.

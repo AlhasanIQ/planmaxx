@@ -13,7 +13,7 @@ import (
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 )
 
-const autosaveVersion = 3
+const autosaveVersion = 4
 const autosaveFormat = "planmaxx.review"
 
 var (
@@ -111,7 +111,7 @@ func (a *Autosave) migrate() error {
 			}
 		}
 		fallthrough
-	case 2:
+	case 2, 3:
 		if a.Format != autosaveFormat {
 			return fmt.Errorf("unsupported autosave format %q", a.Format)
 		}

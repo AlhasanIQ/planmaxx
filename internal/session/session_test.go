@@ -84,6 +84,9 @@ func TestReconcileExternalPlanPreservesPendingProposalAsObsolete(t *testing.T) {
 	if s.PendingProposal == nil || s.PendingProposal.ID != proposal.ID || !s.PendingProposal.Obsolete {
 		t.Fatalf("expected proposal to remain as obsolete, got %+v", s.PendingProposal)
 	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("obsolete proposal should remain a valid discardable state: %v", err)
+	}
 	if _, ok := s.ApplyProposal(proposal.ID); ok {
 		t.Fatal("expected obsolete proposal apply to fail")
 	}
@@ -104,6 +107,16 @@ func TestRestoreCountersContinuesMessageIDs(t *testing.T) {
 	}
 	if got := s.Threads[0].Messages[1].ID; got != "msg-2" {
 		t.Fatalf("expected restored next message ID msg-2, got %q", got)
+	}
+}
+
+func TestRestoreCountersIncludesRevisionFeedbackMessageIDs(t *testing.T) {
+	s := New("plan-1", "# Plan")
+	s.Revisions[0].Feedback = []RevisionFeedback{{Messages: []Message{{ID: "msg-8"}}}}
+	s.RestoreCounters()
+	thread := s.AddThread(Anchor{StartLine: 1, EndLine: 1}, "Next")
+	if got := thread.Messages[0].ID; got != "msg-9" {
+		t.Fatalf("feedback history message id was reused: %q", got)
 	}
 }
 
@@ -218,6 +231,54 @@ func TestApplySectionProposalCreatesImmediateRevision(t *testing.T) {
 	}
 	if s.Threads[0].Status != ThreadStatusResolved {
 		t.Fatalf("expected included thread to resolve, got %+v", s.Threads[0])
+	}
+}
+
+func TestApplyReviewProposalCompletesCycleAndCreatesIterationRevision(t *testing.T) {
+	s := New("plan-1", "one\ntwo\nthree\nfour")
+	decision := s.AddThreadWithSelectedText(Anchor{StartLine: 4, StartChar: 0, EndLine: 4, EndChar: 4}, "Keep the final step clear", "four")
+	note := s.AddThread(Anchor{StartLine: 3, EndLine: 3}, "Private note")
+	answer := s.AddSideAnswer(note.ID, "Why?", "Because.")
+	s.PromoteSideAnswer(answer.ID)
+	s.Digest = Digest{Summary: "stale finalized digest", ReviewerDecisions: []string{"old"}}
+	reviewDigest := Digest{Summary: "Iterate", ReviewerDecisions: []string{"Keep the final step clear"}, PromotedSideAnswers: []string{"Because."}}
+	proposal := s.CreateSectionProposal(SectionProposalInput{
+		Kind:                  ProposalKindReview,
+		Anchor:                Anchor{StartLine: 1, EndLine: 4},
+		AppliedAnchor:         Anchor{StartLine: 2, EndLine: 2},
+		AppliedHunks:          []AppliedHunk{{Anchor: Anchor{StartLine: 2, EndLine: 2}, Result: Anchor{StartLine: 2, EndLine: 3}, LineDelta: 1}},
+		ReplacementAnchor:     Anchor{StartLine: 1, EndLine: 5},
+		OriginalSection:       s.Plan,
+		ProposedSection:       "one\ntwo-a\ntwo-b\nthree\nfour",
+		ProposedPlan:          "one\ntwo-a\ntwo-b\nthree\nfour",
+		Summary:               "Applied final review",
+		Instruction:           "Review iteration",
+		IncludedThreadIDs:     []string{decision.ID},
+		ConsumedSideAnswerIDs: []string{answer.ID},
+		ReviewDigest:          &reviewDigest,
+	})
+
+	revision, ok := s.ApplyProposal(proposal.ID)
+	if !ok {
+		t.Fatal("expected review proposal to apply")
+	}
+	if revision.Source != RevisionSourceIteration || revision.ID != "rev-2" || revision.ParentID != "rev-1" {
+		t.Fatalf("unexpected iteration revision %+v", revision)
+	}
+	if len(revision.Feedback) != 1 || revision.Feedback[0].ThreadID != decision.ID || revision.Feedback[0].ResultAnchor.StartLine != 5 {
+		t.Fatalf("expected shifted immutable feedback snapshot, got %+v", revision.Feedback)
+	}
+	if got := s.Threads[0]; got.Status != ThreadStatusResolved || got.SelectedText != "" || got.Anchor != (Anchor{StartLine: 5, EndLine: 5}) {
+		t.Fatalf("expected consumed decision to resolve on its resulting line, got %+v", got)
+	}
+	if got := s.Threads[1]; got.ID != note.ID || got.Status != ThreadStatusOpen || got.Anchor.StartLine != 4 {
+		t.Fatalf("expected private note to survive and reanchor, got %+v", got)
+	}
+	if s.SideAnswers[0].Promoted {
+		t.Fatalf("expected consumed /btw promotion to reset, got %+v", s.SideAnswers[0])
+	}
+	if s.Digest.Summary != "" || len(s.Digest.ReviewerDecisions) != 0 || len(s.Digest.PromotedSideAnswers) != 0 || s.PendingProposal != nil {
+		t.Fatalf("expected next review cycle to start clean, digest=%+v proposal=%+v", s.Digest, s.PendingProposal)
 	}
 }
 

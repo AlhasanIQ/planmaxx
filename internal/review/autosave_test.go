@@ -71,6 +71,25 @@ func TestLoadAutosaveMigratesVersionTwoHTMLFormat(t *testing.T) {
 	}
 }
 
+func TestLoadAutosaveMigratesVersionThree(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review.json")
+	document := NewDocument("/tmp/plan.md", "# Plan")
+	payload, err := json.Marshal(Autosave{
+		Version: 3, Format: autosaveFormat, Document: document,
+		Session: *session.New("session-1", "# Plan"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved, ok, err := LoadAutosave(path)
+	if err != nil || !ok || saved.Version != autosaveVersion {
+		t.Fatalf("load migrated v3 autosave: saved=%+v ok=%v err=%v", saved, ok, err)
+	}
+}
+
 func TestLoadAutosaveRejectsFutureVersionWithoutChangingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "review.json")
 	original := `{"version":99,"format":"planmaxx.review","session":{}}`

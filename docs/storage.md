@@ -33,7 +33,9 @@ separately from the working review plan.
 
 - Migrate known old schemas sequentially.
 - Schema v3 stores `planFormat`; v1 and v2 records infer it from the canonical
-  source path and default to Markdown when the path is ambiguous.
+  source path and default to Markdown when the path is ambiguous. Schema v4
+  makes proposal lifecycle, immutable revision feedback, and validated session
+  transitions load-bearing; older envelopes migrate before semantic repair.
 - Reject a newer or unknown schema without rewriting it.
 - Write via temp file, file sync, rename, then directory sync; retain 0600
   permissions.
@@ -102,6 +104,39 @@ stored source baseline.
 - Comments, replies, side answers, promotions, and proposal creation do not
   write the source file. Applying a proposal changes only the working
   review revision.
+
+## Final-review iteration lifecycle
+
+- Choosing **Iterate plan** stores a pending whole-plan proposal against the
+  current revision. Proposal creation and refinement do not append a revision.
+- While a proposal is pending, its feedback snapshot is frozen: comments,
+  replies, kinds, anchors, `/btw` answers/promotions, revision restore, a second
+  unrelated iteration, and finalization wait for Apply or Discard. Cancel
+  remains available.
+- Refining that proposal keeps the original final-review digest authoritative
+  and continues to compare the complete pending plan, not only one patch hunk.
+- **Apply as new revision** atomically appends an `iteration` revision, stores
+  immutable snapshots of consumed decision threads, resolves those mutable
+  threads, clears their obsolete text selections, resets consumed `/btw`
+  promotions and any stored final digest, and removes the pending proposal.
+- Discarding the proposal leaves comments, promotions, digest, plan, and
+  revision history unchanged.
+- Deliberately reopening a finalized or canceled autosave starts an `active`
+  cycle and clears the prior terminal digest while preserving plan revisions
+  and review history. A newer terminal generation observed by another already
+  running server remains terminal and retains its digest.
+
+## Review API projection
+
+- `/api/state` is a versioned client projection, not the persisted `Session`
+  record. Collections are always arrays, review phase and capabilities come
+  from the backend, revision bodies are omitted, and pending proposals expose a
+  lightweight summary plus an `activeChange`.
+- Pending proposals and `/api/revisions/{from}/diff/{to}` use the same Go-owned
+  change view: exact before/after document snapshots, stable rows, replacement
+  clusters, comment placements, and immutable accepted-feedback placements.
+- The browser renders complete before/after documents for Markdown context but
+  does not compute diffs, reconstruct documents, or infer comment placement.
 
 ## CRDT boundary
 

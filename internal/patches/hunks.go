@@ -73,12 +73,84 @@ func Resolve(base string, hunks []Hunk) ([]Resolved, error) {
 		return nil, errors.New("patch hunk is missing or ambiguous in the base revision")
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartOffset < out[j].StartOffset })
-	for i := 1; i < len(out); i++ {
-		if out[i].StartOffset < out[i-1].EndOffset {
+	for i := range out {
+		if out[i].Hunk.Target == "lines" && out[i].Hunk.Content == "" {
+			lowerBound := 0
+			if i > 0 {
+				lowerBound = out[i-1].EndOffset
+			}
+			out[i].StartOffset, out[i].EndOffset = fullLineDeletionOffsets(base, out[i].StartOffset, out[i].EndOffset, lowerBound)
+		}
+		if i > 0 && out[i].StartOffset < out[i-1].EndOffset {
 			return nil, errors.New("patch hunks overlap")
 		}
 	}
+	trimTerminalDeletionDelimiter(base, out)
 	return out, nil
+}
+
+// Adjacent full-line deletions that reach EOF otherwise leave the delimiter
+// before the deleted block behind. Move that delimiter into the first hunk in
+// the contiguous group, preserving the single-last-line deletion behavior.
+func trimTerminalDeletionDelimiter(base string, resolved []Resolved) {
+	if len(resolved) == 0 {
+		return
+	}
+	last := len(resolved) - 1
+	if !isFullLineDeletion(resolved[last]) || resolved[last].EndOffset != len(base) {
+		return
+	}
+	first := last
+	for first > 0 && isFullLineDeletion(resolved[first-1]) && resolved[first-1].EndOffset == resolved[first].StartOffset {
+		first--
+	}
+	// A single trailing deletion already chose either the leading or trailing
+	// delimiter in fullLineDeletionOffsets. This correction is only for an
+	// adjacent group where the last hunk could not claim its leading delimiter.
+	if first == last || strings.HasSuffix(resolved[last].Hunk.Expected, "\n") ||
+		!strings.HasSuffix(base[:resolved[last].EndOffset], resolved[last].Hunk.Expected) {
+		return
+	}
+	start := resolved[first].StartOffset
+	delimiterStart := start
+	if start >= 2 && base[start-2:start] == "\r\n" {
+		delimiterStart = start - 2
+	} else if start > 0 && base[start-1] == '\n' {
+		delimiterStart = start - 1
+	}
+	if delimiterStart == start || (first > 0 && delimiterStart < resolved[first-1].EndOffset) {
+		return
+	}
+	resolved[first].StartOffset = delimiterStart
+}
+
+func isFullLineDeletion(resolved Resolved) bool {
+	return resolved.Hunk.Target == "lines" && resolved.Hunk.Content == ""
+}
+
+func fullLineDeletionOffsets(base string, start, end, lowerBound int) (int, int) {
+	startsAtLineBoundary := start == 0 || base[start-1] == '\n'
+	lineDelimiterEnd := end
+	switch {
+	case strings.HasPrefix(base[end:], "\r\n"):
+		lineDelimiterEnd = end + 2
+	case end < len(base) && base[end] == '\n':
+		lineDelimiterEnd = end + 1
+	}
+	endsAtLineBoundary := end == len(base) || lineDelimiterEnd > end
+	if !startsAtLineBoundary || !endsAtLineBoundary {
+		return start, end
+	}
+	if lineDelimiterEnd > end {
+		return start, lineDelimiterEnd
+	}
+	if start >= 2 && base[start-2:start] == "\r\n" && start-2 >= lowerBound {
+		return start - 2, end
+	}
+	if start > 0 && base[start-1] == '\n' && start-1 >= lowerBound {
+		return start - 1, end
+	}
+	return start, end
 }
 
 func Apply(base string, resolved []Resolved) string {

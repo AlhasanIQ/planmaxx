@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ArrowRight, CheckCircle2, ListChecks, Sparkles } from "lucide-react";
 import { Modal } from "../Modal";
 import type { Digest } from "../../types";
+import { digestForIteration } from "../../lib/digest";
 
 interface Props {
   initial: Digest;
@@ -44,7 +45,7 @@ export function FinalizeDialog({ initial, onCancel, onIterate, onSubmit }: Props
       onClose={onCancel}
       footer={
         <>
-          <button type="button" className="btn" onClick={() => onIterate(digest())}>
+          <button type="button" className="btn" onClick={() => onIterate(digestForIteration(digest(), initial.summary))}>
             <Sparkles size={14} /> Iterate plan
           </button>
           <button type="button" className="btn btn-primary" onClick={() => onSubmit(digest())}>

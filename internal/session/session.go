@@ -39,7 +39,10 @@ const (
 	RevisionSourceInitial   = "initial"
 	RevisionSourceTurn      = "turn"
 	RevisionSourceImmediate = "immediate"
+	RevisionSourceIteration = "iteration"
 	RevisionSourceExternal  = "external"
+
+	ProposalKindReview = "review"
 )
 
 type Anchor struct {
@@ -89,22 +92,25 @@ type RevisionFeedback struct {
 }
 
 type SectionProposal struct {
-	ID                string        `json:"id"`
-	ParentID          string        `json:"parentId"`
-	ThreadID          string        `json:"threadId,omitempty"`
-	Anchor            Anchor        `json:"anchor"`                  // Original reviewer selection.
-	AppliedAnchor     Anchor        `json:"appliedAnchor,omitempty"` // Source-plan region affected when this proposal is applied.
-	AppliedHunks      []AppliedHunk `json:"appliedHunks,omitempty"`
-	ReplacementAnchor Anchor        `json:"replacementAnchor"` // Result range in ProposedPlan.
-	OriginalSection   string        `json:"originalSection"`
-	ProposedSection   string        `json:"proposedSection"`
-	ProposedPlan      string        `json:"proposedPlan"`
-	Summary           string        `json:"summary"`
-	Instruction       string        `json:"instruction"`
-	RawResponse       string        `json:"rawResponse"`
-	IncludedThreadIDs []string      `json:"includedThreadIds,omitempty"`
-	Obsolete          bool          `json:"obsolete,omitempty"`
-	CreatedAt         time.Time     `json:"createdAt"`
+	ID                    string        `json:"id"`
+	Kind                  string        `json:"kind,omitempty"`
+	ParentID              string        `json:"parentId"`
+	ThreadID              string        `json:"threadId,omitempty"`
+	Anchor                Anchor        `json:"anchor"`                  // Original reviewer selection.
+	AppliedAnchor         Anchor        `json:"appliedAnchor,omitempty"` // Source-plan region affected when this proposal is applied.
+	AppliedHunks          []AppliedHunk `json:"appliedHunks,omitempty"`
+	ReplacementAnchor     Anchor        `json:"replacementAnchor"` // Result range in ProposedPlan.
+	OriginalSection       string        `json:"originalSection"`
+	ProposedSection       string        `json:"proposedSection"`
+	ProposedPlan          string        `json:"proposedPlan"`
+	Summary               string        `json:"summary"`
+	Instruction           string        `json:"instruction"`
+	RawResponse           string        `json:"rawResponse"`
+	IncludedThreadIDs     []string      `json:"includedThreadIds,omitempty"`
+	ConsumedSideAnswerIDs []string      `json:"consumedSideAnswerIds,omitempty"`
+	ReviewDigest          *Digest       `json:"reviewDigest,omitempty"`
+	Obsolete              bool          `json:"obsolete,omitempty"`
+	CreatedAt             time.Time     `json:"createdAt"`
 }
 
 type AppliedHunk struct {
@@ -114,18 +120,21 @@ type AppliedHunk struct {
 }
 
 type SectionProposalInput struct {
-	ThreadID          string
-	Anchor            Anchor
-	AppliedAnchor     Anchor
-	AppliedHunks      []AppliedHunk
-	ReplacementAnchor Anchor
-	OriginalSection   string
-	ProposedSection   string
-	ProposedPlan      string
-	Summary           string
-	Instruction       string
-	RawResponse       string
-	IncludedThreadIDs []string
+	Kind                  string
+	ThreadID              string
+	Anchor                Anchor
+	AppliedAnchor         Anchor
+	AppliedHunks          []AppliedHunk
+	ReplacementAnchor     Anchor
+	OriginalSection       string
+	ProposedSection       string
+	ProposedPlan          string
+	Summary               string
+	Instruction           string
+	RawResponse           string
+	IncludedThreadIDs     []string
+	ConsumedSideAnswerIDs []string
+	ReviewDigest          *Digest
 }
 
 type Position struct {
@@ -358,48 +367,108 @@ func (s *Session) CreateSectionProposal(input SectionProposalInput) SectionPropo
 		replacementAnchor = replacementAnchorFromSection(input.Anchor, input.ProposedSection)
 	}
 	proposal := SectionProposal{
-		ID:                fmt.Sprintf("proposal-%d", s.NextProposalID),
-		ParentID:          s.CurrentRevisionID,
-		ThreadID:          input.ThreadID,
-		Anchor:            input.Anchor,
-		AppliedAnchor:     input.AppliedAnchor,
-		AppliedHunks:      append([]AppliedHunk(nil), input.AppliedHunks...),
-		ReplacementAnchor: replacementAnchor,
-		OriginalSection:   input.OriginalSection,
-		ProposedSection:   input.ProposedSection,
-		ProposedPlan:      input.ProposedPlan,
-		Summary:           input.Summary,
-		Instruction:       input.Instruction,
-		RawResponse:       input.RawResponse,
-		IncludedThreadIDs: append([]string(nil), input.IncludedThreadIDs...),
-		CreatedAt:         time.Now().UTC(),
+		ID:                    fmt.Sprintf("proposal-%d", s.NextProposalID),
+		Kind:                  input.Kind,
+		ParentID:              s.CurrentRevisionID,
+		ThreadID:              input.ThreadID,
+		Anchor:                input.Anchor,
+		AppliedAnchor:         input.AppliedAnchor,
+		AppliedHunks:          append([]AppliedHunk(nil), input.AppliedHunks...),
+		ReplacementAnchor:     replacementAnchor,
+		OriginalSection:       input.OriginalSection,
+		ProposedSection:       input.ProposedSection,
+		ProposedPlan:          input.ProposedPlan,
+		Summary:               input.Summary,
+		Instruction:           input.Instruction,
+		RawResponse:           input.RawResponse,
+		IncludedThreadIDs:     append([]string(nil), input.IncludedThreadIDs...),
+		ConsumedSideAnswerIDs: append([]string(nil), input.ConsumedSideAnswerIDs...),
+		ReviewDigest:          cloneDigest(input.ReviewDigest),
+		CreatedAt:             time.Now().UTC(),
 	}
 	s.PendingProposal = &proposal
 	return proposal
 }
 
 func (s *Session) ApplyProposal(proposalID string) (Revision, bool) {
-	if s.PendingProposal == nil || s.PendingProposal.ID != proposalID {
-		return Revision{}, false
+	revision, err := s.ApplyProposalChecked(proposalID)
+	return revision, err == nil
+}
+
+func (s *Session) ApplyProposalChecked(proposalID string) (Revision, error) {
+	if s.PendingProposal == nil {
+		return Revision{}, &TransitionError{Kind: TransitionMissing, Message: "proposal not found"}
+	}
+	if s.PendingProposal.ID != proposalID {
+		return Revision{}, &TransitionError{Kind: TransitionStale, Message: "proposal is no longer pending"}
 	}
 	proposal := *s.PendingProposal
 	if proposal.Obsolete || proposal.ParentID != s.CurrentRevisionID {
-		return Revision{}, false
+		return Revision{}, &TransitionError{Kind: TransitionStale, Message: "proposal is obsolete or based on another revision"}
 	}
-	delta := lineCount(proposal.ProposedPlan) - lineCount(s.Plan)
+	before := cloneForTransition(*s)
+	previousPlan := s.Plan
+	delta := lineCount(proposal.ProposedPlan) - lineCount(previousPlan)
 	feedback := s.feedbackForProposal(proposal)
-	revision := s.addRevisionWithFeedback(proposal.ParentID, RevisionSourceImmediate, proposal.ProposedPlan, proposal.Anchor, proposal.Summary, feedback)
-	s.adjustThreadsForAppliedProposal(proposal, delta)
+	source := RevisionSourceImmediate
+	if IsReviewProposal(proposal) {
+		source = RevisionSourceIteration
+	}
+	revision := s.addRevisionWithFeedback(proposal.ParentID, source, proposal.ProposedPlan, proposal.Anchor, proposal.Summary, feedback)
+	if IsReviewProposal(proposal) {
+		s.adjustThreadsForReviewProposal(proposal, previousPlan)
+		s.completeReviewIteration(proposal)
+	} else {
+		s.adjustThreadsForAppliedProposal(proposal, delta)
+	}
 	s.PendingProposal = nil
-	return revision, true
+	if err := s.Validate(); err != nil {
+		*s = before
+		return Revision{}, err
+	}
+	return revision, nil
+}
+
+func cloneForTransition(source Session) Session {
+	clone := source
+	clone.Revisions = append([]Revision{}, source.Revisions...)
+	for index := range clone.Revisions {
+		clone.Revisions[index].Feedback = append([]RevisionFeedback{}, source.Revisions[index].Feedback...)
+		for feedbackIndex := range clone.Revisions[index].Feedback {
+			clone.Revisions[index].Feedback[feedbackIndex].Messages = append([]Message{}, source.Revisions[index].Feedback[feedbackIndex].Messages...)
+		}
+	}
+	clone.Threads = append([]Thread{}, source.Threads...)
+	for index := range clone.Threads {
+		clone.Threads[index].Messages = append([]Message{}, source.Threads[index].Messages...)
+	}
+	clone.SideAnswers = append([]SideAnswer{}, source.SideAnswers...)
+	clone.Digest.ReviewerDecisions = append([]string{}, source.Digest.ReviewerDecisions...)
+	clone.Digest.PromotedSideAnswers = append([]string{}, source.Digest.PromotedSideAnswers...)
+	if source.PendingProposal != nil {
+		proposal := *source.PendingProposal
+		proposal.AppliedHunks = append([]AppliedHunk{}, source.PendingProposal.AppliedHunks...)
+		proposal.IncludedThreadIDs = append([]string{}, source.PendingProposal.IncludedThreadIDs...)
+		proposal.ConsumedSideAnswerIDs = append([]string{}, source.PendingProposal.ConsumedSideAnswerIDs...)
+		proposal.ReviewDigest = cloneDigest(source.PendingProposal.ReviewDigest)
+		clone.PendingProposal = &proposal
+	}
+	return clone
 }
 
 func (s *Session) DiscardProposal(proposalID string) bool {
-	if s.PendingProposal == nil || s.PendingProposal.ID != proposalID {
-		return false
+	return s.DiscardProposalChecked(proposalID) == nil
+}
+
+func (s *Session) DiscardProposalChecked(proposalID string) error {
+	if s.PendingProposal == nil {
+		return &TransitionError{Kind: TransitionMissing, Message: "proposal not found"}
+	}
+	if s.PendingProposal.ID != proposalID {
+		return &TransitionError{Kind: TransitionStale, Message: "proposal is no longer pending"}
 	}
 	s.PendingProposal = nil
-	return true
+	return nil
 }
 
 func (s *Session) CurrentRevision() (Revision, bool) {
@@ -422,14 +491,7 @@ func (s *Session) RestoreCounters() {
 			maxThread = n
 		}
 		for _, message := range thread.Messages {
-			raw, ok := strings.CutPrefix(message.ID, "msg-")
-			if !ok {
-				continue
-			}
-			n, err := strconv.Atoi(raw)
-			if err == nil && n > maxMessage {
-				maxMessage = n
-			}
+			maxMessage = max(maxMessage, numberedMessageID(message.ID))
 		}
 	}
 	for _, answer := range s.SideAnswers {
@@ -445,6 +507,11 @@ func (s *Session) RestoreCounters() {
 		n, err := strconv.Atoi(raw)
 		if err == nil && n > maxRevision {
 			maxRevision = n
+		}
+		for _, feedback := range revision.Feedback {
+			for _, message := range feedback.Messages {
+				maxMessage = max(maxMessage, numberedMessageID(message.ID))
+			}
 		}
 	}
 	if s.PendingProposal != nil {
@@ -469,6 +536,14 @@ func (s *Session) RestoreCounters() {
 	}
 	s.restoreThreadDefaults()
 	s.restoreRevisionDefaults()
+}
+
+func numberedMessageID(id string) int {
+	n, ok := numberedID(id, "msg-")
+	if !ok {
+		return 0
+	}
+	return n
 }
 
 func numberedID(id string, prefix string) (int, bool) {
@@ -535,7 +610,7 @@ func (s *Session) feedbackForProposal(proposal SectionProposal) []RevisionFeedba
 			feedback = append(feedback, RevisionFeedback{
 				ThreadID:     thread.ID,
 				Anchor:       thread.Anchor,
-				ResultAnchor: replacementAnchorForThread(thread.Anchor, proposal),
+				ResultAnchor: s.resultAnchorForFeedback(thread, proposal),
 				SelectedText: thread.SelectedText,
 				Kind:         thread.Kind,
 				Messages:     append([]Message(nil), thread.Messages...),
@@ -544,6 +619,70 @@ func (s *Session) feedbackForProposal(proposal SectionProposal) []RevisionFeedba
 		}
 	}
 	return feedback
+}
+
+func (s *Session) resultAnchorForFeedback(thread Thread, proposal SectionProposal) Anchor {
+	if !IsReviewProposal(proposal) {
+		return replacementAnchorForThread(thread.Anchor, proposal)
+	}
+	if anchor, ok := reanchorThreadInPlan(thread, s.Plan, proposal.ProposedPlan); ok {
+		return lineAnchor(anchor)
+	}
+	if len(proposal.AppliedHunks) == 0 {
+		return clampedLineAnchor(thread.Anchor, proposal.ProposedPlan)
+	}
+	return lineAnchor(replacementAnchorForThread(thread.Anchor, proposal))
+}
+
+// adjustThreadsForReviewProposal uses the complete parent and proposed plans.
+// A refined review proposal is patched against its pending predecessor, so its
+// hunk coordinates cannot safely describe every change from the accepted
+// parent. Unique text re-anchoring remains correct across both proposal rounds.
+func (s *Session) adjustThreadsForReviewProposal(proposal SectionProposal, previousPlan string) {
+	included := make(map[string]bool, len(proposal.IncludedThreadIDs))
+	for _, threadID := range proposal.IncludedThreadIDs {
+		included[threadID] = true
+	}
+	for i := range s.Threads {
+		thread := &s.Threads[i]
+		resultAnchor, ok := reanchorThreadInPlan(*thread, previousPlan, proposal.ProposedPlan)
+		if included[thread.ID] {
+			if !ok {
+				if len(proposal.AppliedHunks) == 0 {
+					resultAnchor = clampedLineAnchor(thread.Anchor, proposal.ProposedPlan)
+				} else {
+					resultAnchor = replacementAnchorForThread(thread.Anchor, proposal)
+				}
+			}
+			resolveThreadAfterProposal(thread, lineAnchor(resultAnchor))
+			continue
+		}
+		if ok {
+			thread.Anchor = resultAnchor
+			continue
+		}
+		if thread.Status == ThreadStatusOpen {
+			thread.Status = ThreadStatusStale
+		}
+	}
+}
+
+func clampedLineAnchor(anchor Anchor, plan string) Anchor {
+	maxLine := max(1, lineCount(plan))
+	start := min(max(anchor.StartLine, 1), maxLine)
+	end := min(max(anchor.EndLine, start), maxLine)
+	return Anchor{StartLine: start, EndLine: end}
+}
+
+func reanchorThreadInPlan(thread Thread, previousPlan string, proposedPlan string) (Anchor, bool) {
+	selected := thread.SelectedText
+	if selected == "" {
+		selected = textForAnchor(previousPlan, thread.Anchor)
+	}
+	if selected == "" {
+		return Anchor{}, false
+	}
+	return uniqueAnchorForText(proposedPlan, selected, thread.Anchor)
 }
 
 func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delta int) {
@@ -574,6 +713,33 @@ func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delt
 			thread.Status = ThreadStatusStale
 		}
 	}
+}
+
+// completeReviewIteration closes the review cycle represented by a whole-plan
+// proposal. The proposal keeps immutable feedback on its accepted revision;
+// mutable comments and /btw promotions are then reset for the next cycle.
+func (s *Session) completeReviewIteration(proposal SectionProposal) {
+	included := make(map[string]bool, len(proposal.IncludedThreadIDs))
+	for _, threadID := range proposal.IncludedThreadIDs {
+		included[threadID] = true
+	}
+	for i := range s.Threads {
+		thread := &s.Threads[i]
+		if !included[thread.ID] || thread.Status == ThreadStatusResolved {
+			continue
+		}
+		resolveThreadAfterProposal(thread, lineAnchor(thread.Anchor))
+	}
+	consumedAnswers := make(map[string]bool, len(proposal.ConsumedSideAnswerIDs))
+	for _, answerID := range proposal.ConsumedSideAnswerIDs {
+		consumedAnswers[answerID] = true
+	}
+	for i := range s.SideAnswers {
+		if consumedAnswers[s.SideAnswers[i].ID] {
+			s.SideAnswers[i].Promoted = false
+		}
+	}
+	s.Digest = Digest{}
 }
 
 func (s *Session) adjustThreadsForAppliedHunks(proposal SectionProposal) {
@@ -619,7 +785,28 @@ func replacementAnchorForThread(anchor Anchor, proposal SectionProposal) Anchor 
 			return hunk.Result
 		}
 	}
+	if len(proposal.AppliedHunks) > 0 {
+		return reanchorAfterHunks(anchor, proposal.AppliedHunks)
+	}
 	return proposal.ReplacementAnchor
+}
+
+// IsReviewProposal recognizes both current typed review proposals and the
+// instruction marker written by PlanMaxx versions before proposal kinds were
+// persisted.
+func IsReviewProposal(proposal SectionProposal) bool {
+	return proposal.Kind == ProposalKindReview ||
+		strings.HasPrefix(proposal.Instruction, "Use the final-review feedback below as the authoritative instruction.")
+}
+
+func cloneDigest(source *Digest) *Digest {
+	if source == nil {
+		return nil
+	}
+	digest := *source
+	digest.ReviewerDecisions = append([]string(nil), source.ReviewerDecisions...)
+	digest.PromotedSideAnswers = append([]string(nil), source.PromotedSideAnswers...)
+	return &digest
 }
 
 func lineAnchor(anchor Anchor) Anchor {

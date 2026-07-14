@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { threadsByAnchorEnd, visibleThreads } from "../src/lib/threadPlacement";
-import type { SideAnswer, Thread } from "../src/types";
+import { threadsByAnchorEnd, threadsByBackendPlacement, visibleThreads } from "../src/lib/threadPlacement";
+import type { SideAnswer, Thread, ThreadPlacement } from "../src/types";
 
 function thread(id: string, startLine: number, endLine: number, body = id): Thread {
   return {
@@ -38,5 +38,27 @@ describe("thread placement", () => {
     }];
 
     expect(visibleThreads(threads, answers, "relevant", "focused").map((item) => item.id)).toEqual(["focused", "answer"]);
+  });
+
+  test("uses the backend-selected row after a complete change cluster", () => {
+    const placements: ThreadPlacement[] = [{ threadId: "remove-both", rowId: "row-4", rowIndex: 3 }];
+    const grouped = threadsByBackendPlacement([thread("remove-both", 21, 22)], placements);
+    expect(grouped.get(3)?.map((item) => item.id)).toEqual(["remove-both"]);
+    expect(grouped.has(1)).toBe(false);
+  });
+
+  test("co-locates overlapping comments at one backend placement", () => {
+    const placements: ThreadPlacement[] = [
+      { threadId: "whole-range", rowId: "row-8", rowIndex: 7 },
+      { threadId: "middle", rowId: "row-8", rowIndex: 7 },
+      { threadId: "last", rowId: "row-8", rowIndex: 7 },
+    ];
+    const grouped = threadsByBackendPlacement([
+      thread("whole-range", 55, 58),
+      thread("middle", 56, 57),
+      thread("last", 58, 58),
+    ], placements);
+    expect(grouped.get(7)?.map((item) => item.id)).toEqual(["whole-range", "middle", "last"]);
+    expect(grouped.size).toBe(1);
   });
 });

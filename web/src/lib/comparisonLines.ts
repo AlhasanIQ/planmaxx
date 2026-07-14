@@ -1,4 +1,4 @@
-import type { DiffLine } from "../types";
+import type { ChangeRow } from "../types";
 
 export interface ComparisonLineIdentity {
   beforeLineNumber?: number;
@@ -9,7 +9,7 @@ export interface ComparisonLineIdentity {
   anchorLineNumber?: number;
 }
 
-export function comparisonLineIdentity(line: DiffLine): ComparisonLineIdentity {
+export function comparisonLineIdentity(line: ChangeRow): ComparisonLineIdentity {
   return {
     beforeLineNumber: line.before,
     afterLineNumber: line.after,

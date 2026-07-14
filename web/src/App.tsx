@@ -8,11 +8,10 @@ import { CompletedScreen } from "./components/CompletedScreen";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
 import { FinalizeDialog } from "./components/dialogs/FinalizeDialog";
-import type { Anchor, DiffLine, Digest, RevisionComparison, RevisionFeedback, Session, Thread, ThreadKind } from "./types";
-import { buildDigestDraft, countHandoff } from "./lib/digest";
+import type { Anchor, Digest, RevisionComparison, Session, Thread, ThreadKind } from "./types";
+import { countHandoff } from "./lib/digest";
 import { anchorLabel } from "./lib/anchors";
 import { sideQuestionContext } from "./lib/selectionContext";
-import { finalizeIterationInstruction, wholePlanAnchor } from "./lib/finalizeIteration";
 import {
   nextThemeMode,
   prefersDarkFromMatcher,
@@ -22,9 +21,9 @@ import {
   writeStoredThemeMode,
   type ThemeMode,
 } from "./lib/theme";
+import { useRevisionComparison } from "./hooks/useRevisionComparison";
 
 type CompletionState = null | "finalized" | "canceled";
-type RevisionDiffState = { from: string; to: string; lines: DiffLine[]; feedback?: RevisionFeedback[] };
 type ThreadAgentAction = "asking" | "iterating";
 
 type DialogState =
@@ -57,10 +56,6 @@ function useReviewController() {
   const [threadAgentActions, setThreadAgentActions] = useState<Record<string, ThreadAgentAction>>({});
   const [iteratingSection, setIteratingSection] = useState(false);
   const iteratingSectionRef = useRef(false);
-  const [revisionDiff, setRevisionDiff] = useState<RevisionDiffState | null>(null);
-  const [revisionDiffLoading, setRevisionDiffLoading] = useState(false);
-  const [revisionDiffError, setRevisionDiffError] = useState<string | null>(null);
-  const revisionDiffCache = useRef(new Map<string, RevisionDiffState>());
   const initialComparisonRequestedRef = useRef(false);
 
   const pushToast = useCallback((kind: Toast["kind"], message: string) => {
@@ -69,6 +64,20 @@ function useReviewController() {
   const dismissToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+	const {
+	  diff: revisionDiff,
+	  loading: revisionDiffLoading,
+	  error: revisionDiffError,
+	  compare: compareRevision,
+	  reload: reloadRevisionComparison,
+	  clear: clearRevisionDiff,
+	  suppress: suppressRevisionDiff,
+	} = useRevisionComparison((message) => pushToast("error", message));
+
+	const reloadVisibleComparison = useCallback(async () => {
+	  if (!revisionDiff) return;
+	  await reloadRevisionComparison(revisionDiff.baseId, revisionDiff.targetId);
+	}, [reloadRevisionComparison, revisionDiff]);
 
   const refresh = useCallback(async () => {
     try {
@@ -76,10 +85,13 @@ function useReviewController() {
       setSession(next);
       setLoadError(null);
       setStatus({ label: "Codex paused — review in progress", kind: "idle" });
+	  if (next.pendingProposal) {
+	  suppressRevisionDiff();
+	  }
       if (!initialComparisonRequestedRef.current) {
         initialComparisonRequestedRef.current = true;
         const currentRevision = next.revisions.find((revision) => revision.id === next.currentRevisionId);
-        if (currentRevision?.parentId) {
+        if (!next.pendingProposal && currentRevision?.parentId) {
           void handleCompareRevision(currentRevision.parentId, currentRevision.id);
         }
       }
@@ -97,11 +109,11 @@ function useReviewController() {
   const updateThreadKind = useCallback(
     async (threadId: string, kind: ThreadKind) => {
       if (!session) return;
-      const previous = session;
-      setSession({
-        ...session,
-        threads: session.threads.map((t) => (t.id === threadId ? { ...t, kind } : t)),
-      });
+      const previousKind = session.threads.find((thread) => thread.id === threadId)?.kind;
+      setSession((current) => current ? {
+        ...current,
+        threads: current.threads.map((thread) => (thread.id === threadId ? { ...thread, kind } : thread)),
+      } : current);
       try {
         await api.setThreadKind(threadId, kind);
       } catch (e) {
@@ -110,7 +122,12 @@ function useReviewController() {
           pushToast("error", "The plan changed outside PlanMaxx. Review state was refreshed.");
           return;
         }
-        setSession(previous);
+        setSession((current) => current && previousKind ? {
+          ...current,
+          threads: current.threads.map((thread) =>
+            thread.id === threadId && thread.kind === kind ? { ...thread, kind: previousKind } : thread,
+          ),
+        } : current);
         const msg = e instanceof Error ? e.message : "Failed to update thread kind";
         pushToast("error", msg);
       }
@@ -118,7 +135,6 @@ function useReviewController() {
     [pushToast, refresh, session],
   );
 
-  const liveDigest = useMemo(() => (session ? buildDigestDraft(session) : null), [session]);
   const counts = useMemo(
     () =>
       session
@@ -127,14 +143,15 @@ function useReviewController() {
     [session],
   );
 
-  const openFinalize = useCallback(() => {
-    if (!session || !liveDigest) return;
+  const openFinalize = useCallback(async () => {
+    if (!session) return;
     if (session.pendingProposal) {
       pushToast("error", "Apply or discard the pending proposal before finalizing");
       return;
     }
-    setDialog({ kind: "finalize", digest: liveDigest });
-  }, [liveDigest, pushToast, session]);
+    const digest = await withBusy("Preparing final review…", () => api.digestDraft());
+    if (digest) setDialog({ kind: "finalize", digest });
+  }, [pushToast, session]);
 
   // Keyboard shortcuts.
   useEffect(() => {
@@ -188,8 +205,9 @@ function useReviewController() {
       const thread = await api.createThread(anchor, body, selectedText);
       return thread;
     });
-    if (result && session) {
-      setSession({ ...session, threads: [...session.threads, result] });
+    if (result) {
+      setSession((current) => current ? { ...current, threads: [...current.threads, result] } : current);
+	  await reloadVisibleComparison();
       setFocusedThreadId(result.id);
       pushToast("success", "Comment added — sent to next turn");
       return true;
@@ -205,7 +223,8 @@ function useReviewController() {
     if (!result) return false;
 
     const nextSession = { ...session, threads: [...session.threads, result] };
-    setSession(nextSession);
+    setSession((current) => current ? { ...current, threads: [...current.threads, result] } : current);
+	await reloadVisibleComparison();
     setFocusedThreadId(result.id);
     return askSideQuestion(result, body, nextSession);
   }
@@ -219,8 +238,8 @@ function useReviewController() {
         api.proposeSection(threadId, anchor, instruction),
       );
       if (!result) return false;
-      setSession((current) => (current ? { ...current, pendingProposal: result } : current));
-      setRevisionDiff(null);
+	  await refresh();
+		suppressRevisionDiff();
       pushToast("success", "Proposal ready");
       return true;
     } finally {
@@ -245,10 +264,10 @@ function useReviewController() {
 
   async function handleUpdateThread(threadId: string, anchor: Anchor, body: string, selectedText: string): Promise<boolean> {
     const ok = await withBusy("Saving comment…", () => api.editThread(threadId, anchor, body, selectedText));
-    if (ok && session) {
-      setSession({
-        ...session,
-        threads: session.threads.map((t) =>
+    if (ok) {
+      setSession((current) => current ? {
+        ...current,
+        threads: current.threads.map((t) =>
           t.id === threadId
             ? {
                 ...t,
@@ -260,7 +279,8 @@ function useReviewController() {
               }
             : t,
         ),
-      });
+      } : current);
+	  await reloadVisibleComparison();
       setFocusedThreadId(threadId);
       pushToast("success", "Comment updated");
       return true;
@@ -282,6 +302,7 @@ function useReviewController() {
     const ok = await withBusy("Deleting thread…", () => api.deleteThread(threadId));
     if (ok) {
       await refresh();
+	  await reloadVisibleComparison();
       pushToast("info", "Thread deleted");
     }
   }
@@ -359,7 +380,7 @@ function useReviewController() {
       ]);
     } else {
       await refresh();
-      setRevisionDiff(null);
+	  suppressRevisionDiff();
     }
     pushToast("success", "Proposal applied");
   }
@@ -367,45 +388,22 @@ function useReviewController() {
   async function handleDiscardProposal(proposalId: string) {
     const ok = await withBusy("Discarding proposal…", () => api.discardProposal(proposalId));
     if (!ok) return;
-    setSession((current) => (current ? { ...current, pendingProposal: null } : current));
+	await refresh();
     pushToast("info", "Proposal discarded");
   }
 
   async function handleCompareRevision(from: string, to: string) {
-    if (revisionDiff?.from === from && revisionDiff.to === to) {
-      setRevisionDiff(null);
-      return;
-    }
-    setRevisionDiffError(null);
-    const key = `${from}:${to}`;
-    const cached = revisionDiffCache.current.get(key);
-    if (cached) {
-      setRevisionDiff(cached);
-      return;
-    }
-    setRevisionDiffLoading(true);
-    try {
-      const result = await api.revisionDiff(from, to);
-      revisionDiffCache.current.set(key, result);
-      setRevisionDiff(result);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Failed to load revision diff";
-      setRevisionDiffError(msg);
-      pushToast("error", msg);
-    } finally {
-      setRevisionDiffLoading(false);
-    }
+	await compareRevision(from, to);
   }
 
   function handleClearRevisionDiff() {
-    setRevisionDiff(null);
-    setRevisionDiffError(null);
+	clearRevisionDiff();
   }
 
   async function handleRestoreRevision(revisionId: string) {
     const restored = await withBusy("Restoring revision…", () => api.restoreRevision(revisionId));
     if (!restored) return;
-    setRevisionDiff(null);
+	clearRevisionDiff();
     await refresh();
     pushToast("success", `Restored ${revisionId} as ${restored.id}`);
   }
@@ -426,7 +424,19 @@ function useReviewController() {
   async function handlePlanIteration(digest: Digest) {
     if (!session) return;
     setDialog(null);
-    await handleIterateSection(wholePlanAnchor(session.plan), finalizeIterationInstruction(digest));
+    if (iteratingSectionRef.current) return;
+    iteratingSectionRef.current = true;
+    setIteratingSection(true);
+    try {
+      const result = await withBusy("Iterating complete plan…", () => api.proposeReview(digest));
+      if (!result) return;
+	  await refresh();
+	  suppressRevisionDiff();
+      pushToast("success", "Whole-plan proposal ready — apply it to create a new revision");
+    } finally {
+      iteratingSectionRef.current = false;
+      setIteratingSection(false);
+    }
   }
 
   async function handleCancel() {
@@ -467,7 +477,6 @@ function useReviewController() {
     handleUnpromote,
     handleUpdateThread,
     hoveredThreadId,
-    liveDigest,
     loadError,
     openFinalize,
     openPlanIteration,
@@ -535,7 +544,6 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleUnpromote,
     handleUpdateThread,
     hoveredThreadId,
-    liveDigest,
     loadError,
     openFinalize,
     openPlanIteration,
@@ -573,18 +581,9 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
   );
   const [commentView, setCommentView] = useState<CommentView>("inline");
   const revisionComparison = useMemo<RevisionComparison | null>(() => {
-    if (!session || !revisionDiff) return null;
-    const before = session.revisions.find((revision) => revision.id === revisionDiff.from);
-    const after = session.revisions.find((revision) => revision.id === revisionDiff.to);
-    if (!before || !after) return null;
-    return {
-      ...revisionDiff,
-      beforePlan: planFromDiff(revisionDiff.lines, "before"),
-      afterPlan: planFromDiff(revisionDiff.lines, "after"),
-      feedback: revisionDiff.feedback ?? [],
-      isDirect: after.parentId === before.id,
-    };
-  }, [revisionDiff, session]);
+	if (!session || session.pendingProposal || !revisionDiff) return null;
+	return revisionDiff;
+	}, [revisionDiff, session]);
 
   if (completion) {
     return <CompletedScreen state={completion} />;
@@ -622,7 +621,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         onCancel={() => setDialog({ kind: "confirmCancel" })}
         onFinalize={openFinalize}
         disabled={busy}
-        finalizeDisabled={Boolean(session.pendingProposal)}
+		finalizeDisabled={!session.capabilities.canFinalize}
       />
 
       <main className="mx-auto grid w-full max-w-[1600px] grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -631,6 +630,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           planFormat={session.planFormat}
           theme={theme.resolved}
           proposal={session.pendingProposal}
+		  proposalChange={session.activeChange}
           comparison={revisionComparison}
           comparisonLoading={revisionDiffLoading}
           onClearComparison={handleClearRevisionDiff}
@@ -647,8 +647,8 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           onUpdateComment={handleUpdateThread}
           onAskSideFromDraft={handleCreateThreadAndAsk}
           onIterateDraft={(anchor, instruction) => handleIterateSection(anchor, instruction)}
-          disabled={busy}
-          proposalDisabled={busy}
+          disabled={busy || Boolean(session.pendingProposal)}
+		  proposalDisabled={busy || !session.capabilities.canApplyProposal}
           proposalIterating={iteratingSection}
           onApplyProposal={handleApplyProposal}
           onDiscardProposal={handleDiscardProposal}
@@ -678,7 +678,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
             diff={revisionDiff}
             loading={revisionDiffLoading}
             error={revisionDiffError}
-            disabled={busy}
+			disabled={busy || !session.capabilities.canRestoreRevision}
             onCompare={handleCompareRevision}
             onClearCompare={handleClearRevisionDiff}
             onRestore={handleRestoreRevision}
@@ -746,13 +746,6 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
-}
-
-function planFromDiff(lines: DiffLine[], side: "before" | "after") {
-  return lines
-    .filter((line) => side === "before" ? line.kind !== "add" : line.kind !== "remove")
-    .map((line) => line.text)
-    .join("\n");
 }
 
 function useTheme() {

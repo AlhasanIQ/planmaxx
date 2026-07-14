@@ -1,23 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { buildDigestDraft, countHandoff } from "../src/lib/digest";
+import { countHandoff, digestForIteration } from "../src/lib/digest";
 import type { Session, Thread } from "../src/types";
 
 describe("digest helpers", () => {
-  test("include only open decision threads in the handoff draft", () => {
-    const session = sessionFixture([
-      threadFixture("thread-1", "decision", "open", "Ship this."),
-      threadFixture("thread-2", "note", "open", "Keep private."),
-      threadFixture("thread-3", "decision", "resolved", "Already handled."),
-      threadFixture("thread-4", "decision", "stale", "Needs re-anchor."),
-    ]);
 
-    expect(buildDigestDraft(session)).toEqual({
+  test("replaces untouched approval defaults when the reviewer iterates", () => {
+    expect(digestForIteration({
       summary: "Approved with review comments.",
-      reviewerDecisions: ["Ship this."],
+      reviewerDecisions: ["Change it"],
       promotedSideAnswers: [],
-    });
+    }, "Approved with review comments.").summary).toBe(
+      "Not approved yet; revise the plan using this review feedback.",
+    );
+    expect(digestForIteration({
+      summary: "Use my explicit iteration summary",
+      reviewerDecisions: ["Change it"],
+      promotedSideAnswers: [],
+    }, "Approved with review comments.").summary).toBe("Use my explicit iteration summary");
   });
-
   test("counts open decisions, notes, and non-open decisions separately", () => {
     const session = sessionFixture([
       threadFixture("thread-1", "decision", "open", "Ship this."),
@@ -45,17 +45,17 @@ describe("digest helpers", () => {
       sideAnswer("stale-answer", "stale", "Stale answer"),
     ];
 
-    expect(buildDigestDraft(session).promotedSideAnswers).toHaveLength(1);
-    expect(buildDigestDraft(session).promotedSideAnswers[0]).toContain("Open answer");
     expect(countHandoff(session)).toMatchObject({ promoted: 1, ephemeral: 2 });
   });
 });
 
 function sessionFixture(threads: Thread[]): Session {
   return {
+    schemaVersion: 2,
     id: "session-1",
     plan: "# Plan",
     planPath: "/repo/plan.md",
+    planFormat: "markdown",
     currentRevisionId: "rev-1",
     revisions: [],
     threads,
@@ -64,6 +64,13 @@ function sessionFixture(threads: Thread[]): Session {
       summary: "",
       reviewerDecisions: [],
       promotedSideAnswers: [],
+    },
+    phase: "active",
+    capabilities: {
+      canFinalize: true,
+      canEditFeedback: true,
+      canRestoreRevision: true,
+      canApplyProposal: false,
     },
   };
 }

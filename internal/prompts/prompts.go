@@ -47,6 +47,13 @@ type sectionIterationTemplateData struct {
 	ProtocolDocumentation string
 }
 
+type reviewIterationTemplateData struct {
+	Summary             string
+	ReviewerDecisions   []string
+	PromotedSideAnswers []string
+	Refinement          string
+}
+
 type protocolDocumentationData struct {
 	Mode   string
 	Format planformat.Format
@@ -92,6 +99,15 @@ func SectionIteration(input SectionIterationInput) string {
 	})
 }
 
+func ReviewIterationInstruction(summary string, reviewerDecisions []string, promotedSideAnswers []string, refinement string) string {
+	return render("review_iteration.gotmpl", reviewIterationTemplateData{
+		Summary:             strings.TrimSpace(summary),
+		ReviewerDecisions:   nonEmptyTrimmed(reviewerDecisions),
+		PromotedSideAnswers: nonEmptyTrimmed(promotedSideAnswers),
+		Refinement:          strings.TrimSpace(refinement),
+	})
+}
+
 func protocolDocumentation(mode string, format planformat.Format) string {
 	return render("protocol.gotmpl", protocolDocumentationData{Mode: mode, Format: planformat.Normalize(format, "")})
 }
@@ -131,4 +147,14 @@ func longestBacktickRun(content string) int {
 		current = 0
 	}
 	return longest
+}
+
+func nonEmptyTrimmed(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Unified pending-proposal and revision comparisons behind a versioned,
+  backend-owned change model. Go now computes diff rows, change clusters,
+  complete document snapshots, comment placement, and immutable feedback
+  placement; the React UI only renders those projections.
+- Added session invariant validation, typed proposal/revision transitions,
+  ordered idempotent autosave compatibility migrations, and browser regression
+  coverage for comment ordering, overlapping comments, and added table rows.
+- Replaced the unmaintained line-diff dependency with `sergi/go-diff` behind a
+  deterministic line adapter, and expanded deletion coverage for CRLF,
+  adjacent trailing deletions, and newline-terminated documents.
+- Made final-review iteration an explicit persisted lifecycle: whole-plan
+  proposals remain whole-plan across refinements, applying one appends a labeled
+  iteration revision, archives consumed decisions, resets consumed `/btw`
+  promotions and stale digest state, and clearly tells the reviewer that no
+  revision is created until Apply.
 - Added `.html` and `.htm` plans with a scriptless, network-blocked Preview,
   exact Source review, format-aware autosaves and prompts, and HTML-fenced
   handoffs while preserving Markdown behavior.

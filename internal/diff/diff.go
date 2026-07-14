@@ -3,7 +3,7 @@ package diff
 import (
 	"strings"
 
-	"github.com/pmezard/go-difflib/difflib"
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 const (
@@ -22,26 +22,59 @@ type Line struct {
 func Lines(before string, after string) []Line {
 	beforeLines := splitLines(before)
 	afterLines := splitLines(after)
-	// Keep go-difflib behind this wrapper. Its SequenceMatcher opcodes match the
-	// structured line model PlanMaxx needs, while newer patch-oriented packages
-	// either emit unified patches or less readable short-line hunks.
-	matcher := difflib.NewMatcher(beforeLines, afterLines)
+	beforeTokens, afterTokens, lines := lineTokens(beforeLines, afterLines)
+	dmp := diffmatchpatch.New()
+	// A review diff must be deterministic. Disabling the deadline prevents the
+	// algorithm from returning a coarser result merely because a machine was busy.
+	dmp.DiffTimeout = 0
 
 	var out []Line
-	for _, op := range matcher.GetOpCodes() {
-		switch op.Tag {
-		case 'e':
-			out = appendEqual(out, beforeLines, op.I1, op.I2, op.J1)
-		case 'd':
-			out = appendRemove(out, beforeLines, op.I1, op.I2)
-		case 'i':
-			out = appendAdd(out, afterLines, op.J1, op.J2)
-		case 'r':
-			out = appendRemove(out, beforeLines, op.I1, op.I2)
-			out = appendAdd(out, afterLines, op.J1, op.J2)
+	beforeNumber, afterNumber := 1, 1
+	for _, change := range dmp.DiffMainRunes(beforeTokens, afterTokens, false) {
+		for _, token := range change.Text {
+			line := lines[token]
+			switch change.Type {
+			case diffmatchpatch.DiffEqual:
+				out = append(out, Line{Kind: KindContext, Before: beforeNumber, After: afterNumber, Text: line})
+				beforeNumber++
+				afterNumber++
+			case diffmatchpatch.DiffDelete:
+				out = append(out, Line{Kind: KindRemove, Before: beforeNumber, Text: line})
+				beforeNumber++
+			case diffmatchpatch.DiffInsert:
+				out = append(out, Line{Kind: KindAdd, After: afterNumber, Text: line})
+				afterNumber++
+			}
 		}
 	}
 	return out
+}
+
+// lineTokens interns complete logical lines into runes so the dependency runs
+// its maintained Myers-style diff over lines, not characters. The surrounding
+// wrapper remains PlanMaxx's stable row contract.
+func lineTokens(before, after []string) ([]rune, []rune, map[rune]string) {
+	byLine := make(map[string]rune, len(before)+len(after))
+	byToken := make(map[rune]string, len(before)+len(after))
+	next := rune(1)
+	encode := func(source []string) []rune {
+		out := make([]rune, 0, len(source))
+		for _, line := range source {
+			token, ok := byLine[line]
+			if !ok {
+				if next == 0xD800 {
+					next = 0xE000
+				}
+				token = next
+				next++
+				byLine[line] = token
+				byToken[token] = line
+			}
+			out = append(out, token)
+		}
+		return out
+	}
+	return encode(before), encode(after), byToken
 }
 
 func splitLines(s string) []string {
@@ -49,38 +82,4 @@ func splitLines(s string) []string {
 		return nil
 	}
 	return strings.Split(s, "\n")
-}
-
-func appendEqual(out []Line, lines []string, beforeStart int, beforeEnd int, afterStart int) []Line {
-	for i := beforeStart; i < beforeEnd; i++ {
-		out = append(out, Line{
-			Kind:   KindContext,
-			Before: i + 1,
-			After:  afterStart + (i - beforeStart) + 1,
-			Text:   lines[i],
-		})
-	}
-	return out
-}
-
-func appendRemove(out []Line, lines []string, start int, end int) []Line {
-	for i := start; i < end; i++ {
-		out = append(out, Line{
-			Kind:   KindRemove,
-			Before: i + 1,
-			Text:   lines[i],
-		})
-	}
-	return out
-}
-
-func appendAdd(out []Line, lines []string, start int, end int) []Line {
-	for i := start; i < end; i++ {
-		out = append(out, Line{
-			Kind:  KindAdd,
-			After: i + 1,
-			Text:  lines[i],
-		})
-	}
-	return out
 }

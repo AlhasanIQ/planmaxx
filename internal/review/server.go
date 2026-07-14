@@ -15,8 +15,9 @@ import (
 	"time"
 	"unicode/utf16"
 
-	plandiff "github.com/AlhasanIQ/planmaxx/internal/diff"
 	"github.com/AlhasanIQ/planmaxx/internal/digest"
+	"github.com/AlhasanIQ/planmaxx/internal/prompts"
+	"github.com/AlhasanIQ/planmaxx/internal/reviewmodel"
 	"github.com/AlhasanIQ/planmaxx/internal/reviewxml"
 	"github.com/AlhasanIQ/planmaxx/internal/revisions"
 	"github.com/AlhasanIQ/planmaxx/internal/sectioniter"
@@ -51,13 +52,6 @@ type Server struct {
 	comparisonCache     sync.Map
 }
 
-type revisionComparison struct {
-	From     string                     `json:"from"`
-	To       string                     `json:"to"`
-	Lines    []plandiff.Line            `json:"lines"`
-	Feedback []session.RevisionFeedback `json:"feedback"`
-}
-
 type Result struct {
 	Session  session.Session
 	Canceled bool
@@ -79,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/side-answers/", s.handleSideAnswerAction)
 	mux.HandleFunc("/api/side-questions", s.handleSideQuestion)
 	mux.HandleFunc("/api/digest/draft", s.handleDigestDraft)
+	mux.HandleFunc("/api/revisions/propose-review", s.handleProposeReview)
 	mux.HandleFunc("/api/revisions/propose-section", s.handleProposeSection)
 	mux.HandleFunc("/api/revisions/proposals/", s.handleRevisionProposalAction)
 	mux.HandleFunc("/api/revisions/", s.handleRevisionAction)
@@ -121,7 +116,12 @@ func (s *Server) EnableAutosave(path string) error {
 		return fmt.Errorf("load existing autosave: %w", err)
 	} else if ok {
 		s.session = &saved.Session
-		s.autosaveStatus = saved.Status
+		var migrated bool
+		var err error
+		s.autosaveStatus, migrated, err = migrateLoadedSession(s.session, saved.Status, true)
+		if err != nil {
+			return fmt.Errorf("migrate existing autosave: %w", err)
+		}
 		s.autosaveDocument = saved.Document
 		s.autosaveGeneration = saved.Generation
 		if requestedDocument.SourceHash != "" && !saved.Document.SourceMatches(requestedDocument.SourceText) {
@@ -132,7 +132,10 @@ func (s *Server) EnableAutosave(path string) error {
 		if err := s.hydrateRevisionBodiesLocked(); err != nil {
 			return err
 		}
-		if s.revisionStore != nil && hasUnpersistedRevisions(*s.session) {
+		if err := s.session.Validate(); err != nil {
+			return fmt.Errorf("validate existing autosave: %w", err)
+		}
+		if migrated || (s.revisionStore != nil && hasUnpersistedRevisions(*s.session)) {
 			return s.persistLocked()
 		}
 		return nil
@@ -140,7 +143,77 @@ func (s *Server) EnableAutosave(path string) error {
 	if err := s.hydrateRevisionBodiesLocked(); err != nil {
 		return err
 	}
+	if err := s.session.Validate(); err != nil {
+		return fmt.Errorf("validate review session: %w", err)
+	}
 	return s.persistLocked()
+}
+
+func rebuildPendingProposal(s *session.Session) bool {
+	proposal := s.PendingProposal
+	if proposal == nil || proposal.Obsolete || proposal.ParentID != s.CurrentRevisionID || proposal.RawResponse == "" || len(proposal.AppliedHunks) == 0 {
+		return false
+	}
+	parsed, err := sectioniter.ParseResponse(proposal.RawResponse)
+	if err != nil {
+		return false
+	}
+	rebuilt, err := sectioniter.BuildProposal(sectioniter.Request{
+		RevisionID:          parsed.RevisionID,
+		ThreadID:            proposal.ThreadID,
+		Plan:                s.Plan,
+		Anchor:              proposal.Anchor,
+		SelectedSection:     proposal.OriginalSection,
+		ReviewerInstruction: proposal.Instruction,
+		IncludedThreadIDs:   proposal.IncludedThreadIDs,
+		Format:              s.PlanFormat,
+	}, proposal.RawResponse)
+	if err != nil || rebuilt.ProposedPlan == proposal.ProposedPlan {
+		return false
+	}
+	proposal.Anchor = rebuilt.Anchor
+	proposal.AppliedAnchor = rebuilt.AppliedAnchor
+	proposal.AppliedHunks = rebuilt.AppliedHunks
+	proposal.ReplacementAnchor = rebuilt.ReplacementAnchor
+	proposal.OriginalSection = rebuilt.OriginalSection
+	proposal.ProposedSection = rebuilt.ProposedSection
+	proposal.ProposedPlan = rebuilt.ProposedPlan
+	proposal.Summary = rebuilt.Summary
+	proposal.Instruction = rebuilt.Instruction
+	proposal.RawResponse = rebuilt.RawResponse
+	proposal.IncludedThreadIDs = rebuilt.IncludedThreadIDs
+	return true
+}
+
+func migrateLegacyReviewProposal(s *session.Session) bool {
+	proposal := s.PendingProposal
+	if proposal == nil || proposal.Kind != "" {
+		return false
+	}
+	isWholePlan := proposal.ParentID == s.CurrentRevisionID && proposal.ThreadID == "" && proposal.Anchor == wholePlanAnchor(s.Plan)
+	if !session.IsReviewProposal(*proposal) && !(isWholePlan && digestHasContent(s.Digest)) {
+		return false
+	}
+	proposal.Kind = session.ProposalKindReview
+	if proposal.ReviewDigest == nil {
+		digest := s.Digest
+		digest.ReviewerDecisions = append([]string(nil), s.Digest.ReviewerDecisions...)
+		digest.PromotedSideAnswers = append([]string(nil), s.Digest.PromotedSideAnswers...)
+		proposal.ReviewDigest = &digest
+	}
+	if len(proposal.ConsumedSideAnswerIDs) == 0 {
+		proposal.ConsumedSideAnswerIDs = promotedOpenSideAnswerIDs(*s)
+	}
+	return true
+}
+
+func isTerminalAutosaveStatus(status string) bool {
+	switch status {
+	case "finalized", "canceled", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 func hasUnpersistedRevisions(s session.Session) bool {
@@ -215,7 +288,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, sessionForClient(*s.session))
+	writeJSON(w, buildClientState(*s.session, s.finished))
 }
 
 func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
@@ -262,6 +335,11 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if err := s.syncExternalSourceLocked(); err != nil {
 		s.mu.Unlock()
 		writeSourceSyncError(w, err)
+		return
+	}
+	if s.session.PendingProposal != nil {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "apply or discard the pending proposal before changing review feedback")
 		return
 	}
 	request.Body = strings.TrimSpace(request.Body)
@@ -348,7 +426,23 @@ func (s *Server) handleSideQuestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid side-question json")
 		return
 	}
-	thread, ok := s.threadByID(req.ThreadID)
+	s.mu.Lock()
+	if s.session.PendingProposal != nil {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "apply or discard the pending proposal before asking a side question")
+		return
+	}
+	var thread session.Thread
+	var ok bool
+	for _, candidate := range s.session.Threads {
+		if candidate.ID == req.ThreadID {
+			thread, ok = candidate, true
+			break
+		}
+	}
+	baseRevisionID := s.session.CurrentRevisionID
+	baseFeedback := reviewFeedbackFingerprint(*s.session)
+	s.mu.Unlock()
 	if !ok {
 		writeError(w, http.StatusNotFound, "thread not found")
 		return
@@ -371,9 +465,19 @@ func (s *Server) handleSideQuestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "review already completed")
 		return
 	}
+	if s.session.PendingProposal != nil {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "apply or discard the pending proposal before asking a side question")
+		return
+	}
 	if err := s.syncExternalSourceLocked(); err != nil {
 		s.mu.Unlock()
 		writeSourceSyncError(w, err)
+		return
+	}
+	if s.session.CurrentRevisionID != baseRevisionID || reviewFeedbackFingerprint(*s.session) != baseFeedback {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "review feedback changed while the side question was running")
 		return
 	}
 	before := cloneSession(*s.session)
@@ -426,6 +530,12 @@ type proposeSectionRequest struct {
 	Instruction string         `json:"instruction"`
 }
 
+type proposalLifecycle struct {
+	kind                  string
+	reviewDigest          *session.Digest
+	consumedSideAnswerIDs []string
+}
+
 type responseError struct {
 	status  int
 	message string
@@ -453,6 +563,9 @@ func (s *Server) handleReplyThread(w http.ResponseWriter, r *http.Request, threa
 	}
 
 	s.mutateSession(w, func() (any, error) {
+		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+			return nil, err
+		}
 		if !s.session.AddReply(threadID, request.Body) {
 			return nil, responseError{status: http.StatusNotFound, message: "thread not found"}
 		}
@@ -467,6 +580,9 @@ func (s *Server) handleDeleteThread(w http.ResponseWriter, threadID string) {
 	}
 
 	s.mutateSession(w, func() (any, error) {
+		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+			return nil, err
+		}
 		if !s.session.DeleteThread(threadID) {
 			return nil, responseError{status: http.StatusNotFound, message: "thread not found"}
 		}
@@ -507,6 +623,9 @@ func (s *Server) handleReanchorThread(w http.ResponseWriter, r *http.Request, th
 	}
 
 	s.mutateSession(w, func() (any, error) {
+		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+			return nil, err
+		}
 		if err := validateAnchor(anchor, s.session.Plan); err != nil {
 			return nil, responseError{status: http.StatusBadRequest, message: "invalid anchor json"}
 		}
@@ -535,6 +654,9 @@ func (s *Server) handleEditThread(w http.ResponseWriter, r *http.Request, thread
 	}
 
 	s.mutateSession(w, func() (any, error) {
+		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+			return nil, err
+		}
 		if err := validateAnchor(request.Anchor, s.session.Plan); err != nil {
 			return nil, responseError{status: http.StatusBadRequest, message: "invalid thread edit json"}
 		}
@@ -559,6 +681,9 @@ func (s *Server) handleThreadKind(w http.ResponseWriter, r *http.Request, thread
 	request.Kind = strings.TrimSpace(request.Kind)
 
 	s.mutateSession(w, func() (any, error) {
+		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+			return nil, err
+		}
 		if !s.session.SetThreadKind(threadID, request.Kind) {
 			if !threadExists(*s.session, threadID) {
 				return nil, responseError{status: http.StatusNotFound, message: "thread not found"}
@@ -576,11 +701,12 @@ func (s *Server) handleRevisions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state := sessionForClient(*s.session)
+	state := buildClientState(*s.session, s.finished)
 	writeJSON(w, map[string]any{
 		"currentRevisionId": s.session.CurrentRevisionID,
 		"revisions":         state.Revisions,
-		"pendingProposal":   s.session.PendingProposal,
+		"pendingProposal":   state.PendingProposal,
+		"activeChange":      state.ActiveChange,
 	})
 }
 
@@ -603,6 +729,11 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 	fromRevision, fromOK := findRevision(*s.session, from)
 	toRevision, toOK := findRevision(*s.session, to)
 	feedback := revisionFeedbackBetween(*s.session, from, to)
+	format := s.session.PlanFormat
+	var threads []session.Thread
+	if to == s.session.CurrentRevisionID {
+		threads = comparisonThreads(s.session.Threads, feedback)
+	}
 	store := s.revisionStore
 	s.mu.Unlock()
 	if !fromOK || !toOK {
@@ -610,9 +741,10 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cacheKey, cacheable := revisionComparisonCacheKey(fromRevision, toRevision)
+	cacheable = cacheable && store != nil
 	if cacheable {
 		if cached, ok := s.comparisonCache.Load(cacheKey); ok {
-			writeJSON(w, cached)
+			writeJSON(w, reviewmodel.WithThreadPlacements(cached.(reviewmodel.ChangeView), threads))
 			return
 		}
 	}
@@ -629,17 +761,16 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 		}
 		fromRevision.Plan, toRevision.Plan = fromPlan, toPlan
 	}
-	comparison := revisionComparison{
-		From:     from,
-		To:       to,
-		Lines:    plandiff.Lines(fromRevision.Plan, toRevision.Plan),
+	comparison := reviewmodel.Build(reviewmodel.BuildInput{
+		Mode: reviewmodel.ModeRevision, IsDirect: toRevision.ParentID == from, BaseID: from, TargetID: to,
+		Format: string(format), Before: fromRevision.Plan, After: toRevision.Plan,
 		Feedback: feedback,
-	}
+	})
 	if cacheable {
 		actual, _ := s.comparisonCache.LoadOrStore(cacheKey, comparison)
-		comparison = actual.(revisionComparison)
+		comparison = actual.(reviewmodel.ChangeView)
 	}
-	writeJSON(w, comparison)
+	writeJSON(w, reviewmodel.WithThreadPlacements(comparison, threads))
 }
 
 func (s *Server) handleRevisionRestore(w http.ResponseWriter, r *http.Request, revisionID string) {
@@ -660,7 +791,11 @@ func (s *Server) handleRevisionRestore(w http.ResponseWriter, r *http.Request, r
 				return nil, err
 			}
 		}
-		return s.session.AddTurnRevision(content, "Restored revision "+revisionID), nil
+		restored, err := s.session.RestoreRevision(revisionID, content)
+		if err != nil {
+			return nil, transitionResponseError(err)
+		}
+		return restored, nil
 	})
 }
 
@@ -678,11 +813,31 @@ func (s *Server) handleProposeSection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid section proposal json")
 		return
 	}
-	request.Instruction = strings.TrimSpace(request.Instruction)
-	if request.Instruction == "" {
-		writeError(w, http.StatusBadRequest, "invalid section proposal json")
+	s.proposeSection(w, r, request, proposalLifecycle{})
+}
+
+func (s *Server) handleProposeReview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	var reviewDigest session.Digest
+	if err := decodeJSON(r.Body, &reviewDigest); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid review iteration json")
+		return
+	}
+	if !digestHasContent(reviewDigest) {
+		writeError(w, http.StatusBadRequest, "review iteration requires feedback")
+		return
+	}
+	s.proposeSection(w, r, proposeSectionRequest{}, proposalLifecycle{
+		kind:         session.ProposalKindReview,
+		reviewDigest: &reviewDigest,
+	})
+}
+
+func (s *Server) proposeSection(w http.ResponseWriter, r *http.Request, request proposeSectionRequest, lifecycle proposalLifecycle) {
+	request.Instruction = strings.TrimSpace(request.Instruction)
 
 	s.mu.Lock()
 	if s.finished {
@@ -695,6 +850,28 @@ func (s *Server) handleProposeSection(w http.ResponseWriter, r *http.Request) {
 		writeSourceSyncError(w, err)
 		return
 	}
+	if lifecycle.kind == session.ProposalKindReview {
+		if s.session.PendingProposal != nil {
+			s.mu.Unlock()
+			writeError(w, http.StatusConflict, "apply or discard the pending proposal before iterating the final review")
+			return
+		}
+		request.Anchor = wholePlanAnchor(s.session.Plan)
+		request.Instruction = reviewIterationInstruction(lifecycle.reviewDigest, "")
+		lifecycle.consumedSideAnswerIDs = promotedOpenSideAnswerIDs(*s.session)
+	} else if pending := s.session.PendingProposal; pending != nil && pending.Kind == session.ProposalKindReview && anchorsEqual(pending.Anchor, request.Anchor) {
+		lifecycle = proposalLifecycle{
+			kind:                  pending.Kind,
+			reviewDigest:          cloneDigestPointer(pending.ReviewDigest),
+			consumedSideAnswerIDs: append([]string(nil), pending.ConsumedSideAnswerIDs...),
+		}
+		request.Instruction = reviewIterationInstruction(lifecycle.reviewDigest, request.Instruction)
+	}
+	if request.Instruction == "" {
+		s.mu.Unlock()
+		writeError(w, http.StatusBadRequest, "invalid section proposal json")
+		return
+	}
 	if err := validateAnchor(request.Anchor, s.session.Plan); err != nil {
 		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "invalid section proposal json")
@@ -705,8 +882,14 @@ func (s *Server) handleProposeSection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "discard the stale section proposal before iterating again")
 		return
 	}
+	if s.session.PendingProposal != nil && !anchorsEqual(s.session.PendingProposal.Anchor, request.Anchor) {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "apply or discard the pending proposal before iterating a different section")
+		return
+	}
 	baseRevisionID := s.session.CurrentRevisionID
 	basePendingProposalID := pendingProposalID(s.session.PendingProposal)
+	baseFeedback := reviewFeedbackFingerprint(*s.session)
 	req := s.sectionIterationRequestLocked(request)
 	s.mu.Unlock()
 
@@ -739,11 +922,14 @@ func (s *Server) handleProposeSection(w http.ResponseWriter, r *http.Request) {
 		writeSourceSyncError(w, err)
 		return
 	}
-	if s.session.CurrentRevisionID != baseRevisionID || pendingProposalID(s.session.PendingProposal) != basePendingProposalID {
+	if s.session.CurrentRevisionID != baseRevisionID || pendingProposalID(s.session.PendingProposal) != basePendingProposalID || reviewFeedbackFingerprint(*s.session) != baseFeedback {
 		writeError(w, http.StatusConflict, "plan changed while section iteration was running")
 		return
 	}
 	before := cloneSession(*s.session)
+	input.Kind = lifecycle.kind
+	input.ReviewDigest = cloneDigestPointer(lifecycle.reviewDigest)
+	input.ConsumedSideAnswerIDs = append([]string(nil), lifecycle.consumedSideAnswerIDs...)
 	proposal := s.session.CreateSectionProposal(input)
 	if err := s.persistLocked(); err != nil {
 		if !autosaveWasCommitted(err) {
@@ -773,24 +959,32 @@ func (s *Server) handleRevisionProposalAction(w http.ResponseWriter, r *http.Req
 	switch action {
 	case "apply":
 		s.mutateSession(w, func() (any, error) {
-			if proposal := s.session.PendingProposal; proposal != nil && proposal.ID == proposalID && (proposal.Obsolete || proposal.ParentID != s.session.CurrentRevisionID) {
-				return nil, responseError{status: http.StatusConflict, message: "proposal is stale after a source-file change; discard it and iterate again"}
-			}
-			revision, ok := s.session.ApplyProposal(proposalID)
-			if !ok {
-				return nil, responseError{status: http.StatusNotFound, message: "proposal not found"}
+			revision, err := s.session.ApplyProposalChecked(proposalID)
+			if err != nil {
+				return nil, transitionResponseError(err)
 			}
 			return revision, nil
 		})
 	case "discard":
 		s.mutateSession(w, func() (any, error) {
-			if !s.session.DiscardProposal(proposalID) {
-				return nil, responseError{status: http.StatusNotFound, message: "proposal not found"}
+			if err := s.session.DiscardProposalChecked(proposalID); err != nil {
+				return nil, transitionResponseError(err)
 			}
 			return statusResponse("discarded"), nil
 		})
 	default:
 		writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
+func transitionResponseError(err error) error {
+	switch {
+	case session.IsTransition(err, session.TransitionMissing):
+		return responseError{status: http.StatusNotFound, message: err.Error()}
+	case session.IsTransition(err, session.TransitionStale), session.IsTransition(err, session.TransitionBlocked):
+		return responseError{status: http.StatusConflict, message: err.Error()}
+	default:
+		return err
 	}
 }
 
@@ -801,6 +995,9 @@ func (s *Server) handlePromoteSideAnswer(w http.ResponseWriter, sideAnswerID str
 	}
 
 	s.mutateSession(w, func() (any, error) {
+		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+			return nil, err
+		}
 		if !s.session.PromoteSideAnswer(sideAnswerID) {
 			return nil, responseError{status: http.StatusNotFound, message: "side answer not found"}
 		}
@@ -815,6 +1012,9 @@ func (s *Server) handleUnpromoteSideAnswer(w http.ResponseWriter, sideAnswerID s
 	}
 
 	s.mutateSession(w, func() (any, error) {
+		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+			return nil, err
+		}
 		if !s.session.UnpromoteSideAnswer(sideAnswerID) {
 			return nil, responseError{status: http.StatusNotFound, message: "side answer not found"}
 		}
@@ -842,6 +1042,7 @@ func (s *Server) mutateSession(w http.ResponseWriter, mutate func() (any, error)
 	before := cloneSession(*s.session)
 	response, err := mutate()
 	if err != nil {
+		*s.session = before
 		var httpErr responseError
 		if errors.As(err, &httpErr) {
 			writeError(w, httpErr.status, httpErr.message)
@@ -862,6 +1063,16 @@ func (s *Server) mutateSession(w http.ResponseWriter, mutate func() (any, error)
 
 func statusResponse(status string) map[string]string {
 	return map[string]string{"status": status}
+}
+
+func rejectPendingFeedbackMutation(s *session.Session) error {
+	if s.PendingProposal == nil {
+		return nil
+	}
+	return responseError{
+		status:  http.StatusConflict,
+		message: "apply or discard the pending proposal before changing review feedback",
+	}
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -886,6 +1097,9 @@ func (s *Server) finalize(digest session.Digest) (Result, error) {
 	}
 	if err := s.syncExternalSourceLocked(); err != nil {
 		return Result{}, err
+	}
+	if s.session.PendingProposal != nil {
+		return Result{}, errors.New("apply or discard the pending proposal before finalizing")
 	}
 	before := cloneSession(*s.session)
 	previousStatus := s.autosaveStatus
@@ -930,6 +1144,9 @@ func (s *Server) persistLocked() error {
 }
 
 func (s *Server) persistTransactionLocked() error {
+	if err := s.session.Validate(); err != nil {
+		return fmt.Errorf("validate review session: %w", err)
+	}
 	if err := s.syncRevisionStoreLocked(); err != nil {
 		return err
 	}
@@ -1016,18 +1233,6 @@ func compactRevisionBodies(source session.Session) session.Session {
 	return copy
 }
 
-// sessionForClient keeps normal review refreshes small. The working plan is
-// already exposed as Session.Plan; historical bodies are fetched only through
-// the comparison endpoint when the reviewer asks for them.
-func sessionForClient(source session.Session) session.Session {
-	copy := source
-	copy.Revisions = append([]session.Revision(nil), source.Revisions...)
-	for i := range copy.Revisions {
-		copy.Revisions[i].Plan = ""
-	}
-	return copy
-}
-
 func revisionComparisonCacheKey(from, to session.Revision) (string, bool) {
 	if from.CommitID == "" || to.CommitID == "" {
 		return "", false
@@ -1093,10 +1298,28 @@ func (s *Server) reloadAutosaveLocked() error {
 	if err != nil || !ok || saved.Generation <= s.autosaveGeneration {
 		return err
 	}
-	s.session = &saved.Session
-	s.autosaveStatus = saved.Status
+	next := saved.Session
+	status, _, err := migrateLoadedSession(&next, saved.Status, false)
+	if err != nil {
+		return fmt.Errorf("migrate reloaded autosave: %w", err)
+	}
+	previousSession, previousStatus, previousFinished := s.session, s.autosaveStatus, s.finished
+	previousDocument, previousGeneration := s.autosaveDocument, s.autosaveGeneration
+	s.session = &next
+	s.autosaveStatus = status
 	s.autosaveDocument = saved.Document
 	s.autosaveGeneration = saved.Generation
+	s.finished = isTerminalAutosaveStatus(status)
+	if err := s.hydrateRevisionBodiesLocked(); err != nil {
+		s.session, s.autosaveStatus, s.finished = previousSession, previousStatus, previousFinished
+		s.autosaveDocument, s.autosaveGeneration = previousDocument, previousGeneration
+		return err
+	}
+	if err := s.session.Validate(); err != nil {
+		s.session, s.autosaveStatus, s.finished = previousSession, previousStatus, previousFinished
+		s.autosaveDocument, s.autosaveGeneration = previousDocument, previousGeneration
+		return fmt.Errorf("validate reloaded autosave: %w", err)
+	}
 	return nil
 }
 
@@ -1383,6 +1606,20 @@ func revisionFeedbackBetween(s session.Session, fromID, toID string) []session.R
 	return feedback
 }
 
+func comparisonThreads(threads []session.Thread, feedback []session.RevisionFeedback) []session.Thread {
+	ownedByFeedback := make(map[string]bool, len(feedback))
+	for _, item := range feedback {
+		ownedByFeedback[item.ThreadID] = true
+	}
+	out := make([]session.Thread, 0, len(threads))
+	for _, thread := range threads {
+		if !ownedByFeedback[thread.ID] {
+			out = append(out, thread)
+		}
+	}
+	return out
+}
+
 func includedThreadIDs(s session.Session, requestedThreadID string, anchor session.Anchor) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -1401,6 +1638,77 @@ func includedThreadIDs(s session.Session, requestedThreadID string, anchor sessi
 		out = append(out, thread.ID)
 	}
 	return out
+}
+
+func promotedOpenSideAnswerIDs(s session.Session) []string {
+	openThreads := make(map[string]bool, len(s.Threads))
+	for _, thread := range s.Threads {
+		if thread.Status == "" || thread.Status == session.ThreadStatusOpen {
+			openThreads[thread.ID] = true
+		}
+	}
+	var out []string
+	for _, answer := range s.SideAnswers {
+		if answer.Promoted && openThreads[answer.ThreadID] {
+			out = append(out, answer.ID)
+		}
+	}
+	return out
+}
+
+func digestHasContent(digest session.Digest) bool {
+	if strings.TrimSpace(digest.Summary) != "" {
+		return true
+	}
+	for _, values := range [][]string{digest.ReviewerDecisions, digest.PromotedSideAnswers} {
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func reviewFeedbackFingerprint(value session.Session) string {
+	data, err := json.Marshal(struct {
+		Threads     []session.Thread
+		SideAnswers []session.SideAnswer
+	}{value.Threads, value.SideAnswers})
+	if err != nil {
+		panic(fmt.Sprintf("fingerprint review feedback: %v", err))
+	}
+	return string(data)
+}
+
+func reviewIterationInstruction(reviewDigest *session.Digest, refinement string) string {
+	if reviewDigest == nil {
+		return strings.TrimSpace(refinement)
+	}
+	return prompts.ReviewIterationInstruction(
+		reviewDigest.Summary,
+		reviewDigest.ReviewerDecisions,
+		reviewDigest.PromotedSideAnswers,
+		refinement,
+	)
+}
+
+func cloneDigestPointer(source *session.Digest) *session.Digest {
+	if source == nil {
+		return nil
+	}
+	cloned := *source
+	cloned.ReviewerDecisions = append([]string(nil), source.ReviewerDecisions...)
+	cloned.PromotedSideAnswers = append([]string(nil), source.PromotedSideAnswers...)
+	return &cloned
+}
+
+func wholePlanAnchor(plan string) session.Anchor {
+	lines := strings.Split(plan, "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return session.Anchor{StartLine: 1, EndLine: max(1, len(lines))}
 }
 
 func reviewerDecisionsForAnchor(s session.Session, anchor session.Anchor) []string {

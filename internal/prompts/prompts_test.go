@@ -30,11 +30,33 @@ func TestPromptTemplatesAreReviewableFiles(t *testing.T) {
 		"approved_handoff.gotmpl",
 		"protocol.gotmpl",
 		"review_digest.gotmpl",
+		"review_iteration.gotmpl",
 		"section_iteration.gotmpl",
 		"side_question.gotmpl",
 	}
 	if !slices.Equal(names, want) {
 		t.Fatalf("expected prompt templates %v, got %v", want, names)
+	}
+}
+
+func TestReviewIterationInstructionPreservesFinalFeedbackAndRefinement(t *testing.T) {
+	prompt := ReviewIterationInstruction(
+		"Not approved yet; iterate.",
+		[]string{"Use Go.", "  "},
+		[]string{"Question: Why?\nAnswer: It is simpler."},
+		"Make the rollout more explicit.",
+	)
+	for _, want := range []string{
+		"authoritative instruction",
+		"Not approved yet; iterate.",
+		"- Use Go.",
+		"Question: Why?",
+		"Refinement request:",
+		"Make the rollout more explicit.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected review iteration instruction to contain %q\n%s", want, prompt)
+		}
 	}
 }
 

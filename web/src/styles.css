@@ -1057,6 +1057,9 @@
   background: var(--color-surface-elevated);
   box-shadow: var(--shadow-soft);
 }
+.inline-proposal-controls.is-prominent {
+  margin: 12px;
+}
 .inline-proposal-summary {
   margin-top: 8px;
   border: 1px solid var(--color-border);

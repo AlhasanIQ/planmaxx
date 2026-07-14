@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/AlhasanIQ/planmaxx/internal/planformat"
+	"github.com/AlhasanIQ/planmaxx/internal/reviewmodel"
 	"github.com/AlhasanIQ/planmaxx/internal/revisions"
 	"github.com/AlhasanIQ/planmaxx/internal/sectioniter"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
@@ -96,7 +97,7 @@ func TestStateRouteReturnsSession(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", res.Code)
 	}
-	var got session.Session
+	var got clientState
 	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -106,12 +107,15 @@ func TestStateRouteReturnsSession(t *testing.T) {
 	if len(got.Revisions) != 1 || got.Revisions[0].Plan != "" {
 		t.Fatalf("expected revision metadata without duplicate plan body, got %+v", got.Revisions)
 	}
+	if got.SchemaVersion != clientSchemaVersion || got.Phase != "active" || !got.Capabilities.CanFinalize {
+		t.Fatalf("expected versioned active client projection, got %+v", got)
+	}
 }
 
 func TestSessionForClientOmitsHistoricalRevisionBodies(t *testing.T) {
 	s := session.New("plan-1", "# Plan\n- First")
 	s.AddTurnRevision("# Plan\n- Second", "updated")
-	public := sessionForClient(*s)
+	public := buildClientState(*s, false)
 	if public.Plan != "# Plan\n- Second" {
 		t.Fatalf("expected working plan to remain available, got %q", public.Plan)
 	}
@@ -291,6 +295,110 @@ func TestServerAutosavesInitialAndMutatedState(t *testing.T) {
 	}
 }
 
+func TestResumingCompletedAutosaveStartsCleanActiveReviewCycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review.json")
+	firstSession := session.New("plan-1", "# Plan\n")
+	firstSession.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Preserve feedback history")
+	first := NewServer(firstSession)
+	if err := first.EnableAutosave(path); err != nil {
+		t.Fatal(err)
+	}
+	if res := serveFinalize(first, `{"summary":"Approved old cycle","reviewerDecisions":["old"],"promotedSideAnswers":[]}`); res.Code != http.StatusOK {
+		t.Fatalf("finalize old cycle: %d %s", res.Code, res.Body.String())
+	}
+
+	resumed := NewServer(session.New("ignored", "ignored"))
+	if err := resumed.EnableAutosave(path); err != nil {
+		t.Fatal(err)
+	}
+	saved, ok, err := LoadAutosave(path)
+	if err != nil || !ok {
+		t.Fatalf("load resumed autosave: ok=%v err=%v", ok, err)
+	}
+	if saved.Status != "active" || saved.Session.Digest.Summary != "" || len(saved.Session.Digest.ReviewerDecisions) != 0 {
+		t.Fatalf("expected clean active review cycle, got status=%q digest=%+v", saved.Status, saved.Session.Digest)
+	}
+	if len(saved.Session.Threads) != 1 || saved.Session.Threads[0].Messages[0].Body != "Preserve feedback history" {
+		t.Fatalf("expected review history preserved, got %+v", saved.Session.Threads)
+	}
+}
+
+func TestResumingLegacyRejectedAutosavePreservesPendingIteration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review.json")
+	legacy := session.New("plan-1", "# Plan\n\n- Current")
+	legacy.SetDigest(session.Digest{
+		Summary:           "Old final review",
+		ReviewerDecisions: []string{"Revise the plan"},
+	})
+	proposal := legacy.CreateSectionProposal(session.SectionProposalInput{
+		Anchor:          session.Anchor{StartLine: 1, EndLine: 3},
+		AppliedAnchor:   session.Anchor{StartLine: 1, EndLine: 3},
+		ProposedSection: "# Plan\n\n- Iterated",
+		ProposedPlan:    "# Plan\n\n- Iterated",
+		Summary:         "Applied the final review.",
+		Instruction:     "Use the final-review feedback below as the authoritative instruction.\n\nRevise the plan.",
+	})
+	if _, err := writeAutosave(path, "rejected", *legacy, NewDocument("/tmp/plan.md", legacy.Plan), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed := NewServer(session.New("ignored", "ignored"))
+	if err := resumed.EnableAutosave(path); err != nil {
+		t.Fatal(err)
+	}
+	saved, ok, err := LoadAutosave(path)
+	if err != nil || !ok {
+		t.Fatalf("load resumed autosave: ok=%v err=%v", ok, err)
+	}
+	if saved.Status != "active" || saved.Session.Digest.Summary != "" || len(saved.Session.Digest.ReviewerDecisions) != 0 {
+		t.Fatalf("expected clean active review cycle, got status=%q digest=%+v", saved.Status, saved.Session.Digest)
+	}
+	if saved.Session.PendingProposal == nil || saved.Session.PendingProposal.ID != proposal.ID {
+		t.Fatalf("expected pending legacy iteration %q to survive resume, got %+v", proposal.ID, saved.Session.PendingProposal)
+	}
+	if saved.Session.PendingProposal.Kind != session.ProposalKindReview {
+		t.Fatalf("expected legacy proposal to migrate to review kind, got %+v", saved.Session.PendingProposal)
+	}
+	if saved.Session.PendingProposal.ReviewDigest == nil || saved.Session.PendingProposal.ReviewDigest.Summary != "Old final review" {
+		t.Fatalf("expected legacy review digest to move onto proposal, got %+v", saved.Session.PendingProposal.ReviewDigest)
+	}
+}
+
+func TestResumingAutosaveRebuildsPendingProposalWithCorrectedLineDeletion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review.json")
+	plan := "| Name | Status |\n|---|---|\n| Keep | yes |\n| Remove | no |\n| Later | yes |"
+	s := session.New("plan-1", plan)
+	raw := `<planmaxx_proposal version="1" revision="base-commit"><summary>Remove row.</summary><replacement target="lines"><expected>| Remove | no |</expected><content></content></replacement></planmaxx_proposal>`
+	proposal := s.CreateSectionProposal(session.SectionProposalInput{
+		Anchor:            session.Anchor{StartLine: 4, EndLine: 4},
+		AppliedAnchor:     session.Anchor{StartLine: 4, EndLine: 4},
+		AppliedHunks:      []session.AppliedHunk{{Anchor: session.Anchor{StartLine: 4, EndLine: 4}, Result: session.Anchor{StartLine: 4, EndLine: 4}}},
+		ReplacementAnchor: session.Anchor{StartLine: 4, EndLine: 4},
+		OriginalSection:   "| Remove | no |",
+		ProposedSection:   "",
+		ProposedPlan:      "| Name | Status |\n|---|---|\n| Keep | yes |\n\n| Later | yes |",
+		Summary:           "Remove row.",
+		Instruction:       "Remove the row",
+		RawResponse:       raw,
+	})
+	if _, err := writeAutosave(path, "active", *s, NewDocument("/tmp/plan.md", plan), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed := NewServer(session.New("ignored", "ignored"))
+	if err := resumed.EnableAutosave(path); err != nil {
+		t.Fatal(err)
+	}
+	saved, ok, err := LoadAutosave(path)
+	if err != nil || !ok {
+		t.Fatalf("load resumed autosave: ok=%v err=%v", ok, err)
+	}
+	want := "| Name | Status |\n|---|---|\n| Keep | yes |\n| Later | yes |"
+	if saved.Session.PendingProposal == nil || saved.Session.PendingProposal.ID != proposal.ID || saved.Session.PendingProposal.ProposedPlan != want {
+		t.Fatalf("expected corrected pending proposal %q, got %+v", want, saved.Session.PendingProposal)
+	}
+}
+
 func TestConcurrentServersRejectStaleWriteAndReloadLatestState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "review.json")
 	first := NewServer(session.New("session-1", "# Plan\n"))
@@ -320,6 +428,116 @@ func TestConcurrentServersRejectStaleWriteAndReloadLatestState(t *testing.T) {
 	}
 	if len(state.Threads) != 1 || state.Threads[0].Messages[0].Body != "First server comment" {
 		t.Fatalf("expected latest persisted state, got %+v", state.Threads)
+	}
+}
+
+func TestConcurrentStateReloadPreservesFinalizedStatusAndDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review.json")
+	first := NewServer(session.New("session-1", "# Plan"))
+	second := NewServer(session.New("session-1", "# Plan"))
+	if err := first.EnableAutosave(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.EnableAutosave(path); err != nil {
+		t.Fatal(err)
+	}
+	if res := serveFinalize(first, `{"summary":"Approved concurrently","reviewerDecisions":[],"promotedSideAnswers":[]}`); res.Code != http.StatusOK {
+		t.Fatalf("finalize failed: %d %s", res.Code, res.Body.String())
+	}
+
+	res := httptest.NewRecorder()
+	second.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("reload failed: %d %s", res.Code, res.Body.String())
+	}
+	var state clientState
+	if err := json.Unmarshal(res.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Phase != "terminal" || state.Digest.Summary != "Approved concurrently" || !second.finished {
+		t.Fatalf("concurrent reload resurrected finalized review: phase=%q digest=%+v finished=%v", state.Phase, state.Digest, second.finished)
+	}
+	saved, ok, err := LoadAutosave(path)
+	if err != nil || !ok || saved.Status != "finalized" || saved.Session.Digest.Summary != "Approved concurrently" {
+		t.Fatalf("finalized autosave changed during reload: saved=%+v ok=%v err=%v", saved, ok, err)
+	}
+}
+
+func TestStateReloadRunsSessionMigrationsAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review.json")
+	document := NewDocument("/tmp/plan.md", "alpha\nbeta")
+	server := NewServer(session.New("session-1", "alpha\nbeta")).WithAutosaveDocument(document)
+	if err := server.EnableAutosave(path); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := session.New("session-1", "alpha\nbeta")
+	legacy.AddThread(session.Anchor{StartLine: 99, EndLine: 99}, "legacy invalid anchor")
+	legacy.SetDigest(session.Digest{Summary: "iterate"})
+	legacy.CreateSectionProposal(session.SectionProposalInput{
+		Anchor: session.Anchor{StartLine: 1, EndLine: 2}, ProposedPlan: "alpha\ngamma", ProposedSection: "alpha\ngamma",
+		Instruction: "A refinement that no longer has the old instruction prefix.",
+	})
+	if _, err := writeAutosave(path, "active", *legacy, document, server.autosaveGeneration); err != nil {
+		t.Fatal(err)
+	}
+
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/state", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("state reload failed: %d %s", res.Code, res.Body.String())
+	}
+	var state clientState
+	if err := json.Unmarshal(res.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.PendingProposal == nil || state.PendingProposal.Kind != session.ProposalKindReview || state.Phase != "proposal_pending" {
+		t.Fatalf("legacy proposal was not migrated during reload: %+v", state.PendingProposal)
+	}
+	if len(state.Threads) != 1 || state.Threads[0].Status != session.ThreadStatusStale {
+		t.Fatalf("invalid open anchor was not repaired: %+v", state.Threads)
+	}
+	if server.autosaveStatus != "active" || server.finished {
+		t.Fatalf("active migrated status changed unexpectedly: status=%q finished=%v", server.autosaveStatus, server.finished)
+	}
+}
+
+func TestExternalEditWithPendingProposalCanBeReloadedAndDiscarded(t *testing.T) {
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	autosavePath := filepath.Join(dir, "review.json")
+	previous := "# Plan\n\n- Original\n"
+	next := "# Plan\n\n- Changed outside PlanMaxx\n"
+	if err := os.WriteFile(planPath, []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := session.New("plan-1", previous)
+	proposal := s.CreateSectionProposal(session.SectionProposalInput{
+		Anchor: session.Anchor{StartLine: 3, EndLine: 3}, OriginalSection: "- Original",
+		ProposedSection: "- Proposed", ProposedPlan: "# Plan\n\n- Proposed\n",
+	})
+	server := NewServer(s).WithAutosaveDocument(NewDocument(planPath, previous))
+	if err := server.EnableAutosave(autosavePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, []byte(next), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := serveDiscardProposal(server, proposal.ID); res.Code != http.StatusConflict {
+		t.Fatalf("first request should report source reconciliation, got %d %s", res.Code, res.Body.String())
+	}
+	if s.PendingProposal == nil || !s.PendingProposal.Obsolete || s.PendingProposal.ParentID == s.CurrentRevisionID {
+		t.Fatalf("expected persisted obsolete proposal on new revision: %+v", s.PendingProposal)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("reconciled state should remain valid: %v", err)
+	}
+	reloaded := NewServer(session.New("ignored", "ignored")).WithAutosaveDocument(NewDocument(planPath, next))
+	if err := reloaded.EnableAutosave(autosavePath); err != nil {
+		t.Fatalf("obsolete proposal autosave should reload: %v", err)
+	}
+	if res := serveDiscardProposal(reloaded, proposal.ID); res.Code != http.StatusOK {
+		t.Fatalf("discard obsolete proposal failed: %d %s", res.Code, res.Body.String())
 	}
 }
 
@@ -1589,21 +1807,21 @@ func TestRevisionRoutesListAndDiffAppliedRevisions(t *testing.T) {
 		t.Fatalf("expected diff 200, got %d: %s", diffRes.Code, diffRes.Body.String())
 	}
 	var diffBody struct {
-		From  string `json:"from"`
-		To    string `json:"to"`
-		Lines []struct {
+		BaseID   string `json:"baseId"`
+		TargetID string `json:"targetId"`
+		Rows     []struct {
 			Kind string `json:"kind"`
 			Text string `json:"text"`
-		} `json:"lines"`
+		} `json:"rows"`
 	}
 	if err := json.Unmarshal(diffRes.Body.Bytes(), &diffBody); err != nil {
 		t.Fatal(err)
 	}
-	if diffBody.From != "rev-1" || diffBody.To != "rev-2" {
+	if diffBody.BaseID != "rev-1" || diffBody.TargetID != "rev-2" {
 		t.Fatalf("unexpected diff ids %+v", diffBody)
 	}
-	if !diffContains(diffBody.Lines, "remove", "- Old") || !diffContains(diffBody.Lines, "add", "- New") {
-		t.Fatalf("expected revision diff to contain old removal and new addition, got %+v", diffBody.Lines)
+	if !diffContains(diffBody.Rows, "remove", "- Old") || !diffContains(diffBody.Rows, "add", "- New") {
+		t.Fatalf("expected revision diff to contain old removal and new addition, got %+v", diffBody.Rows)
 	}
 }
 
@@ -1631,14 +1849,47 @@ func TestRevisionDiffIncludesFeedbackFromAcceptedProposal(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected diff 200, got %d: %s", res.Code, res.Body.String())
 	}
-	var body struct {
-		Feedback []session.RevisionFeedback `json:"feedback"`
-	}
+	var body reviewmodel.ChangeView
 	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
 	if len(body.Feedback) != 1 || body.Feedback[0].ThreadID != thread.ID || body.Feedback[0].Messages[0].Body != "Make this clearer." {
 		t.Fatalf("expected linked feedback in revision diff, got %+v", body.Feedback)
+	}
+	if !body.IsDirect || len(body.FeedbackPlacements) != 1 || len(body.ThreadPlacements) != 0 {
+		t.Fatalf("expected one authoritative inline feedback placement, got feedback=%+v threads=%+v", body.FeedbackPlacements, body.ThreadPlacements)
+	}
+}
+
+func TestCachedRevisionDiffOverlaysCurrentThreadPlacements(t *testing.T) {
+	store, err := revisions.Open(t.TempDir() + "/revisions.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := session.New("plan-1", "old")
+	server := NewServer(s).WithRevisionStore(store, revisions.PlanID("/repo/plan.md"))
+	if err := server.EnableAutosave(t.TempDir() + "/review.json"); err != nil {
+		t.Fatal(err)
+	}
+	s.AddTurnRevision("new", "updated")
+	server.mu.Lock()
+	err = server.persistLocked()
+	server.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := serveRevisionDiff(server, "rev-1", "rev-2")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first diff failed: %s", first.Body.String())
+	}
+	s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "new comment")
+	second := serveRevisionDiff(server, "rev-1", "rev-2")
+	var view reviewmodel.ChangeView
+	if err := json.Unmarshal(second.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if len(view.ThreadPlacements) != 1 || view.ThreadPlacements[0].ThreadID != "thread-1" {
+		t.Fatalf("cached comparison retained stale thread placements: %+v", view.ThreadPlacements)
 	}
 }
 
@@ -1679,6 +1930,90 @@ func TestProposeSectionRouteCreatesPendingProposal(t *testing.T) {
 	}
 	if !client.called || !strings.Contains(client.prompt, "Clarify this") {
 		t.Fatalf("expected section iteration prompt, got called=%v prompt=%q", client.called, client.prompt)
+	}
+}
+
+func TestFinalReviewIterationPersistsLifecycleAcrossRefinementAndApply(t *testing.T) {
+	s := session.New("plan-1", "one\nold two\nkeep\nold four")
+	decision := s.AddThread(session.Anchor{StartLine: 2, EndLine: 2}, "Update two")
+	note := s.AddThread(session.Anchor{StartLine: 4, EndLine: 4}, "Private note")
+	s.SetThreadKind(note.ID, session.ThreadKindNote)
+	answer := s.AddSideAnswer(note.ID, "Why four?", "It is clearer.")
+	s.PromoteSideAnswer(answer.ID)
+	s.Digest = session.Digest{Summary: "old finalized state"}
+	firstRaw := `<planmaxx_proposal version="1" revision="rev-1"><summary>Applied final review.</summary><replacement target="lines"><before>one</before><expected>old two</expected><after>keep</after><content>new two</content></replacement><replacement target="lines"><before>keep</before><expected>old four</expected><content>new four</content></replacement></planmaxx_proposal>`
+	firstClient := &fakeSectionPromptClient{answer: firstRaw}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", firstClient))
+
+	res := serveProposeReview(server, `{"summary":"Not approved; iterate.","reviewerDecisions":["Update two"],"promotedSideAnswers":["It is clearer."]}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected review proposal 200, got %d: %s", res.Code, res.Body.String())
+	}
+	proposal := *s.PendingProposal
+	if proposal.Kind != session.ProposalKindReview || proposal.ReviewDigest == nil || proposal.ReviewDigest.Summary != "Not approved; iterate." {
+		t.Fatalf("expected persisted final-review lifecycle, got %+v", proposal)
+	}
+	if proposal.OriginalSection != "one\nold two\nkeep\nold four" || proposal.ProposedSection != proposal.ProposedPlan {
+		t.Fatalf("expected whole-plan review surface, original=%q proposed=%q plan=%q", proposal.OriginalSection, proposal.ProposedSection, proposal.ProposedPlan)
+	}
+	if len(proposal.IncludedThreadIDs) != 1 || proposal.IncludedThreadIDs[0] != decision.ID || len(proposal.ConsumedSideAnswerIDs) != 1 || proposal.ConsumedSideAnswerIDs[0] != answer.ID {
+		t.Fatalf("expected consumed review artifacts, got threads=%+v answers=%+v", proposal.IncludedThreadIDs, proposal.ConsumedSideAnswerIDs)
+	}
+	if !strings.Contains(firstClient.prompt, "Not approved; iterate.") || !strings.Contains(firstClient.prompt, "Update two") {
+		t.Fatalf("expected edited final digest in prompt\n%s", firstClient.prompt)
+	}
+	if blocked := serveFinalize(server, `{"summary":"must not finalize"}`); blocked.Code != http.StatusConflict {
+		t.Fatalf("expected pending proposal to block finalize, got %d: %s", blocked.Code, blocked.Body.String())
+	}
+	if blocked := serveReplyThread(server, decision.ID, `{"body":"mutate after proposal"}`); blocked.Code != http.StatusConflict {
+		t.Fatalf("expected pending proposal to freeze feedback, got %d: %s", blocked.Code, blocked.Body.String())
+	}
+	if blocked := serveProposeSection(server, `{"anchor":{"startLine":2,"endLine":2},"instruction":"replace pending proposal"}`); blocked.Code != http.StatusConflict {
+		t.Fatalf("expected pending proposal to block a different iteration, got %d: %s", blocked.Code, blocked.Body.String())
+	}
+	if s.PendingProposal == nil || s.PendingProposal.ID != proposal.ID || len(s.Threads[0].Messages) != 1 {
+		t.Fatalf("expected blocked actions not to mutate pending review state, proposal=%+v thread=%+v", s.PendingProposal, s.Threads[0])
+	}
+
+	refinedRaw := `<planmaxx_proposal version="1" revision="rev-1"><summary>Refined final review.</summary><replacement target="lines"><expected>new four</expected><content>final four</content></replacement></planmaxx_proposal>`
+	refineClient := &fakeSectionPromptClient{answer: refinedRaw}
+	server.WithSectionIterations(sectioniter.NewService("current-thread", refineClient))
+	res = serveProposeSection(server, `{"anchor":{"startLine":1,"endLine":4},"instruction":"Make the last item final"}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected review refinement 200, got %d: %s", res.Code, res.Body.String())
+	}
+	proposal = *s.PendingProposal
+	if proposal.Kind != session.ProposalKindReview || proposal.ReviewDigest == nil || proposal.ProposedSection != proposal.ProposedPlan {
+		t.Fatalf("expected refinement to retain whole-review lifecycle, got %+v", proposal)
+	}
+	if !strings.Contains(refineClient.prompt, "Not approved; iterate.") || !strings.Contains(refineClient.prompt, "Make the last item final") {
+		t.Fatalf("expected authoritative review feedback and refinement in prompt\n%s", refineClient.prompt)
+	}
+
+	res = serveApplyProposal(server, proposal.ID)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected apply 200, got %d: %s", res.Code, res.Body.String())
+	}
+	if s.CurrentRevisionID != "rev-2" || len(s.Revisions) != 2 || s.Revisions[1].Source != session.RevisionSourceIteration {
+		t.Fatalf("expected appended iteration revision, got current=%q revisions=%+v", s.CurrentRevisionID, s.Revisions)
+	}
+	if s.Threads[0].Status != session.ThreadStatusResolved || s.Threads[1].ID != note.ID {
+		t.Fatalf("expected consumed decision resolved and note retained, got %+v", s.Threads)
+	}
+	if s.SideAnswers[0].Promoted || s.Digest.Summary != "" || len(s.Digest.ReviewerDecisions) != 0 || len(s.Digest.PromotedSideAnswers) != 0 || s.PendingProposal != nil {
+		t.Fatalf("expected clean next cycle, answers=%+v digest=%+v proposal=%+v", s.SideAnswers, s.Digest, s.PendingProposal)
+	}
+}
+
+func TestFinalReviewIterationRejectsEmptyDigest(t *testing.T) {
+	client := &fakeSectionPromptClient{answer: sectionProposalResponse("rev-1", "lines", "old", "updated", "new")}
+	server := NewServer(session.New("plan-1", "old")).WithSectionIterations(sectioniter.NewService("current-thread", client))
+	res := serveProposeReview(server, `{"summary":"  ","reviewerDecisions":[],"promotedSideAnswers":[]}`)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected empty final review to be rejected, got %d: %s", res.Code, res.Body.String())
+	}
+	if client.called || server.session.PendingProposal != nil {
+		t.Fatal("empty final review reached the model or created a proposal")
 	}
 }
 
@@ -1861,6 +2196,37 @@ func TestProposeSectionRouteRejectsStaleInFlightResult(t *testing.T) {
 	}
 }
 
+func TestProposeSectionRouteRejectsInFlightFeedbackMutation(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Old")
+	thread := s.AddThread(session.Anchor{StartLine: 3, EndLine: 3}, "Clarify")
+	client := blockingSectionPromptClient{started: make(chan struct{}), unblock: make(chan string, 1)}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", client))
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- serveProposeSection(server, `{"threadId":"`+thread.ID+`","anchor":{"startLine":3,"endLine":3},"instruction":"Clarify"}`)
+	}()
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for section iteration")
+	}
+	if res := serveDeleteThread(server, thread.ID); res.Code != http.StatusOK {
+		t.Fatalf("delete concurrent feedback: %d %s", res.Code, res.Body.String())
+	}
+	client.unblock <- sectionProposalResponse("rev-1", "lines", "- Old", "Clarified.", "- New")
+	select {
+	case res := <-done:
+		if res.Code != http.StatusConflict {
+			t.Fatalf("expected feedback race 409, got %d: %s", res.Code, res.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for proposal response")
+	}
+	if s.PendingProposal != nil {
+		t.Fatalf("stale feedback proposal was stored: %+v", s.PendingProposal)
+	}
+}
+
 func TestApplyProposalRouteUpdatesPlanAndRevision(t *testing.T) {
 	s := session.New("plan-1", "# Plan\n\n- Old\n- Keep")
 	proposal := s.CreateSectionProposal(session.SectionProposalInput{
@@ -1957,6 +2323,37 @@ func TestInFlightSideQuestionAfterFinalizeReturnsJSONConflictAndDoesNotMutateSta
 	assertJSONError(t, res, "review already completed")
 	if len(s.SideAnswers) != 0 {
 		t.Fatalf("expected no side answers, got %d", len(s.SideAnswers))
+	}
+}
+
+func TestInFlightSideQuestionAfterThreadDeletionReturnsConflict(t *testing.T) {
+	s := session.New("plan-1", "# Plan")
+	thread := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Clarify")
+	client := blockingSideQuestionClient{started: make(chan struct{}), unblock: make(chan struct{})}
+	server := NewServer(s).WithSideQuestions(sidequestions.NewService("codex-thread", client))
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- serveSideQuestion(server, `{"threadID":"`+thread.ID+`","question":"Why?"}`)
+	}()
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for side question")
+	}
+	if res := serveDeleteThread(server, thread.ID); res.Code != http.StatusOK {
+		t.Fatalf("delete concurrent thread: %d %s", res.Code, res.Body.String())
+	}
+	close(client.unblock)
+	select {
+	case res := <-done:
+		if res.Code != http.StatusConflict {
+			t.Fatalf("expected side-question race 409, got %d: %s", res.Code, res.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for side question response")
+	}
+	if len(s.SideAnswers) != 0 {
+		t.Fatalf("orphan side answer was stored: %+v", s.SideAnswers)
 	}
 }
 
@@ -2178,6 +2575,13 @@ func serveRevisionDiff(server *Server, from string, to string) *httptest.Respons
 
 func serveProposeSection(server *Server, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/revisions/propose-section", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+	return res
+}
+
+func serveProposeReview(server *Server, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/revisions/propose-review", strings.NewReader(body))
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, req)
 	return res

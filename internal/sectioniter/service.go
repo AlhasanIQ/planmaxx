@@ -51,6 +51,22 @@ func (s Service) Propose(ctx context.Context, req Request) (session.SectionPropo
 	if s.currentThreadID == "" || s.client == nil {
 		return session.SectionProposalInput{}, ErrUnavailable
 	}
+	prompt := prompts.SectionIteration(prompts.SectionIterationInput{Protocol: req.Protocol, Format: req.Format})
+	raw, err := s.client.AskPrompt(ctx, prompt)
+	if err != nil {
+		return session.SectionProposalInput{}, err
+	}
+	return BuildProposal(req, raw)
+}
+
+// BuildProposal validates and applies a persisted agent response against its
+// immutable parent revision. Besides keeping the live proposal path small,
+// this lets newer PlanMaxx versions safely rebuild pending proposals when
+// patch semantics are corrected.
+func BuildProposal(req Request, raw string) (session.SectionProposalInput, error) {
+	if strings.TrimSpace(req.ReviewerInstruction) == "" {
+		return session.SectionProposalInput{}, fmt.Errorf("reviewer instruction is required")
+	}
 	targetAnchor := req.Anchor
 	if req.ReplacementAnchor.StartLine > 0 {
 		targetAnchor = req.ReplacementAnchor
@@ -62,12 +78,6 @@ func (s Service) Propose(ctx context.Context, req Request) (session.SectionPropo
 		if err != nil {
 			return session.SectionProposalInput{}, err
 		}
-	}
-
-	prompt := prompts.SectionIteration(prompts.SectionIterationInput{Protocol: req.Protocol, Format: req.Format})
-	raw, err := s.client.AskPrompt(ctx, prompt)
-	if err != nil {
-		return session.SectionProposalInput{}, err
 	}
 	parsed, err := ParseResponse(raw)
 	if err != nil {
@@ -97,7 +107,7 @@ func (s Service) Propose(ctx context.Context, req Request) (session.SectionPropo
 			if hunk.Hunk.Target == "lines" {
 				result.StartChar, result.EndChar = 0, 0
 			}
-			delta := strings.Count(hunk.Hunk.Content, "\n") + 1 - (hunk.EndLine - hunk.StartLine + 1)
+			delta := strings.Count(hunk.Hunk.Content, "\n") - strings.Count(req.Plan[hunk.StartOffset:hunk.EndOffset], "\n")
 			appliedHunks = append(appliedHunks, session.AppliedHunk{Anchor: anchor, Result: result, LineDelta: delta})
 			byteShift += len(hunk.Hunk.Content) - (hunk.EndOffset - hunk.StartOffset)
 		}
@@ -109,9 +119,26 @@ func (s Service) Propose(ctx context.Context, req Request) (session.SectionPropo
 			applied = req.RootAppliedAnchor
 			appliedHunks = nil
 		}
+		if isWholePlanAnchor(req.Plan, targetAnchor) {
+			selected = req.Plan
+			primary.Hunk.Content = proposedPlan
+			proposedAnchor = session.Anchor{StartLine: 1, EndLine: lineCount(proposedPlan)}
+		}
 		return session.SectionProposalInput{ThreadID: req.ThreadID, Anchor: req.Anchor, AppliedAnchor: applied, AppliedHunks: appliedHunks, ReplacementAnchor: proposedAnchor, OriginalSection: selected, ProposedSection: primary.Hunk.Content, ProposedPlan: proposedPlan, Summary: parsed.Summary, Instruction: req.ReviewerInstruction, RawResponse: raw, IncludedThreadIDs: append([]string(nil), req.IncludedThreadIDs...)}, nil
 	}
 	return session.SectionProposalInput{}, errors.New("section iteration response contains no patch hunks")
+}
+
+func isWholePlanAnchor(plan string, anchor session.Anchor) bool {
+	return !hasCharacterRange(anchor) && anchor.StartLine == 1 && anchor.EndLine == lineCount(plan)
+}
+
+func lineCount(text string) int {
+	lines := strings.Split(text, "\n")
+	if len(lines) > 1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return max(1, len(lines))
 }
 
 func primaryResolvedHunk(resolved []patches.Resolved, target session.Anchor) patches.Resolved {

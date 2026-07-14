@@ -1,30 +1,15 @@
 import type { Digest, Session } from "../types";
-import { promotedSideAnswerText } from "./selectionContext";
 
-export function buildDigestDraft(session: Session): Digest {
-  const decisions: string[] = [];
-  for (const thread of session.threads) {
-    if ((thread.kind ?? "decision") !== "decision") continue;
-    if ((thread.status ?? "open") !== "open") continue;
-    for (const message of thread.messages) {
-      decisions.push(message.body);
-    }
-  }
-  const openThreadIds = new Set(
-    session.threads
-      .filter((thread) => (thread.status ?? "open") === "open")
-      .map((thread) => thread.id),
-  );
-  const promoted: string[] = [];
-  for (const answer of session.sideAnswers) {
-    if (!answer.promoted || !openThreadIds.has(answer.threadId)) continue;
-    promoted.push(promotedSideAnswerText(session, answer.id) ?? answer.answer);
-  }
-  const hasContent = decisions.length > 0 || promoted.length > 0;
+export function digestForIteration(digest: Digest, initialSummary: string): Digest {
+  const summary = digest.summary.trim();
+  const untouchedApprovalDefault = summary === initialSummary.trim() && /^Approved (with review|without) comments\.$/.test(summary);
+  if (!untouchedApprovalDefault) return digest;
+  const hasFeedback = digest.reviewerDecisions.length > 0 || digest.promotedSideAnswers.length > 0;
   return {
-    summary: hasContent ? "Approved with review comments." : "Approved without comments.",
-    reviewerDecisions: decisions,
-    promotedSideAnswers: promoted,
+    ...digest,
+    summary: hasFeedback
+      ? "Not approved yet; revise the plan using this review feedback."
+      : "Not approved yet; revise the complete plan before approval.",
   };
 }
 

@@ -1,18 +1,12 @@
 import { GitCompareArrows, History, Loader2, RotateCcw } from "lucide-react";
 import { useMemo } from "react";
-import type { DiffLine, Revision } from "../types";
+import type { ChangeView, Revision } from "../types";
 import { anchorLabel } from "../lib/anchors";
-
-interface RevisionDiffState {
-  from: string;
-  to: string;
-  lines: DiffLine[];
-}
 
 interface Props {
   currentRevisionId: string;
   revisions: Revision[];
-  diff: RevisionDiffState | null;
+  diff: ChangeView | null;
   loading: boolean;
   error: string | null;
   disabled: boolean;
@@ -105,7 +99,7 @@ export function RevisionPanel({
       {diff ? (
         <div className="revision-comparison-summary mt-3">
           <div className="flex items-center justify-between gap-2 text-[11px] text-foreground-muted">
-            <span>Showing {diff.from} → {diff.to} in the plan.</span>
+            <span>Showing {diff.baseId} → {diff.targetId} in the plan.</span>
             <button type="button" className="btn btn-ghost btn-sm" onClick={onClearCompare} disabled={disabled}>
               Hide changes
             </button>

@@ -240,6 +240,66 @@ func TestServiceAppliesDistantHunksWithoutTrustingHints(t *testing.T) {
 	}
 }
 
+func TestBuildProposalDoesNotLeaveBlankRowsForLineDeletions(t *testing.T) {
+	plan := "| Name | Status |\n|---|---|\n| Keep | yes |\n| Remove | no |\n| Later | yes |"
+	raw := `<planmaxx_proposal version="1" revision="rev-1"><summary>Remove row.</summary><replacement target="lines"><expected>| Remove | no |</expected><content></content></replacement></planmaxx_proposal>`
+	got, err := BuildProposal(Request{
+		RevisionID:          "rev-1",
+		Plan:                plan,
+		Anchor:              session.Anchor{StartLine: 4, EndLine: 4},
+		ReviewerInstruction: "Remove the row",
+		Format:              planformat.Markdown,
+	}, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "| Name | Status |\n|---|---|\n| Keep | yes |\n| Later | yes |"
+	if got.ProposedPlan != want {
+		t.Fatalf("line deletion left invalid table spacing\nwant: %q\ngot:  %q", want, got.ProposedPlan)
+	}
+	if len(got.AppliedHunks) != 1 || got.AppliedHunks[0].LineDelta != -1 {
+		t.Fatalf("expected deletion to shift following anchors by one line, got %+v", got.AppliedHunks)
+	}
+}
+
+func TestServiceKeepsWholePlanProposalWholeForReviewAndRefinement(t *testing.T) {
+	plan := "one\nold two\nkeep\nold four"
+	raw := `<planmaxx_proposal version="1" revision="rev-1"><summary>Update review.</summary><replacement target="lines"><before>one</before><expected>old two</expected><after>keep</after><content>new two</content></replacement><replacement target="lines"><before>keep</before><expected>old four</expected><content>new four</content></replacement></planmaxx_proposal>`
+	got, err := NewService("thread-1", &fakePromptClient{answer: raw}).Propose(context.Background(), Request{
+		RevisionID:          "rev-1",
+		Plan:                plan,
+		Anchor:              session.Anchor{StartLine: 1, EndLine: 4},
+		ReviewerInstruction: "Apply final review",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "one\nnew two\nkeep\nnew four"
+	if got.OriginalSection != plan || got.ProposedSection != want || got.ProposedPlan != want {
+		t.Fatalf("expected whole-plan review surface, got original=%q proposedSection=%q proposedPlan=%q", got.OriginalSection, got.ProposedSection, got.ProposedPlan)
+	}
+	if got.ReplacementAnchor != (session.Anchor{StartLine: 1, EndLine: 4}) {
+		t.Fatalf("expected whole proposed plan anchor, got %+v", got.ReplacementAnchor)
+	}
+
+	refinedRaw := `<planmaxx_proposal version="1" revision="rev-1"><summary>Refine review.</summary><replacement target="lines"><expected>new four</expected><content>final four</content></replacement></planmaxx_proposal>`
+	refined, err := NewService("thread-1", &fakePromptClient{answer: refinedRaw}).Propose(context.Background(), Request{
+		RevisionID:          "rev-1",
+		Plan:                want,
+		Anchor:              session.Anchor{StartLine: 1, EndLine: 4},
+		ReplacementAnchor:   got.ReplacementAnchor,
+		RootAppliedAnchor:   got.AppliedAnchor,
+		SelectedSection:     got.ProposedSection,
+		ReviewerInstruction: "Refine final review",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refined.OriginalSection != want || refined.ProposedSection != "one\nnew two\nkeep\nfinal four" {
+		t.Fatalf("expected refinement to remain whole-plan, got original=%q proposed=%q", refined.OriginalSection, refined.ProposedSection)
+	}
+}
+
 func TestServiceAppliesCharacterHunkWithoutLineSplice(t *testing.T) {
 	plan := "- Product name: **From Zero to AI Engineer**"
 	raw := `<planmaxx_proposal version="1" revision="base-commit"><summary>Rename precisely.</summary><replacement target="selection" start_hint="wrong" end_hint="wrong"><before>**From </before><expected>Zero</expected><after> to AI</after><content>AI</content></replacement></planmaxx_proposal>`

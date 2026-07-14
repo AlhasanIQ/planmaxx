@@ -1,4 +1,4 @@
-import type { SideAnswer, Thread } from "../types";
+import type { SideAnswer, Thread, ThreadPlacement } from "../types";
 
 export function visibleThreads(
   threads: Thread[],
@@ -28,6 +28,22 @@ export function threadsByAnchorEnd(threads: Thread[]): Map<number, Thread[]> {
     else grouped.set(endLine, [thread]);
   }
   return grouped;
+}
+
+// A proposal diff can represent one replacement as removed rows, matching
+// blank context, and added rows. Place every affected discussion after that
+// complete visual change cluster instead of between its before/after halves.
+export function threadsByBackendPlacement(threads: Thread[], placements: ThreadPlacement[]): Map<number, Thread[]> {
+	const byID = new Map(threads.map((thread) => [thread.id, thread]));
+	const grouped = new Map<number, Thread[]>();
+	for (const placement of placements) {
+		const thread = byID.get(placement.threadId);
+		if (!thread) continue;
+		const current = grouped.get(placement.rowIndex);
+		if (current) current.push(thread);
+		else grouped.set(placement.rowIndex, [thread]);
+	}
+	return grouped;
 }
 
 export function groupSideAnswersByThread(sideAnswers: SideAnswer[]): Map<string, SideAnswer[]> {

@@ -1,5 +1,5 @@
 import type { SideQuestionContext } from "./lib/selectionContext";
-import type { Anchor, DiffLine, Digest, Revision, RevisionFeedback, SectionProposal, Session, SideAnswer, Thread, ThreadKind } from "./types";
+import type { Anchor, ChangeView, Digest, Revision, SectionProposal, Session, SideAnswer, Thread, ThreadKind } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
@@ -28,30 +28,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
-// Go nil slices marshal as JSON null. Normalize so React code can treat
-// these fields as arrays without per-callsite guards.
 function normalizeSession(raw: Session): Session {
-  const planPath = raw.planPath ?? "";
-  return {
-    ...raw,
-    planPath,
-    planFormat: raw.planFormat ?? (/\.html?$/i.test(planPath) ? "html" : "markdown"),
-    currentRevisionId: raw.currentRevisionId ?? "",
-    revisions: raw.revisions ?? [],
-    pendingProposal: raw.pendingProposal ?? null,
-    threads: (raw.threads ?? []).map((t) => ({
-      ...t,
-      kind: t.kind ?? "decision",
-      status: t.status ?? "open",
-      messages: t.messages ?? [],
-    })),
-    sideAnswers: raw.sideAnswers ?? [],
-    digest: {
-      summary: raw.digest?.summary ?? "",
-      reviewerDecisions: raw.digest?.reviewerDecisions ?? [],
-      promotedSideAnswers: raw.digest?.promotedSideAnswers ?? [],
-    },
-  };
+  if (raw.schemaVersion !== 2) {
+    throw new Error(`Unsupported PlanMaxx API schema ${String(raw.schemaVersion ?? "missing")}; reload the rebuilt app.`);
+  }
+  return raw;
 }
 
 function normalizeDigest(raw: Digest): Digest {
@@ -113,10 +94,8 @@ export const api = {
     }),
   digestDraft: async () =>
     normalizeDigest(await request<Digest>("/api/digest/draft", { method: "POST" })),
-  revisions: () =>
-    request<{ currentRevisionId: string; revisions: Revision[]; pendingProposal?: SectionProposal | null }>("/api/revisions"),
   revisionDiff: (from: string, to: string) =>
-    request<{ from: string; to: string; lines: DiffLine[]; feedback?: RevisionFeedback[] }>(
+    request<ChangeView>(
       `/api/revisions/${encodeURIComponent(from)}/diff/${encodeURIComponent(to)}`,
     ),
   restoreRevision: (revisionId: string) =>
@@ -128,6 +107,11 @@ export const api = {
     request<SectionProposal>("/api/revisions/propose-section", {
       method: "POST",
       body: JSON.stringify({ threadId, anchor, instruction }),
+    }),
+  proposeReview: (digest: Digest) =>
+    request<SectionProposal>("/api/revisions/propose-review", {
+      method: "POST",
+      body: JSON.stringify(digest),
     }),
   applyProposal: (proposalId: string) =>
     request<Revision>(`/api/revisions/proposals/${encodeURIComponent(proposalId)}/apply`, {
