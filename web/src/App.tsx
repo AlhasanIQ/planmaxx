@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "./api";
 import { TopBar } from "./components/TopBar";
 import { Plan, type CommentView } from "./components/Plan";
-import { RevisionPanel } from "./components/RevisionPanel";
+import { RevisionDialog } from "./components/dialogs/RevisionDialog";
 import { ToastStack, type Toast } from "./components/Toasts";
 import { CompletedScreen } from "./components/CompletedScreen";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
@@ -33,6 +33,7 @@ type DialogState =
   | { kind: "ask"; thread: Thread }
   | { kind: "finalize"; digest: Digest }
   | { kind: "iteratePlan"; digest: Digest }
+  | { kind: "revisions" }
   | { kind: "confirmCancel" };
 
 function useReviewController() {
@@ -618,13 +619,15 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         themeMode={theme.mode}
         resolvedTheme={theme.resolved}
         onThemeModeChange={changeThemeMode}
+        currentRevisionId={session.currentRevisionId}
+        onOpenRevisions={() => setDialog({ kind: "revisions" })}
         onCancel={() => setDialog({ kind: "confirmCancel" })}
         onFinalize={openFinalize}
         disabled={busy}
 		finalizeDisabled={!session.capabilities.canFinalize}
       />
 
-      <main className="mx-auto grid w-full max-w-[1600px] grid-cols-1 gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <main className={`mx-auto w-full px-4 py-5 ${commentView === "alongside" ? "max-w-[1600px]" : "max-w-[1240px]"}`}>
         <Plan
           plan={session.plan}
           planFormat={session.planFormat}
@@ -671,20 +674,31 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           sideQuestionsEnabled={sideQuestionsEnabled}
         />
 
-        <aside className="min-w-0">
-          <RevisionPanel
-            currentRevisionId={session.currentRevisionId}
-            revisions={session.revisions}
-            diff={revisionDiff}
-            loading={revisionDiffLoading}
-            error={revisionDiffError}
-			disabled={busy || !session.capabilities.canRestoreRevision}
-            onCompare={handleCompareRevision}
-            onClearCompare={handleClearRevisionDiff}
-            onRestore={handleRestoreRevision}
-          />
-        </aside>
       </main>
+
+      {dialog?.kind === "revisions" && (
+        <RevisionDialog
+          currentRevisionId={session.currentRevisionId}
+          revisions={session.revisions}
+          diff={revisionDiff}
+          loading={revisionDiffLoading}
+          error={revisionDiffError}
+          disabled={busy || !session.capabilities.canRestoreRevision}
+          onCompare={(from, to) => {
+            setDialog(null);
+            void handleCompareRevision(from, to);
+          }}
+          onClearCompare={() => {
+            setDialog(null);
+            handleClearRevisionDiff();
+          }}
+          onRestore={(revisionId) => {
+            setDialog(null);
+            void handleRestoreRevision(revisionId);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
 
       {dialog?.kind === "reply" && (
         <ReplyDialog

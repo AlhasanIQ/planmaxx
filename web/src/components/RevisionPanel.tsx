@@ -13,6 +13,7 @@ interface Props {
   onCompare: (from: string, to: string) => void;
   onClearCompare: () => void;
   onRestore: (revisionId: string) => void;
+  showHeader?: boolean;
 }
 
 export function RevisionPanel({
@@ -25,12 +26,13 @@ export function RevisionPanel({
   onCompare,
   onClearCompare,
   onRestore,
+  showHeader = true,
 }: Props) {
   const orderedRevisions = useMemo(() => [...revisions].reverse(), [revisions]);
 
   return (
-    <section className="revision-panel">
-      <header className="flex items-center gap-2">
+    <section className={`revision-panel${showHeader ? "" : " is-dialog"}`}>
+      {showHeader ? <header className="flex items-center gap-2">
         <span className="handoff-arrow" aria-hidden>
           <History size={14} />
         </span>
@@ -42,9 +44,9 @@ export function RevisionPanel({
             Checked out: {currentRevisionId || "none"}
           </p>
         </div>
-      </header>
+      </header> : null}
 
-      <ol className="mt-3 space-y-1.5">
+      <ol className={`${showHeader ? "mt-3 " : ""}space-y-1.5`}>
         {orderedRevisions.map((revision) => (
           <li
             key={revision.id}

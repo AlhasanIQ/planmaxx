@@ -15,6 +15,19 @@ page.on("pageerror", (error) => consoleErrors.push(error.message));
 try {
   await page.goto(url, { waitUntil: "networkidle" });
   if (mode === "revision") {
+    const revisionTrigger = page.getByRole("button", { name: "Revisions — current rev-2" });
+    if (await revisionTrigger.count() !== 1) {
+      throw new Error("current revision is not exposed in the top bar");
+    }
+    await revisionTrigger.click();
+    const revisionDialog = page.getByRole("dialog", { name: "Revisions" });
+    await revisionDialog.waitFor();
+    for (const revision of ["rev-2", "rev-1"]) {
+      if (await revisionDialog.getByText(revision, { exact: true }).count() !== 1) {
+        throw new Error(`revision dialog is missing ${revision}`);
+      }
+    }
+    await revisionDialog.getByRole("button", { name: "Close", exact: true }).click();
     await page.getByText("Showing changes: rev-1 → rev-2", { exact: false }).waitFor();
     const feedback = page.getByText("revision placement comment", { exact: true });
     if (await feedback.count() !== 1) {
@@ -66,6 +79,30 @@ try {
 
   await page.getByRole("button", { name: "Alongside" }).click();
   await page.locator(".plan-thread-stack.is-alongside").filter({ hasText: "replace both lines" }).waitFor();
+  const alongsideLayout = await page.evaluate(() => {
+    const main = document.querySelector("main");
+    const article = document.querySelector(".plan-markdown");
+    const rail = document.querySelector(".plan-comment-rail");
+    if (!main || !article || !rail) return null;
+    const mainRect = main.getBoundingClientRect();
+    const articleRect = article.getBoundingClientRect();
+    const railRect = rail.getBoundingClientRect();
+    return {
+      articleWidth: articleRect.width,
+      railAfterArticle: railRect.left >= articleRect.right,
+      railAtMainEdge: Math.abs(mainRect.right - railRect.right) <= 20,
+      revisionsInPage: document.querySelectorAll(".revision-panel").length,
+    };
+  });
+  if (!alongsideLayout || alongsideLayout.articleWidth < 700) {
+    throw new Error("alongside comments still consume a nested third column from the plan");
+  }
+  if (!alongsideLayout.railAfterArticle || !alongsideLayout.railAtMainEdge) {
+    throw new Error("alongside comments are not using the page sidebar");
+  }
+  if (alongsideLayout.revisionsInPage !== 0) {
+    throw new Error("revision rail remained in the page after moving revisions to the top bar");
+  }
   if (await page.getByText("overlapping replacement", { exact: true }).count() !== 1) {
     throw new Error("overlapping comment duplicated after switching layouts");
   }

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160" role="img" aria-labelledby="title description">
+  <title id="title">PlanMaxx</title>
+  <desc id="description">A white letter P and review markers on a blue rounded square.</desc>
+  <defs>
+    <linearGradient id="surface" x1="20" y1="12" x2="140" y2="148" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67B7FF"/>
+      <stop offset="0.48" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#2155D6"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="38" y1="26" x2="112" y2="132" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#0B1B46" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <rect x="10" y="8" width="140" height="140" rx="34" fill="url(#surface)"/>
+    <rect x="11" y="9" width="138" height="138" rx="33" fill="none" stroke="#FFFFFF" stroke-opacity="0.22" stroke-width="2"/>
+    <path d="M23 44C36 21 62 10 91 10h25c18 0 32 14 32 32v17C119 43 74 42 23 58V44Z" fill="url(#shine)"/>
+  </g>
+
+  <path fill="#FFFFFF" d="M47 42a6 6 0 0 1 6-6h31c24 0 40 14 40 36 0 23-17 37-41 37H66v15a6 6 0 0 1-6 6h-7a6 6 0 0 1-6-6V42Zm19 12v37h16c14 0 23-7 23-19 0-11-8-18-22-18H66Z"/>
+
+  <g fill="#DDF0FF" stroke="#2D6DE8" stroke-width="3">
+    <circle cx="119" cy="108" r="8"/>
+    <circle cx="136" cy="123" r="6"/>
+  </g>
+</svg>

@@ -1,7 +1,9 @@
 import {
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
   EyeOff,
+  History,
   Loader2,
   Monitor,
   Moon,
@@ -21,6 +23,8 @@ interface Props {
   themeMode: ThemeMode;
   resolvedTheme: ResolvedTheme;
   onThemeModeChange: () => void;
+  currentRevisionId: string;
+  onOpenRevisions: () => void;
   onCancel: () => void;
   onFinalize: () => void;
   disabled: boolean;
@@ -38,6 +42,8 @@ export function TopBar(props: Props) {
     themeMode,
     resolvedTheme,
     onThemeModeChange,
+    currentRevisionId,
+    onOpenRevisions,
     onCancel,
     onFinalize,
     disabled,
@@ -56,6 +62,19 @@ export function TopBar(props: Props) {
           </span>
           <strong className="text-[15px]">PlanMaxx</strong>
         </div>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={onOpenRevisions}
+          disabled={disabled}
+          title={`Revisions — current ${currentRevisionId || "none"}`}
+          aria-label={`Revisions — current ${currentRevisionId || "none"}`}
+        >
+          <History size={13} />
+          <span className="hidden lg:inline">Revisions</span>
+          <strong>{currentRevisionId || "none"}</strong>
+          <ChevronDown size={12} aria-hidden />
+        </button>
         <span
           className="codex-paused hidden md:inline-flex"
           title="Your Codex session is blocked on this review"

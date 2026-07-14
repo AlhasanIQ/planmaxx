@@ -1,13 +1,36 @@
-# PlanMaxx
+<p align="center">
+  <img src="docs/planmaxx-icon.svg" width="112" alt="PlanMaxx logo">
+</p>
 
-PlanMaxx enhances how you review, iterate on, and understand your coding
-agent's plans in a single self-contained executable. It gives you a beautiful,
-readable visualizer, side questions and conversations that do not pollute the
-main context while still inheriting the full context available before the plan,
-and multi-turn iteration for refining a plan before you hand it back.
+<h1 align="center">PlanMaxx</h1>
 
-PlanMaxx can be used with Claude Code and other plan-file workflows,
-but it is currently optimized for Codex.
+<p align="center">
+  <strong>Review, discuss, and refine coding-agent plans before they become code.</strong>
+</p>
+
+<p align="center">
+  A beautiful, local-first review workspace delivered as one self-contained executable.
+</p>
+
+<p align="center">
+  <a href="https://github.com/AlhasanIQ/planmaxx/actions/workflows/ci.yml"><img src="https://github.com/AlhasanIQ/planmaxx/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/AlhasanIQ/planmaxx/releases"><img src="https://img.shields.io/github/v/release/AlhasanIQ/planmaxx?display_name=tag&sort=semver" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/AlhasanIQ/planmaxx" alt="GPLv3 license"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#what-it-does">Features</a> ·
+  <a href="#development">Contributing</a>
+</p>
+
+---
+
+PlanMaxx gives coding-agent plans a proper review loop: a readable visualizer,
+anchored comments, private side conversations that preserve context, revision
+history, and multi-turn iteration before handoff. It works with Claude Code and
+other plan-file workflows and is currently optimized for Codex.
 
 ## Install
 

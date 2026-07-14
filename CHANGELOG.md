@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Moved revision history into a top-bar picker that shows the checked-out
+  revision, leaving the page sidebar exclusively for alongside comments and
+  preventing the plan from being squeezed into an accidental third column.
 - Unified pending-proposal and revision comparisons behind a versioned,
   backend-owned change model. Go now computes diff rows, change clusters,
   complete document snapshots, comment placement, and immutable feedback
