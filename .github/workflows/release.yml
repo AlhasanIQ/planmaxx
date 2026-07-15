@@ -182,9 +182,10 @@ jobs:
               *windows*) executable='./planmaxx.exe' ;;
               *) executable='./planmaxx' ;;
             esac
-            tar -tzf "$archive" | grep -qx "$executable"
+            archive_contents="$(tar -tzf "$archive")"
+            grep -Fx "$executable" <<<"$archive_contents" >/dev/null
             for file in ./README.md ./LICENSE ./SKILL.md; do
-              tar -tzf "$archive" | grep -qx "$file"
+              grep -Fx "$file" <<<"$archive_contents" >/dev/null
             done
           done
 
