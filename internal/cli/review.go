@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/AlhasanIQ/planmaxx/internal/appdata"
 	"github.com/AlhasanIQ/planmaxx/internal/appserver"
 	"github.com/AlhasanIQ/planmaxx/internal/browser"
 	"github.com/AlhasanIQ/planmaxx/internal/handoff"
@@ -33,14 +34,17 @@ type reviewOptions struct {
 	port                int
 	noBrowser           bool
 	sideQuestionTimeout time.Duration
-	handoffOut          string
-	autosaveOut         string
+	saveToFile          string
+	bundleOut           string
+	localBundle         bool
 }
 
 var execCommandContext = exec.CommandContext
 var openBrowser = browser.Open
 var userCacheDir = os.UserCacheDir
 var userDataDir = os.UserConfigDir
+var userStateDir = appdata.StateDir
+var writePlanFile = savePlanFile
 
 const defaultAppServerRequestTimeout = 30 * time.Minute
 
@@ -56,6 +60,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			updateNotice := beginUpdateCheck(cmd.Context())
 			planPath, err := filepath.Abs(plan.Path)
 			if err != nil {
 				planPath = plan.Path
@@ -64,65 +69,134 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			document.PlanFormat = plan.Format
 			planPath = document.CanonicalPath
 
-			autosavePath := opts.autosaveOut
-			explicitAutosave := autosavePath != ""
-			if !explicitAutosave {
-				autosavePath = defaultAutosavePath(planPath)
+			if opts.localBundle && opts.bundleOut != "" {
+				return errors.New("--local-bundle cannot be combined with --bundle-out or --autosave-out")
 			}
+
+			var bundlePath string
+			if opts.localBundle {
+				bundlePath = review.LocalBundlePath(planPath)
+			} else {
+				stateRoot, err := userStateDir()
+				if err != nil {
+					return fmt.Errorf("find application state directory: %w", err)
+				}
+				bundlePath = review.BundlePath(stateRoot, planPath)
+			}
+			legacyAutosavePath := ""
+			legacyRevisionBundle := ""
+			if opts.bundleOut != "" {
+				info, err := review.InspectStorageFile(opts.bundleOut)
+				if err != nil {
+					return fmt.Errorf("inspect review storage override: %w", err)
+				}
+				switch info.Kind {
+				case review.StorageFileMissing, review.StorageFileBundle:
+					bundlePath = opts.bundleOut
+				case review.StorageFileLegacyJSON:
+					if !cmd.Flags().Changed("autosave-out") {
+						return fmt.Errorf("--bundle-out points to a legacy JSON autosave; run once with --autosave-out %q to import it without overwriting the original", opts.bundleOut)
+					}
+					legacyAutosavePath = opts.bundleOut
+				case review.StorageFileLegacyBundle:
+					if !cmd.Flags().Changed("autosave-out") {
+						return fmt.Errorf("--bundle-out points to a legacy revision bundle; run once with --autosave-out %q to import it without overwriting the original", opts.bundleOut)
+					}
+					legacyRevisionBundle = opts.bundleOut
+				default:
+					return fmt.Errorf("review storage override is neither JSON nor a valid Git bundle: %s", opts.bundleOut)
+				}
+			}
+			bundle, err := review.OpenBundleStore(bundlePath)
+			if err != nil {
+				return fmt.Errorf("open review bundle: %w", err)
+			}
+			defer bundle.Close()
+
 			reviewSession := session.NewWithFormat("session-1", plan.Markdown, plan.Format)
-			loadedPath := autosavePath
-			candidates := []string{autosavePath}
-			fallbackPath := ""
-			if !explicitAutosave {
-				var fallbackErr error
-				fallbackPath, fallbackErr = cacheAutosavePath(planPath)
-				if fallbackErr != nil {
-					return fmt.Errorf("find review autosave fallback: %w", fallbackErr)
+			if _, ok := bundle.Load(); ok {
+				if legacyAutosavePath != "" || legacyRevisionBundle != "" {
+					return fmt.Errorf("cannot import legacy storage because the destination bundle already exists: %s", bundlePath)
 				}
-				candidates = append(candidates, fallbackPath)
-			}
-			if saved, path, ok, err := loadNewestAutosave(candidates, document); err != nil {
-				return fmt.Errorf("load review autosave: %w", err)
-			} else if ok {
-				loadedPath = path
-				autosavePath = path
-				reviewSession = &saved.Session
-				if !saved.Document.SourceMatches(plan.Markdown) {
-					reviewSession.ReconcileExternalPlan(saved.Document.SourceText, plan.Markdown)
+				fmt.Fprintf(stderr, "PlanMaxx restored bundle: %s\n", bundlePath)
+			} else {
+				legacyAutosaves := []string{legacyAutosavePath}
+				if legacyAutosavePath == "" {
+					legacyCache, cacheErr := cacheAutosavePath(planPath)
+					if cacheErr != nil {
+						return fmt.Errorf("find legacy review autosave: %w", cacheErr)
+					}
+					legacyAutosaves = []string{defaultAutosavePath(planPath), legacyCache}
 				}
-				fmt.Fprintf(stderr, "PlanMaxx restored autosave: %s\n", loadedPath)
+				importedAutosave := false
+				if saved, legacyPath, ok, loadErr := loadNewestAutosave(legacyAutosaves, document); loadErr != nil {
+					return fmt.Errorf("import legacy review autosave: %w", loadErr)
+				} else if ok {
+					bundle.WithLegacyAutosave(saved)
+					importedAutosave = true
+					fmt.Fprintf(stderr, "PlanMaxx imported legacy autosave: %s -> %s\n", legacyPath, bundlePath)
+				}
+
+				planRef := revisions.PlanRef(revisions.PlanID(planPath))
+				if legacyRevisionBundle == "" {
+					candidate := filepath.Join(filepath.Dir(planPath), ".planmaxx", "revisions.bundle")
+					if info, inspectErr := review.InspectStorageFile(candidate); inspectErr != nil {
+						return fmt.Errorf("inspect project legacy revision bundle: %w", inspectErr)
+					} else if info.Kind == review.StorageFileLegacyBundle && info.HasRef(planRef) {
+						legacyRevisionBundle = candidate
+					}
+				}
+				if legacyRevisionBundle != "" {
+					info, inspectErr := review.InspectStorageFile(legacyRevisionBundle)
+					if inspectErr != nil {
+						return inspectErr
+					}
+					if !info.HasRef(planRef) {
+						return fmt.Errorf("legacy revision bundle does not contain history for this plan: %s", legacyRevisionBundle)
+					}
+					bundle.WithLegacyImport(legacyRevisionBundle, planRef)
+					if !importedAutosave {
+						imported, importedOK, importErr := review.ImportLegacyRevisionHistory(legacyRevisionBundle, planRef, *reviewSession)
+						if importErr != nil {
+							return fmt.Errorf("import project revision history: %w", importErr)
+						}
+						if importedOK {
+							reviewSession = &imported
+							if reviewSession.Plan != plan.Markdown {
+								reviewSession.ReconcileExternalPlan(reviewSession.Plan, plan.Markdown)
+							}
+						}
+					}
+					fmt.Fprintf(stderr, "PlanMaxx imported legacy revision bundle: %s -> %s\n", legacyRevisionBundle, bundlePath)
+				} else {
+					legacyStore, storeErr := openLegacyRevisionStore(planPath)
+					if storeErr != nil {
+						return storeErr
+					}
+					if legacyStore != nil {
+						bundle.WithLegacyImport(legacyStore.Path(), planRef)
+						if !importedAutosave {
+							imported, importedOK, importErr := review.ImportLegacyRevisionHistory(legacyStore.Path(), planRef, *reviewSession)
+							if importErr != nil {
+								return fmt.Errorf("import shared revision history: %w", importErr)
+							}
+							if importedOK {
+								reviewSession = &imported
+								if reviewSession.Plan != plan.Markdown {
+									reviewSession.ReconcileExternalPlan(reviewSession.Plan, plan.Markdown)
+								}
+							}
+						}
+						fmt.Fprintf(stderr, "PlanMaxx imported legacy revision store: %s -> %s\n", legacyStore.Path(), bundlePath)
+					}
+				}
 			}
 			reviewSession.PlanPath = planPath
 			reviewServer := review.NewServer(reviewSession).
 				WithSideQuestionTimeout(opts.sideQuestionTimeout).
-				WithAutosaveDocument(document).
-				WithAutosaveFallback(fallbackPath)
-			store, storeErr := openRevisionStore(planPath)
-			if storeErr != nil {
-				return storeErr
-			}
-			reviewServer.WithRevisionStore(store, revisions.PlanID(planPath))
-			if err := reviewServer.EnableAutosave(autosavePath); err != nil {
-				if explicitAutosave {
-					return fmt.Errorf("write review autosave: %w", err)
-				}
-				fmt.Fprintf(stderr, "PlanMaxx autosave fallback: %s (%v)\n", fallbackPath, err)
-				autosavePath = fallbackPath
-				reviewServer = review.NewServer(reviewSession).
-					WithSideQuestionTimeout(opts.sideQuestionTimeout).
-					WithAutosaveDocument(document)
-				store, storeErr := openRevisionStore(planPath)
-				if storeErr != nil {
-					return storeErr
-				}
-				reviewServer.WithRevisionStore(store, revisions.PlanID(planPath))
-				if err := reviewServer.EnableAutosave(autosavePath); err != nil {
-					return fmt.Errorf("write review autosave fallback: %w", err)
-				}
-			}
-			if actualPath := reviewServer.AutosavePath(); actualPath != autosavePath {
-				fmt.Fprintf(stderr, "PlanMaxx autosave fallback: %s\n", actualPath)
-				autosavePath = actualPath
+				WithAutosaveDocument(document)
+			if err := reviewServer.EnableBundle(bundle); err != nil {
+				return fmt.Errorf("persist review bundle: %w", err)
 			}
 			if cleanup := tryAttachAppServerServices(cmd.Context(), stderr, reviewServer, os.Getenv("CODEX_THREAD_ID")); cleanup != nil {
 				defer cleanup()
@@ -149,7 +223,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 
 			reviewURL := "http://" + listener.Addr().String()
 			fmt.Fprintf(stderr, "PlanMaxx review URL: %s\n", reviewURL)
-			fmt.Fprintf(stderr, "PlanMaxx autosave: %s\n", autosavePath)
+			fmt.Fprintf(stderr, "PlanMaxx bundle: %s\n", bundlePath)
 			if !opts.noBrowser {
 				if err := openBrowser(reviewURL); err != nil {
 					fmt.Fprintf(stderr, "Open %s in your browser: %v\n", reviewURL, err)
@@ -163,16 +237,24 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			if result.Canceled {
 				return fmt.Errorf("review canceled")
 			}
+			savePath := planPath
+			if opts.saveToFile != "" {
+				savePath = opts.saveToFile
+			}
+			if err := writePlanFile(savePath, result.Session.Plan); err != nil {
+				return fmt.Errorf("save finalized plan: %w", err)
+			}
+			if review.NewDocument(savePath, "").CanonicalPath == planPath {
+				if err := reviewServer.RecordSourceSave(result.Session.Plan); err != nil {
+					return fmt.Errorf("record saved source plan: %w", err)
+				}
+			}
 
 			output, err := handoff.Format(result.Session)
 			if err != nil {
 				return err
 			}
-			if opts.handoffOut != "" {
-				if err := os.WriteFile(opts.handoffOut, []byte(output), 0o600); err != nil {
-					return fmt.Errorf("write handoff output: %w", err)
-				}
-			}
+			output = appendUpdateNotice(output, updateNotice)
 			_, err = fmt.Fprint(stdout, output)
 			return err
 		},
@@ -182,43 +264,49 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.Flags().IntVar(&opts.port, "port", opts.port, "port for the local review server; 0 chooses a random port")
 	cmd.Flags().BoolVar(&opts.noBrowser, "no-browser", opts.noBrowser, "print the review URL without opening a browser")
 	cmd.Flags().DurationVar(&opts.sideQuestionTimeout, "side-question-timeout", opts.sideQuestionTimeout, "maximum duration for one Codex app-server request")
-	cmd.Flags().StringVar(&opts.handoffOut, "handoff-out", opts.handoffOut, "write handoff output to this file as well as stdout")
-	cmd.Flags().StringVar(&opts.autosaveOut, "autosave-out", opts.autosaveOut, "write recoverable review autosave JSON to this file")
+	cmd.Flags().StringVar(&opts.saveToFile, "save-to-file", opts.saveToFile, "save the finalized plan to this file instead of the source plan")
+	cmd.Flags().BoolVar(&opts.localBundle, "local-bundle", opts.localBundle, "store <plan-file>.planmaxx beside the plan instead of in user state")
+	cmd.Flags().StringVar(&opts.bundleOut, "bundle-out", opts.bundleOut, "write the recoverable single-file Git review bundle here")
+	cmd.Flags().StringVar(&opts.bundleOut, "autosave-out", opts.bundleOut, "deprecated alias for --bundle-out")
+	_ = cmd.Flags().MarkDeprecated("autosave-out", "use --bundle-out")
+	_ = cmd.Flags().MarkHidden("autosave-out")
+	for _, name := range []string{"host", "port", "side-question-timeout", "bundle-out"} {
+		_ = cmd.Flags().MarkHidden(name)
+	}
 	return cmd
 }
 
-func openRevisionStore(planPath string) (*revisions.Store, error) {
-	dataDir, err := userDataDir()
-	if err != nil || dataDir == "" {
-		if err != nil {
-			return nil, fmt.Errorf("find application data directory for revision store: %w", err)
-		}
-		return nil, errors.New("application data directory for revision store is empty")
+func savePlanFile(path string, content string) error {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
+	return os.WriteFile(path, []byte(content), mode)
+}
+
+func openLegacyRevisionStore(planPath string) (*revisions.Store, error) {
 	planID := revisions.PlanID(planPath)
-	storePath := filepath.Join(dataDir, "planmaxx", "revisions.git")
-	store, err := revisions.Open(storePath)
-	if err != nil {
-		return nil, fmt.Errorf("open revision store: %w", err)
+	var candidates []string
+	if dataDir, err := userDataDir(); err != nil {
+		return nil, fmt.Errorf("find legacy application data directory: %w", err)
+	} else if dataDir != "" {
+		candidates = append(candidates, filepath.Join(dataDir, "planmaxx", "revisions.git"))
 	}
-	cacheDir, cacheErr := userCacheDir()
-	if cacheErr != nil || cacheDir == "" {
-		return store, nil
+	if cacheDir, err := userCacheDir(); err == nil && cacheDir != "" {
+		candidates = append(candidates, filepath.Join(cacheDir, "planmaxx", "revisions.git"))
 	}
-	legacyPath := filepath.Join(cacheDir, "planmaxx", "revisions.git")
-	if filepath.Clean(legacyPath) == filepath.Clean(storePath) {
-		return store, nil
-	}
-	legacy, ok, err := revisions.OpenExisting(legacyPath)
-	if err != nil {
-		return nil, fmt.Errorf("open legacy cache revision store: %w", err)
-	}
-	if ok {
-		if err := store.MigratePlanFrom(legacy, planID); err != nil {
-			return nil, fmt.Errorf("migrate legacy revision store: %w", err)
+	for _, candidate := range candidates {
+		store, ok, err := revisions.OpenExisting(candidate)
+		if err != nil {
+			return nil, fmt.Errorf("open legacy revision store: %w", err)
+		}
+		if ok && store.HasPlan(planID) {
+			return store, nil
 		}
 	}
-	return store, nil
+	return nil, nil
 }
 
 func defaultAutosavePath(planPath string) string {

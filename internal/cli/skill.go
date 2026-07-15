@@ -65,6 +65,9 @@ func newSkillInstallCommand(stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.source, "source", "", "local SKILL.md source path")
 	cmd.Flags().BoolVar(&opts.copyMode, "copy", false, "copy SKILL.md instead of symlinking")
 	cmd.Flags().BoolVar(&opts.linkMode, "link", false, "symlink SKILL.md instead of copying")
+	for _, name := range []string{"target", "source", "copy", "link"} {
+		_ = cmd.Flags().MarkHidden(name)
+	}
 	return cmd
 }
 
@@ -81,6 +84,9 @@ func newSkillRemoveCommand(stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target; currently codex")
 	cmd.Flags().StringVar(&opts.repo, "repo", "", "remove from this repository instead of the user-level Codex directory")
 	cmd.Flags().BoolVar(&opts.keepReminder, "keep-reminder", false, "leave the PlanMaxx reminder block in AGENTS.md")
+	for _, name := range []string{"target", "keep-reminder"} {
+		_ = cmd.Flags().MarkHidden(name)
+	}
 	return cmd
 }
 

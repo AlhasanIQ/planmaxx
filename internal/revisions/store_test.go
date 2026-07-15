@@ -2,6 +2,8 @@ package revisions
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,23 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
+
+func TestLegacyStoreLocksAreRuntimeStateOutsideRepository(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "revisions.git")
+	store, err := Open(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithPlanTransaction("plan", func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(repo + ".planmaxx-write.lock"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy repository accumulated a durable lock marker: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "planmaxx-locks")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy repository accumulated per-plan locks: %v", err)
+	}
+}
 
 func TestBareStoreCommitsReadsAndAdvancesNamespacedHead(t *testing.T) {
 	store, err := Open(t.TempDir() + "/planmaxx.git")

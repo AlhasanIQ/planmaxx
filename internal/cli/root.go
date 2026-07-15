@@ -26,6 +26,9 @@ func NewRootCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.SetErr(stderr)
 	cmd.AddCommand(newReviewCommand(stdout, stderr))
 	cmd.AddCommand(newSkillCommand(stdout, stderr))
+	cmd.AddCommand(newUpdateCommand(stdout))
+	cmd.AddCommand(newDoctorCommand(stdout))
+	cmd.AddCommand(newSnapshotCommand(stdout))
 	cmd.AddCommand(newVersionCommand(stdout))
 	return cmd
 }

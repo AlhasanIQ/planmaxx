@@ -207,6 +207,25 @@ func TestSkillCommandIsListedInRootHelp(t *testing.T) {
 	}
 }
 
+func TestSkillHelpKeepsOnlyRepositoryScopeVisible(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"skill", "install", "--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("skill install help: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "--repo") {
+		t.Fatalf("expected skill help to contain --repo, got %q", stdout.String())
+	}
+	for _, hidden := range []string{"--target", "--source", "--copy", "--link"} {
+		if strings.Contains(stdout.String(), hidden) {
+			t.Fatalf("expected skill help to hide %q, got %q", hidden, stdout.String())
+		}
+	}
+}
+
 func TestREADMEDocumentsSetupAndHowToUseModes(t *testing.T) {
 	readme, err := os.ReadFile(filepath.Join(repoRootForSkillTest(t), "README.md"))
 	if err != nil {
@@ -219,8 +238,11 @@ func TestREADMEDocumentsSetupAndHowToUseModes(t *testing.T) {
 	for _, want := range []string{
 		"Automatic Codex Skill",
 		"--install-codex-skill",
-		"planmaxx skill install --target codex",
-		"planmaxx skill remove --target codex",
+		"planmaxx skill install",
+		"planmaxx skill remove",
+		"~/.agents/skills/planmaxx/",
+		"planmaxx skill install --repo /path/to/repo",
+		"planmaxx skill remove --repo /path/to/repo",
 	} {
 		if !strings.Contains(install, want) {
 			t.Fatalf("expected Install section to mention %q", want)
@@ -236,8 +258,8 @@ func TestREADMEDocumentsSetupAndHowToUseModes(t *testing.T) {
 	}
 	for _, notWant := range []string{
 		"--install-codex-skill",
-		"planmaxx skill install --target codex",
-		"planmaxx skill remove --target codex",
+		"planmaxx skill install",
+		"planmaxx skill remove",
 	} {
 		if strings.Contains(quickStart, notWant) {
 			t.Fatalf("expected Quick Start to avoid setup detail %q", notWant)
@@ -255,7 +277,7 @@ func TestInstallerDocumentsOptionalSkillInstall(t *testing.T) {
 		"--install-codex-skill",
 		"~/.agents/skills",
 		"PLANMAXX_INSTALL_CODEX_SKILL",
-		"skill install --target codex",
+		"skill install",
 		"${BASE_URL}/SKILL.md",
 		"verify_checksum \"${TMPDIR_PLANMAXX}/SKILL.md\" \"$CHECKSUMS\"",
 	} {
@@ -277,6 +299,11 @@ func TestRepoSkillMatchesEmbeddedTemplate(t *testing.T) {
 	}
 	if string(repoSkill) != string(embeddedSkill) {
 		t.Fatalf("top-level SKILL.md must match internal/cli/SKILL.md")
+	}
+	for _, want := range []string{"user-scoped `.planmaxx` bundle", "`--local-bundle`", "`<plan-file>.planmaxx` beside the plan"} {
+		if !strings.Contains(string(embeddedSkill), want) {
+			t.Fatalf("installed skill must document %q", want)
+		}
 	}
 }
 

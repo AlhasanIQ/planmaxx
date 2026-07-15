@@ -65,6 +65,7 @@ func TestBrowserDiffRegression(t *testing.T) {
 		addressed := s.AddThread(session.Anchor{StartLine: 4, EndLine: 4}, "addressed feedback")
 		_ = s.DetachThread(detached.ID)
 		_ = s.AddressThread(addressed.ID, addressed.Anchor)
+		s.AddExternalRevision("one\ntwo\nchanged\nfour", "External source change")
 		runBrowserRegression(t, s, "states")
 	})
 }

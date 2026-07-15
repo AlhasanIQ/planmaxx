@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"github.com/AlhasanIQ/planmaxx/internal/review"
+	"github.com/AlhasanIQ/planmaxx/internal/revisions"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 func TestMain(m *testing.M) {
@@ -32,6 +34,7 @@ func TestMain(m *testing.M) {
 	}
 	userCacheDir = func() (string, error) { return filepath.Join(root, "cache"), nil }
 	userDataDir = func() (string, error) { return filepath.Join(root, "data"), nil }
+	userStateDir = func() (string, error) { return filepath.Join(root, "state"), nil }
 	code := m.Run()
 	_ = os.RemoveAll(root)
 	os.Exit(code)
@@ -81,10 +84,56 @@ func TestReviewAcceptsHostFlag(t *testing.T) {
 	}
 }
 
+func TestReviewHelpKeepsOnlyCommonFlagsVisible(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("review help: %v", err)
+	}
+	for _, want := range []string{"--no-browser", "--save-to-file", "--local-bundle"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("expected review help to contain %q, got %q", want, stdout.String())
+		}
+	}
+	for _, hidden := range []string{"--host", "--port", "--bundle-out", "--side-question-timeout"} {
+		if strings.Contains(stdout.String(), hidden) {
+			t.Fatalf("expected review help to hide %q, got %q", hidden, stdout.String())
+		}
+	}
+}
+
+func TestReviewRejectsLocalBundleWithExplicitBundlePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(path, []byte("# Test plan\n"), 0o600); err != nil {
+		t.Fatalf("write temp plan: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--local-bundle", "--bundle-out", filepath.Join(t.TempDir(), "review.planmaxx"), path})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--local-bundle cannot be combined") {
+		t.Fatalf("expected conflicting bundle flags error, got %v", err)
+	}
+}
+
 func TestReviewServesPlanAndWritesHandoffOnFinalize(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "")
 	var stdout lockedBuffer
 	var stderr lockedBuffer
+	oldBeginUpdateCheck := beginUpdateCheck
+	beginUpdateCheck = func(context.Context) <-chan string {
+		notice := make(chan string, 1)
+		notice <- "Agent maintenance notice:\nA PlanMaxx update is available. Tell the user briefly. Run `planmaxx update` to install it."
+		close(notice)
+		return notice
+	}
+	t.Cleanup(func() { beginUpdateCheck = oldBeginUpdateCheck })
 	openedURLCh := make(chan string, 1)
 	oldOpenBrowser := openBrowser
 	openBrowser = func(url string) error {
@@ -170,6 +219,9 @@ func TestReviewServesPlanAndWritesHandoffOnFinalize(t *testing.T) {
 	if !strings.Contains(output, `"summary": "Approved"`) {
 		t.Fatalf("expected approved digest summary, got %q", output)
 	}
+	if !strings.Contains(output, "Agent maintenance notice:") || !strings.Contains(output, "`planmaxx update`") {
+		t.Fatalf("expected agent-facing update notice, got %q", output)
+	}
 }
 
 func TestReviewServesHTMLFormatAndWritesHTMLHandoff(t *testing.T) {
@@ -226,9 +278,9 @@ func TestReviewServesHTMLFormatAndWritesHTMLHandoff(t *testing.T) {
 	if !strings.Contains(stdout.String(), "```html\n"+source+"```") {
 		t.Fatalf("expected exact HTML handoff, got %q", stdout.String())
 	}
-	autosave, ok, err := review.LoadAutosave(path + ".planmaxx-review.json")
-	if err != nil || !ok || autosave.Session.PlanFormat != "html" || autosave.Document.PlanFormat != "html" {
-		t.Fatalf("unexpected HTML autosave: ok=%v err=%v saved=%+v", ok, err, autosave)
+	autosave := loadReviewBundle(t, path)
+	if autosave.Session.PlanFormat != "html" || autosave.Document.PlanFormat != "html" {
+		t.Fatalf("unexpected HTML bundle: saved=%+v", autosave)
 	}
 }
 
@@ -426,11 +478,11 @@ func TestReviewDefaultAppServerRequestTimeoutIsThirtyMinutes(t *testing.T) {
 	}
 }
 
-func TestReviewHandoffOutMirrorsStdoutOnFinalize(t *testing.T) {
+func TestReviewSaveToFileWritesPlanContentOnFinalize(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "")
 	var stdout lockedBuffer
 	var stderr lockedBuffer
-	handoffPath := t.TempDir() + "/handoff.md"
+	savedPlanPath := t.TempDir() + "/saved-plan.md"
 
 	path := t.TempDir() + "/plan.md"
 	if err := os.WriteFile(path, []byte("# Test plan\n"), 0o600); err != nil {
@@ -438,7 +490,7 @@ func TestReviewHandoffOutMirrorsStdoutOnFinalize(t *testing.T) {
 	}
 
 	cmd := NewRootCommand(&stdout, &stderr)
-	cmd.SetArgs([]string{"review", "--no-browser", "--handoff-out", handoffPath, path})
+	cmd.SetArgs([]string{"review", "--no-browser", "--save-to-file", savedPlanPath, path})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -467,20 +519,26 @@ func TestReviewHandoffOutMirrorsStdoutOnFinalize(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for review command")
 	}
-	fileOutput, err := os.ReadFile(handoffPath)
+	fileOutput, err := os.ReadFile(savedPlanPath)
 	if err != nil {
-		t.Fatalf("read handoff file: %v", err)
+		t.Fatalf("read saved plan: %v", err)
 	}
-	if string(fileOutput) != stdout.String() {
-		t.Fatalf("expected file output to match stdout\nfile:\n%s\nstdout:\n%s", fileOutput, stdout.String())
+	if got, want := string(fileOutput), "# Test plan\n"; got != want {
+		t.Fatalf("saved plan = %q, want %q", got, want)
+	}
+	if strings.Contains(string(fileOutput), "Continue the user's approved plan work.") {
+		t.Fatalf("saved plan must not contain the handoff prompt: %q", fileOutput)
+	}
+	if !strings.Contains(stdout.String(), "Continue the user's approved plan work.") {
+		t.Fatalf("expected handoff prompt on stdout, got %q", stdout.String())
 	}
 }
 
-func TestReviewHandoffOutDoesNotWriteOnCancel(t *testing.T) {
+func TestReviewSaveToFileDoesNotWritePlanOnCancel(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "")
 	var stdout lockedBuffer
 	var stderr lockedBuffer
-	handoffPath := t.TempDir() + "/handoff.md"
+	savedPlanPath := t.TempDir() + "/saved-plan.md"
 
 	path := t.TempDir() + "/plan.md"
 	if err := os.WriteFile(path, []byte("# Test plan\n"), 0o600); err != nil {
@@ -488,7 +546,7 @@ func TestReviewHandoffOutDoesNotWriteOnCancel(t *testing.T) {
 	}
 
 	cmd := NewRootCommand(&stdout, &stderr)
-	cmd.SetArgs([]string{"review", "--no-browser", "--handoff-out", handoffPath, path})
+	cmd.SetArgs([]string{"review", "--no-browser", "--save-to-file", savedPlanPath, path})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -517,8 +575,59 @@ func TestReviewHandoffOutDoesNotWriteOnCancel(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for review command")
 	}
-	if _, err := os.Stat(handoffPath); !os.IsNotExist(err) {
-		t.Fatalf("expected no handoff file on cancel, stat err %v", err)
+	if _, err := os.Stat(savedPlanPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no saved plan on cancel, stat err %v", err)
+	}
+}
+
+func TestReviewDefaultsToSavingTheSourcePlan(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+	path := t.TempDir() + "/plan.md"
+	if err := os.WriteFile(path, []byte("# Test plan\n"), 0o600); err != nil {
+		t.Fatalf("write temp plan: %v", err)
+	}
+
+	oldWritePlanFile := writePlanFile
+	var savedPath, savedContent string
+	writePlanFile = func(path, content string) error {
+		savedPath, savedContent = path, content
+		return nil
+	}
+	t.Cleanup(func() { writePlanFile = oldWritePlanFile })
+
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--no-browser", path})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.ExecuteContext(ctx) }()
+
+	url := waitForReviewURL(t, &stderr)
+	finalizeRes, err := http.Post(url+"/api/finalize", "application/json", strings.NewReader(`{"summary":"Approved","reviewerDecisions":[],"promotedSideAnswers":[]}`))
+	if err != nil {
+		t.Fatalf("finalize review: %v", err)
+	}
+	defer finalizeRes.Body.Close()
+	if finalizeRes.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(finalizeRes.Body)
+		t.Fatalf("expected finalize status 200, got %d: %s", finalizeRes.StatusCode, body)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected review command to complete, got %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for review command")
+	}
+
+	if got, want := savedPath, review.NewDocument(path, "").CanonicalPath; got != want {
+		t.Fatalf("save target = %q, want source plan %q", got, want)
+	}
+	if got, want := savedContent, "# Test plan\n"; got != want {
+		t.Fatalf("saved source plan = %q, want %q", got, want)
 	}
 }
 
@@ -574,22 +683,26 @@ func TestReviewAutosavesCommentsBeforeCancel(t *testing.T) {
 		t.Fatal("timed out waiting for review command")
 	}
 
-	autosave, ok, err := review.LoadAutosave(path + ".planmaxx-review.json")
-	if err != nil {
-		t.Fatalf("load autosave: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected autosave file")
-	}
+	autosave := loadReviewBundle(t, path)
 	if autosave.Status != "canceled" {
 		t.Fatalf("expected canceled autosave, got %q", autosave.Status)
 	}
 	if got := autosave.Session.Threads[0].Messages[0].Body; got != "Do not lose this comment" {
 		t.Fatalf("expected autosaved comment, got %q", got)
 	}
+	if _, err := os.Stat(path + ".planmaxx-review.json"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("default review created an adjacent sidecar: %v", err)
+	}
+	dataRoot, err := userDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataRoot, "planmaxx", "revisions.git")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("default review created a shared revision repository: %v", err)
+	}
 }
 
-func TestReviewFallsBackToCacheAutosaveWhenDefaultPathCannotBeWritten(t *testing.T) {
+func TestReviewStoresBundleOutsideReadOnlyPlanDirectory(t *testing.T) {
 	t.Setenv("CODEX_THREAD_ID", "")
 	var stdout lockedBuffer
 	var stderr lockedBuffer
@@ -645,22 +758,72 @@ func TestReviewFallsBackToCacheAutosaveWhenDefaultPathCannotBeWritten(t *testing
 		t.Fatal("timed out waiting for review command")
 	}
 
-	fallbackPath, err := cacheAutosavePath(review.NewDocument(path, "# Test plan\n").CanonicalPath)
-	if err != nil {
-		t.Fatalf("cache autosave path: %v", err)
+	bundlePath := reviewBundlePath(t, path)
+	if !strings.Contains(stderr.String(), "PlanMaxx bundle: "+bundlePath) {
+		t.Fatalf("expected bundle message with %q, got %q", bundlePath, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "PlanMaxx autosave fallback: "+fallbackPath) {
-		t.Fatalf("expected autosave fallback message with %q, got %q", fallbackPath, stderr.String())
-	}
-	autosave, ok, err := review.LoadAutosave(fallbackPath)
-	if err != nil {
-		t.Fatalf("load fallback autosave: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected fallback autosave file")
-	}
+	autosave := loadReviewBundle(t, path)
 	if autosave.Status != "canceled" {
 		t.Fatalf("expected canceled fallback autosave, got %q", autosave.Status)
+	}
+}
+
+func TestReviewLocalBundleStoresBundleBesidePlan(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+
+	path := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(path, []byte("# Test plan\n"), 0o600); err != nil {
+		t.Fatalf("write temp plan: %v", err)
+	}
+	canonical := review.NewDocument(path, "").CanonicalPath
+	localPath := review.LocalBundlePath(canonical)
+	defaultPath := reviewBundlePath(t, path)
+
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--no-browser", "--local-bundle", path})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.ExecuteContext(ctx)
+	}()
+
+	url := waitForReviewURL(t, &stderr)
+	cancelRes, err := http.Post(url+"/api/cancel", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("cancel review: %v", err)
+	}
+	defer cancelRes.Body.Close()
+	if cancelRes.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(cancelRes.Body)
+		t.Fatalf("expected cancel status 200, got %d: %s", cancelRes.StatusCode, body)
+	}
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected cancel error")
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for review command")
+	}
+
+	if !strings.Contains(stderr.String(), "PlanMaxx bundle: "+localPath) {
+		t.Fatalf("expected local bundle message with %q, got %q", localPath, stderr.String())
+	}
+	store, err := review.OpenBundleStore(localPath)
+	if err != nil {
+		t.Fatalf("open local review bundle: %v", err)
+	}
+	defer store.Close()
+	saved, ok := store.Load()
+	if !ok || saved.Status != "canceled" {
+		t.Fatalf("expected canceled local bundle state, got ok=%v status=%q", ok, saved.Status)
+	}
+	if _, err := os.Stat(defaultPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local review also created default user-state bundle: %v", err)
 	}
 }
 
@@ -720,8 +883,8 @@ func TestReviewRestoresMatchingAutosave(t *testing.T) {
 		t.Fatalf("expected restored comment, got %q", got)
 	}
 	canonicalPath := review.NewDocument(path, plan).CanonicalPath
-	if !strings.Contains(stderr.String(), "PlanMaxx restored autosave: "+canonicalPath+".planmaxx-review.json") {
-		t.Fatalf("expected restored autosave message, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "PlanMaxx imported legacy autosave: "+canonicalPath+".planmaxx-review.json") {
+		t.Fatalf("expected legacy import message, got %q", stderr.String())
 	}
 
 	cancelRes, err := http.Post(url+"/api/cancel", "application/json", strings.NewReader(`{}`))
@@ -802,8 +965,8 @@ func TestReviewRestoresCacheFallbackOnNextSession(t *testing.T) {
 	if len(state.Threads) != 1 || state.Threads[0].Messages[0].Body != "Recovered from cache" {
 		t.Fatalf("expected fallback comment to be restored, got %+v", state.Threads)
 	}
-	if !strings.Contains(stderr.String(), "PlanMaxx restored autosave: "+fallbackPath) {
-		t.Fatalf("expected fallback restore message, got %q", stderr.String())
+	if !strings.Contains(stderr.String(), "PlanMaxx imported legacy autosave: "+fallbackPath) {
+		t.Fatalf("expected legacy cache import message, got %q", stderr.String())
 	}
 	cancelRes, err := http.Post(url+"/api/cancel", "application/json", strings.NewReader(`{}`))
 	if err != nil {
@@ -1012,6 +1175,219 @@ func TestReviewRecordsChangedAutosavePlanAsTurnRevision(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for review command")
+	}
+}
+
+func TestDeprecatedAutosaveOutImportsJSONWithoutOverwritingIt(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+	path := filepath.Join(t.TempDir(), "plan.md")
+	plan := "# Plan\n"
+	if err := os.WriteFile(path, []byte(plan), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	document := review.NewDocument(path, plan)
+	savedSession := session.New("session-1", plan)
+	savedSession.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Imported explicitly")
+	payload, err := json.Marshal(review.Autosave{Version: 2, Format: "planmaxx.review", Status: "canceled", Document: document, Session: *savedSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(t.TempDir(), "custom-review.json")
+	if err := os.WriteFile(legacyPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--no-browser", "--autosave-out", legacyPath, path})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.ExecuteContext(ctx) }()
+	url := waitForReviewURL(t, &stderr)
+	stateRes, err := http.Get(url + "/api/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateRes.Body.Close()
+	var state session.Session
+	if err := json.NewDecoder(stateRes.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Threads) != 1 || state.Threads[0].Messages[0].Body != "Imported explicitly" {
+		t.Fatalf("explicit JSON was not imported: %+v", state.Threads)
+	}
+	cancelRes, err := http.Post(url+"/api/cancel", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelRes.Body.Close()
+	if err := <-errCh; err == nil {
+		t.Fatal("expected canceled review error")
+	}
+	unchanged, err := os.ReadFile(legacyPath)
+	if err != nil || !bytes.Equal(unchanged, payload) {
+		t.Fatalf("legacy JSON was modified: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "PlanMaxx imported legacy autosave: "+legacyPath+" -> "+reviewBundlePath(t, path)) {
+		t.Fatalf("missing explicit migration message: %s", stderr.String())
+	}
+	_ = loadReviewBundle(t, path)
+}
+
+func TestBundleOutRejectsLegacyJSONWithMigrationInstruction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(path, []byte("# Plan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyPath := filepath.Join(t.TempDir(), "legacy.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewRootCommand(io.Discard, io.Discard)
+	cmd.SetArgs([]string{"review", "--bundle-out", legacyPath, path})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "run once with --autosave-out") {
+		t.Fatalf("expected actionable legacy JSON error, got %v", err)
+	}
+}
+
+func TestReviewImportsProjectLocalLegacyRevisionBundle(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plan.md")
+	firstPlan := "# Plan\n\n- One\n"
+	secondPlan := "# Plan\n\n- Two\n"
+	if err := os.WriteFile(path, []byte(secondPlan), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canonical := review.NewDocument(path, secondPlan).CanonicalPath
+	legacy, err := revisions.Open(filepath.Join(t.TempDir(), "legacy.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := revisions.PlanID(canonical)
+	first, err := legacy.Commit(planID, plumbing.ZeroHash, firstPlan, "Initial plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := legacy.Commit(planID, first, secondPlan, "Update plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDir := filepath.Join(dir, ".planmaxx")
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyBundle := filepath.Join(legacyDir, "revisions.bundle")
+	command := exec.Command("git", "--git-dir", legacy.Path(), "bundle", "create", legacyBundle, revisions.PlanRef(planID))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create legacy bundle: %v: %s", err, output)
+	}
+	originalBundle, err := os.ReadFile(legacyBundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--no-browser", path})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.ExecuteContext(ctx) }()
+	url := waitForReviewURL(t, &stderr)
+	stateRes, err := http.Get(url + "/api/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateRes.Body.Close()
+	var state session.Session
+	if err := json.NewDecoder(stateRes.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Revisions) != 2 || state.Revisions[0].CommitID != first.String() || state.Revisions[1].CommitID != second.String() {
+		t.Fatalf("legacy history was not exposed with stable IDs: %+v", state.Revisions)
+	}
+	cancelRes, err := http.Post(url+"/api/cancel", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelRes.Body.Close()
+	if err := <-errCh; err == nil {
+		t.Fatal("expected canceled review error")
+	}
+	after, err := os.ReadFile(legacyBundle)
+	if err != nil || !bytes.Equal(after, originalBundle) {
+		t.Fatalf("legacy bundle was modified: %v", err)
+	}
+	canonicalLegacyBundle := filepath.Join(filepath.Dir(canonical), ".planmaxx", "revisions.bundle")
+	if !strings.Contains(stderr.String(), "PlanMaxx imported legacy revision bundle: "+canonicalLegacyBundle+" -> "+reviewBundlePath(t, path)) {
+		t.Fatalf("missing legacy bundle migration message: %s", stderr.String())
+	}
+}
+
+func TestDeprecatedAutosaveOutImportsLegacyBundle(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+	path := filepath.Join(t.TempDir(), "plan.md")
+	plan := "# Plan\n\n- Legacy\n"
+	if err := os.WriteFile(path, []byte(plan), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	canonical := review.NewDocument(path, plan).CanonicalPath
+	legacy, err := revisions.Open(filepath.Join(t.TempDir(), "legacy.git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	planID := revisions.PlanID(canonical)
+	commit, err := legacy.Commit(planID, plumbing.ZeroHash, plan, "Initial plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBundle := filepath.Join(t.TempDir(), "custom-revisions.bundle")
+	command := exec.Command("git", "--git-dir", legacy.Path(), "bundle", "create", legacyBundle, revisions.PlanRef(planID))
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create legacy bundle: %v: %s", err, output)
+	}
+	original, _ := os.ReadFile(legacyBundle)
+
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--no-browser", "--autosave-out", legacyBundle, path})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.ExecuteContext(ctx) }()
+	url := waitForReviewURL(t, &stderr)
+	stateRes, err := http.Get(url + "/api/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateRes.Body.Close()
+	var state session.Session
+	if err := json.NewDecoder(stateRes.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Revisions) != 1 || state.Revisions[0].CommitID != commit.String() {
+		t.Fatalf("explicit legacy bundle identity was not preserved: %+v", state.Revisions)
+	}
+	cancelRes, err := http.Post(url+"/api/cancel", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelRes.Body.Close()
+	if err := <-errCh; err == nil {
+		t.Fatal("expected canceled review error")
+	}
+	after, _ := os.ReadFile(legacyBundle)
+	if !bytes.Equal(after, original) {
+		t.Fatal("explicit legacy bundle was overwritten")
+	}
+	if !strings.Contains(stderr.String(), "PlanMaxx imported legacy revision bundle: "+legacyBundle+" -> "+reviewBundlePath(t, path)) {
+		t.Fatalf("missing explicit bundle migration message: %s", stderr.String())
 	}
 }
 
@@ -1285,6 +1661,30 @@ func createReviewThread(t *testing.T, url string) string {
 		t.Fatal("expected created thread id")
 	}
 	return thread.ID
+}
+
+func reviewBundlePath(t *testing.T, planPath string) string {
+	t.Helper()
+	stateRoot, err := userStateDir()
+	if err != nil {
+		t.Fatalf("find test state directory: %v", err)
+	}
+	canonical := review.NewDocument(planPath, "").CanonicalPath
+	return review.BundlePath(stateRoot, canonical)
+}
+
+func loadReviewBundle(t *testing.T, planPath string) review.Autosave {
+	t.Helper()
+	store, err := review.OpenBundleStore(reviewBundlePath(t, planPath))
+	if err != nil {
+		t.Fatalf("open review bundle: %v", err)
+	}
+	defer store.Close()
+	saved, ok := store.Load()
+	if !ok {
+		t.Fatal("expected review bundle state")
+	}
+	return saved
 }
 
 func fakeAppServerCommand(ctx context.Context, name string, args ...string) *exec.Cmd {

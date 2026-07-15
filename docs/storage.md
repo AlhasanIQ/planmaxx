@@ -1,160 +1,158 @@
 # Review Storage Contract
 
-This document is the compatibility contract for PlanMaxx review persistence.
-Do not weaken these rules without an explicit migration and tests.
+Changes to this contract require migration coverage and tests.
 
-## Ownership and location
+## Authority and identity
 
-- The Markdown or HTML plan file remains the source document. PlanMaxx never
-  makes the browser or its working revision the source-file authority.
-- Submitted review state is stored in `<plan-file>.planmaxx-review.json`.
-  If that cannot be written, use the deterministic user-cache fallback for the
-  same canonical plan path.
-- Browser storage is non-authoritative and may contain preferences only.
-- Do not delete review records automatically on cancel or approval.
+- The Markdown or HTML file is the source document. The browser, preview, and
+  working revision are not source-file authority.
+- A plan's complete review workspace is stored in one `.planmaxx` Git bundle.
+  No default file is written beside the plan and no shared revision repository
+  is created.
+- The default location is user-scoped durable application state:
+  - Linux and other XDG systems: `$XDG_STATE_HOME/planmaxx/reviews`, or
+    `~/.local/state/planmaxx/reviews`.
+  - macOS: `~/Library/Application Support/PlanMaxx/reviews`.
+  - Windows: `%LOCALAPPDATA%\PlanMaxx\reviews`.
+- The bundle filename is the full SHA-256 of the canonical plan path. This
+  keeps paths stable without exposing project or plan names in the state
+  directory.
+- `planmaxx review --local-bundle <plan-file>` opts into storing
+  `<plan-file>.planmaxx` beside the canonical plan instead.
+- Browser storage holds preferences only. Review records survive cancel and
+  approval.
+- The canonical path identifies a plan. Symlink aliases share history;
+  distinct hard-link paths do not. Replacing content at the same path creates
+  an external revision. Content hashes detect edits but do not identify plans.
 
-## Document identity
+## Persistence
 
-- A review history belongs to the plan's **canonical logical path**. Symlink
-  aliases resolve to one history.
-- An atomic editor save that replaces the inode at that path is an external
-  source revision, not a new history. Distinct hard-link paths are distinct
-  logical plans.
-- Content hashes are version tokens for detecting source edits; they are not
-  document identity.
+PlanMaxx materializes a bundle into a disposable bare repository while a review
+is open. Every mutation builds and verifies a replacement bundle in a fresh
+repository, then atomically replaces the one durable file with mode `0600`.
+Temporary repositories and lock files are runtime implementation details, not
+additional durable records.
 
-## Durable record
+The protocol uses these Git refs:
 
-The versioned JSON envelope stores the complete review workspace: working
-plan, revision metadata and Git commit IDs, comments and anchors, replies,
-positions, side answers and their inclusion choice, digest, and pending proposal. It also
-stores the canonical source path and last externally observed source text/hash
-separately from the working review plan.
+| PlanMaxx concept | Git representation |
+| --- | --- |
+| Accepted revision history | Linear commits at `refs/heads/revisions`; each tree contains `plan.source` |
+| Pending proposal | A commit parented to its base revision at `refs/heads/proposal` |
+| Review workspace metadata and source baseline | Append-only commits at `refs/heads/state`, containing `review.json` and `source-baseline.source` |
+| Immutable feedback consumed by a revision | Git notes at `refs/notes/feedback` |
+| Finalized review checkpoint | Annotated tag under `refs/tags/finalized/` with the final digest |
 
-- Migrate known old schemas sequentially.
-- Schema v3 stores `planFormat`; v1 and v2 records infer it from the canonical
-  source path and default to Markdown when the path is ambiguous. Schema v4
-  makes proposal lifecycle, immutable revision feedback, and validated session
-  transitions load-bearing; older envelopes migrate before semantic repair.
-- Reject a newer or unknown schema without rewriting it.
-- Write via temp file, file sync, rename, then directory sync; retain 0600
-  permissions.
-- Preserve a record if parsing or migration fails. Never replace it with an
-  empty session.
-- Revision bodies live in one PlanMaxx-managed bare Git repository per user
-  profile in durable application-data storage, never the OS cache. Each
-  logical plan has a namespaced head ref and each accepted revision is an
-  append-only source commit. New commits use `plan.source`; reads retain
-  compatibility with older `plan.md` commits. Autosaves compact committed
-  revision bodies and hydrate them from Git on reload. A cache-backed store
-  from older builds is imported plan-by-plan without changing commit IDs.
-- A short adjacent Git journal is written after a revision body commits and
-  before its autosave metadata is replaced. On restart, PlanMaxx replays it
-  only when the autosave generation still matches; a newer or conflicting
-  record is never overwritten. Restoring history appends a new commit with the
-  chosen body—it does not rewrite Git history or review metadata.
+`review.json` stores the domain data Git does not understand: thread lifecycle,
+anchors, replies, private side answers, proposal metadata, format, digest, and
+schema version. Revision bodies are omitted from that JSON once their Git commit
+exists and are hydrated from commits on load.
 
-## Agent patch protocol
+- Use native Git plumbing for blobs, trees, commits, parentage, refs, notes,
+  tags, reachability, bundle creation, bundle verification, and object import.
+- Migrate known metadata schemas in order. Reject unknown newer schemas without
+  rewriting them. Never replace an unreadable bundle with an empty session.
+- Restore history by reading the selected commit and appending a new commit;
+  never reset or rewrite accepted history.
+- On first open only, import matching legacy JSON sidecars/cache records,
+  project-local `.planmaxx/revisions.bundle` history, and reachable commits
+  from the former shared bare repository. Reconstruct visible revisions when
+  only the project bundle remains, preserve existing commit IDs exactly, and
+  leave every legacy file untouched.
+- The hidden deprecated `--autosave-out` alias inspects an existing target. A
+  current bundle reopens normally; JSON or a legacy revision bundle is imported
+  into the default user-state bundle. `--bundle-out` rejects legacy inputs with
+  an actionable migration command instead of attempting to parse JSON as Git.
 
-Every model-facing prompt includes `internal/prompts/templates/protocol.gotmpl`.
-Section iteration uses protocol v1: a response is revision-bound and contains
-one or more non-overlapping XML hunks with `before`, `expected`, `after`, and
-`content`. PlanMaxx locates a unique exact content match in the base revision;
-line/character hints are advisory and there is no proximity window. This lets
-a small character selection safely drive an exact local edit or a coordinated
-rename anywhere in the plan. Normal escaped XML is required by the prompt;
-CDATA is accepted as ordinary XML text syntax but is unnecessary; the prompt
-asks models to use escaped XML text instead.
+## Concurrency
 
-## Server lifetime and concurrency
+- Persist each accepted mutation before returning success.
+- Bundle state uses monotonic generations, a short per-plan cross-process lock,
+  and compare-and-swap against the bundled `state` ref OID. A stale writer
+  returns a conflict instead of overwriting another process.
+- File sync, atomic rename, and directory sync make the entire multi-ref Git
+  update visible as one durable-file replacement.
+- Multiple servers may review one plan. On conflict, reload and retry.
+- Runtime lock markers live under the temporary `planmaxx-locks` directory,
+  including locks used while reading former shared repositories. They are not
+  written beside plans or inside durable application state. Never unlink a
+  lock marker as a cleanup strategy while processes may be using it.
 
-Servers are short-lived workers, not review owners. A killed server must not
-lose any action that already succeeded.
+## Diagnostics and snapshots
 
-- Every accepted state change is synchronously persisted before its success
-  response.
-- Records have a monotonic generation. A save holds a brief cross-process
-  storage lock, compares its expected generation, then atomically writes the
-  next generation.
-- A per-logical-plan transaction lock spans Git commit/ref advancement,
-  journal recovery, and autosave persistence. A shared repository-write lock
-  serializes bare-repo initialization and object/ref mutation. Git heads use
-  compare-and-swap semantics: a stale writer returns a conflict and cannot
-  overwrite another PlanMaxx process's history.
-- Multiple servers may review the same plan concurrently. A stale save returns
-  a conflict; it must never overwrite the newer record. Clients reload the
-  authoritative state and retry deliberately.
-- Do not reintroduce a server-lifetime lock/lease: it breaks normal concurrent
-  agent sessions and does not improve durability.
+- `planmaxx doctor <plan>` verifies the current bundle, reports generation and
+  status, probes the active write lock, lists matching review processes and
+  legacy storage, and gives conservative migration or cleanup guidance. It
+  never deletes review data.
+- `planmaxx snapshot <plan> --out <file.planmaxx>` (also available as
+  `planmaxx export`) atomically copies and verifies the current bundle. It
+  refuses to overwrite an existing snapshot unless `--force` is supplied.
+- Both commands accept `--bundle <path>` for reviews stored outside the default
+  user-state location, including reviews created with `--local-bundle`.
+- Prefer bundle snapshots over timestamped JSON copies. A snapshot contains the
+  complete reachable revision, proposal, notes, state, and tag graph.
 
-## Source-file edits and review features
+## Feature-to-mechanism map
 
-Before any state-changing action, compare the on-disk source file with the
-stored source baseline.
+| Product feature | Mechanism |
+| --- | --- |
+| Source-file identity and external-edit detection | Filesystem canonicalization plus hand-rolled SHA-256 baseline policy |
+| Revision bytes, identity, ancestry, proposal base, restore | Native Git commits, trees, refs, and object reads |
+| Complete single-file persistence and portability | Native `git bundle` plus atomic filesystem replacement |
+| Feedback history attached to accepted revisions | Domain snapshots in metadata plus Git notes |
+| Final approval checkpoints | Domain digest plus annotated Git tags |
+| Revision and proposal comparison UI | Git-owned input bytes; Go comparison/model library; React rendering |
+| Exact section proposal application | XML protocol/parser plus hand-rolled revision and anchor safety rules |
+| Threads, replies, intent, active/detached/addressed lifecycle | Hand-rolled PlanMaxx domain model in versioned metadata |
+| Anchor mapping across revisions | Hand-rolled conservative mapping; Git line numbers are not durable identity |
+| Concurrent writers | OS file lock, Git ref OID compare-and-swap, atomic bundle replacement |
+| Markdown/HTML source and safe preview | Parser/rendering libraries plus sandbox policy |
+| Side questions and iteration generation | Codex app-server client plus PlanMaxx prompt/domain adapters |
+| Browser preferences | Browser local storage only; never review authority |
 
-- If unchanged, keep the latest PlanMaxx working revision—even if it differs
-  from the source file because a proposal was accepted in PlanMaxx.
-- If changed by an editor or another agent, persist an `external` revision,
-  retain all review artifacts, and require the client to refresh before retry.
-- Reanchor active feedback only for one unambiguous matching target. Preserve
-  ambiguous or deleted feedback as **detached / needs re-anchor**; an explicit
-  edit or reanchor reactivates it. Addressed feedback is immutable history and
-  is never reconciled against a newer source document.
-- An external change makes a pending section proposal obsolete and discardable;
-  it must not be silently applied or discarded.
-- Comments, replies, side answers, inclusion choices, and proposal creation do not
-  write the source file. Applying a proposal changes only the working
-  review revision.
+Git deliberately does not decide whether feedback is addressed, whether an
+anchor is safe, whether a proposal is obsolete, or whether a review may
+finalize. Those are product semantics and remain validated by PlanMaxx.
 
-## Final-review iteration lifecycle
+## Source changes and anchors
 
-- Choosing the top-bar **Iterate** action stores a pending whole-plan proposal against the
-  current revision. Proposal creation and refinement do not append a revision.
-- While a proposal is pending, its feedback snapshot is frozen: comments,
-  replies, intents, anchors, `/btw` answers/inclusion, revision restore, a second
-  unrelated iteration, and finalization wait for Apply or Discard. Cancel
-  remains available.
-- Refining that proposal keeps the original final-review digest authoritative
-  and continues to compare the complete pending plan, not only one patch hunk.
-- **Apply as new revision** atomically appends an `iteration` revision, stores
-  immutable snapshots of consumed instruction threads, marks those mutable
-  threads addressed, clears obsolete selections, makes the consumed `/btw`
-  answers private, normalizes answers on any feedback that became non-active,
-  clears any stored final digest, and removes the pending proposal.
-- Discarding the proposal leaves comments, inclusion choices, digest, plan, and
-  revision history unchanged.
-- Deliberately reopening a finalized or canceled autosave starts an `active`
-  cycle and clears the prior terminal digest while preserving plan revisions
-  and review history. A newer terminal generation observed by another already
-  running server remains terminal and retains its digest.
+Before each mutation, compare the source file with the stored baseline.
 
-## Review API projection
+- If unchanged, keep the latest PlanMaxx working revision.
+- If changed, append an `external` revision, preserve review state, require a
+  client refresh, and mark any pending section proposal obsolete.
+- Comments, side answers, and proposal creation do not write the source file.
+  Applying a proposal changes only the working revision.
+- Finalization writes the working revision to the source file by default, then
+  records that exact content as the bundle baseline. `--save-to-file` writes an
+  alternate plan file and leaves the original source baseline unchanged.
 
-- `/api/state` is a versioned client projection, not the persisted `Session`
-  record. Thread intent (`instruction | private`), lifecycle (`active |
-  addressed | detached`), display bucket, delivery, per-item capabilities, and
-  aggregate counts come from Go. Collections are always arrays, revision bodies
-  are omitted, and pending proposals expose a
-  lightweight summary plus an `activeChange`.
-- Pending proposals and `/api/revisions/{from}/diff/{to}` use the same Go-owned
-  change view: exact before/after document snapshots, stable rows, replacement
-  clusters, comment placements, immutable accepted-feedback placements, and a
-  deterministic `reviewStops` queue. A feedback stop covers only its colocated
-  change cluster; all distant or otherwise uncovered clusters remain stops.
-- The browser renders complete before/after documents for Markdown context but
-  does not compute diffs, reconstruct documents, or infer comment placement.
+An anchor belongs to one revision; a line number is not durable identity.
 
-## CRDT boundary
+- Map an anchor across one revision edge only when its source coordinate still
+  contains the selected text and that text has one unique destination, or when
+  an exact applied patch provides the result coordinate.
+- Modified, duplicated, ambiguous, deleted, or already-drifted anchors detach.
+  Never copy raw line numbers forward as proof.
+- Editing or reanchoring detached feedback makes it active. If a reviewer
+  confirms that a revision applied it, store an immutable snapshot on that
+  revision and mark it addressed.
+- Addressed feedback is immutable. Multi-revision feedback remains unplaced
+  unless its mappings compose safely. Replacement content is a new anchor.
 
-PlanMaxx intentionally does not use a CRDT. External editors and agents write
-ordinary source-file replacements, not CRDT operations, so a CRDT would create
-a second conflicting source of truth. Use durable optimistic transactions for
-review metadata and explicit external revisions for source-file changes.
+## Iteration
 
-## HTML rendering boundary
+- **Iterate** creates a pending whole-plan proposal without adding a revision.
+- While pending, its feedback snapshot is frozen until Apply or Discard.
+- **Apply as new revision** appends an `iteration` revision, records consumed
+  feedback, marks it addressed, normalizes related side answers, clears the
+  final digest, and removes the proposal.
+- Discard leaves the plan, feedback, digest, and history unchanged.
+- Reopening a completed bundle preserves history and starts a new active cycle.
 
-HTML Preview is derived and non-authoritative. It runs in an iframe without
-script, same-origin, form, popup, download, or navigation permissions and with
-a CSP that blocks network resources. Source mode owns comments, iteration, and
-diff anchors. PlanMaxx never writes preview DOM back into the session, source
-file, autosave, revision store, or handoff.
+## API and preview
+
+- `/api/state` is a versioned client projection. Go owns lifecycle, intent,
+  capabilities, counts, diffs, placements, and review navigation.
+- HTML Preview is sandboxed and derived from source. Preview DOM is never saved
+  to the plan, bundle, revision history, or handoff.

@@ -11,6 +11,7 @@ import (
 )
 
 const lockfileExclusive = 0x00000002
+const lockfileFailImmediately = 0x00000001
 
 var (
 	kernel32Autosave     = syscall.NewLazyDLL("kernel32.dll")
@@ -36,4 +37,28 @@ func acquireAutosaveLock(path string) (func(), error) {
 		_, _, _ = unlockFileExAutosave.Call(lock.Fd(), 0, 1, 0, uintptr(unsafe.Pointer(&overlapped)))
 		_ = lock.Close()
 	}, nil
+}
+
+func probeAutosaveLock(path string) (bool, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return false, err
+	}
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	overlapped := syscall.Overlapped{}
+	ret, _, callErr := lockFileExAutosave.Call(lock.Fd(), lockfileExclusive|lockfileFailImmediately, 0, 1, 0, uintptr(unsafe.Pointer(&overlapped)))
+	if ret == 0 {
+		if callErr == syscall.Errno(33) {
+			return true, nil
+		}
+		return false, callErr
+	}
+	_, _, callErr = unlockFileExAutosave.Call(lock.Fd(), 0, 1, 0, uintptr(unsafe.Pointer(&overlapped)))
+	if callErr != syscall.Errno(0) {
+		return false, callErr
+	}
+	return false, nil
 }

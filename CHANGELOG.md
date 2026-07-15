@@ -1,113 +1,35 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 - 2026-07-15
 
-- Added backend-authored review navigation across included feedback, accepted
-  feedback, and every otherwise-uncovered diff cluster, with exact scrolling
-  and highlighting in both in-place and alongside layouts.
-- Reframed comment state as orthogonal intent and lifecycle: active feedback is
-  either used in iteration or private, detached feedback visibly needs
-  re-anchoring, and addressed feedback is read-only revision history. Go now
-  owns buckets, delivery, capabilities, aggregate counts, and model context.
-- Moved Iterate into the top bar and replaced the duplicated Finalize/Iterate
-  workflow with concise, mode-specific submission reviews backed by the
-  authoritative server digest.
-- Moved revision history into a top-bar picker that shows the checked-out
-  revision, leaving the page sidebar exclusively for alongside comments and
-  preventing the plan from being squeezed into an accidental third column.
-- Unified pending-proposal and revision comparisons behind a versioned,
-  backend-owned change model. Go now computes diff rows, change clusters,
-  complete document snapshots, comment placement, and immutable feedback
-  placement; the React UI only renders those projections.
-- Added session invariant validation, typed proposal/revision transitions,
-  ordered idempotent autosave compatibility migrations, and browser regression
-  coverage for comment ordering, overlapping comments, and added table rows.
-- Replaced the unmaintained line-diff dependency with `sergi/go-diff` behind a
-  deterministic line adapter, and expanded deletion coverage for CRLF,
-  adjacent trailing deletions, and newline-terminated documents.
-- Made final-review iteration an explicit persisted lifecycle: whole-plan
-  proposals remain whole-plan across refinements, applying one appends a labeled
-  iteration revision, archives consumed decisions, resets consumed `/btw`
-  promotions and stale digest state, and clearly tells the reviewer that no
-  revision is created until Apply.
-- Added `.html` and `.htm` plans with a scriptless, network-blocked Preview,
-  exact Source review, format-aware autosaves and prompts, and HTML-fenced
-  handoffs while preserving Markdown behavior.
-- Increased the default Codex app-server timeout for `/btw` questions and
-  iterations from 45 seconds to 30 minutes; the timeout remains configurable
-  with `--side-question-timeout`.
-
-- Added revision-bound XML patch protocol v1 with exact content anchors,
-  multi-hunk atomic application, and safe character-range edits.
-- Added Git-backed immutable plan revisions, append-only restore, compact
-  autosaves, and crash recovery journaling.
-- Moved revision storage to durable per-user application data and migrated
-  cache-backed histories on demand.
-- Serialized multi-process revision writes with per-plan transactions and
-  compare-and-swap Git heads.
-- Made release and local reinstalls refresh an existing managed Codex skill
-  atomically while preserving unmanaged custom skills.
-- Added clear, per-comment in-progress states for /btw and section iteration,
-  with duplicate-run guards and automatic cleanup after success or failure.
-- Clear obsolete character selections when an iterate proposal resolves a
-  comment, and keep the accepted revision comparison available to show or hide.
-- Render GitHub-Flavored Markdown tables in review plans with preserved
-  line-level comment anchors, alignment, inline formatting, and narrow-view
-  scrolling.
-- Show complete comment threads, including `/btw` Q+A, directly below their
-  anchors or alongside their final anchored line; stacked flow prevents long,
-  overlapping, and same-line comments from covering plan content, and the
-  comment filter searches thread and `/btw` Q+A text.
-- Moved alongside comment cards out of the Markdown render surface into a
-  dedicated rail while preserving line alignment and expanded anchor rows.
-- Redesigned in-place comments as connected, lightweight discussion blocks
-  beneath their anchors, with clearer grouping for multiple threads.
-- Removed the redundant sticky handoff preview panel; finalization retains the
-  authoritative handoff review.
-- Replaced rejection with whole-plan iteration from the final-review dialog.
-  Iteration creates a proposal to review; only approval ends the review and
-  sends a handoff.
-- Show accepted-proposal and historical-revision diffs in the main Markdown
-  editor, including rendered table rows; the revision rail is now only the
-  comparison selector.
-- Keep addressed feedback collapsed as history while surfacing detached
-  feedback separately as an attention state; included `/btw` answers become
-  private whenever their parent feedback is no longer active.
-- Preserve native text selection when opening the convenience comment composer;
-  an untouched new composer now disappears on click-away without saving a
-  comment.
-- Refined active comment cards into a compact feedback workflow with an explicit
-  default intent and capability-driven controls.
-- Preserve immutable snapshots of feedback used for accepted proposals and
-  display that feedback next to direct revision changes; multi-revision
-  comparisons group feedback by the intervening accepted revision.
-- Made revision comparison responsive for long plans: compact normal state
-  responses, bounded fast line diffing with precise small-hunk refinement,
-  immutable comparison caches, concurrent post-apply refreshes, and a visible
-  in-editor loading state.
-- Reworked in-place and alongside comment styling into clean, standalone cards;
-  removed the colored side-rail treatment and made active, note, resolved,
-  stale, and `/btw` states distinct through restrained surfaces and labels.
-- Automatically open a review with the checked-out revision compared to its
-  direct parent when revision history exists.
-- Fixed GFM table rendering when a table is followed by a blank line and a
-  subsequent Markdown block.
-- Made table-cell comments source-safe: their exact visible selection is kept
-  as context, while the anchor covers the full table row(s) so rendered-cell
-  offsets can never target the wrong Markdown characters. Code-block comments
-  retain their exact character anchors.
-- Redesigned revision-comparison gutters to show `before → current` line
-  coordinates. Only current-revision rows can receive comments, so a removed
-  row can never steal a comment intended for an added or shifted line.
-- Corrected comparison gutter markers so removed rows show `−` and added rows
-  show `+`, with wider columns and balanced padding for multi-digit lines.
+- Replaced adjacent JSON autosaves and the shared revision repository with one
+  user-scoped `.planmaxx` Git bundle per plan. Revisions, proposals, feedback,
+  state history, and finalization checkpoints now use Git commits, refs, notes,
+  and annotated tags, with atomic replacement and legacy import. Added an
+  opt-in `--local-bundle` flag for keeping the bundle beside the plan.
+- Added project-local legacy bundle migration, storage-kind-aware deprecated
+  flag handling, `planmaxx doctor`, and verified `snapshot`/`export` bundles.
+  Legacy runtime locks now live in temporary state instead of accumulating in
+  repositories or Application Support.
+- Added checksum-verified `planmaxx update` installs and a cached startup check
+  that appends an agent-facing update notice to finalized review handoffs.
+- Added explicit active, detached, and addressed comment states. Detached
+  feedback can be reanchored or recorded on the revision that applied it.
+- Added Previous/Next navigation across feedback and changed regions.
+- Added whole-plan iteration proposals that create a revision only when applied.
+- Added immutable revision feedback, revision comparisons, append-only restore,
+  and Git-backed revision storage with crash recovery and concurrent-write
+  protection.
+- Added Markdown tables and HTML plans with safe Preview and exact Source review.
+- Added exact, revision-bound XML patches for section iteration.
+- Improved inline and alongside comment placement, filtering, progress states,
+  selection handling, and revision line gutters.
+- Increased the default Codex side-action timeout to 30 minutes.
+- Added autosave migrations, state validation, comparison caching, and browser
+  regression coverage.
 
 ## v0.1.0
 
-- Initial open-source release.
-- Local browser review for Codex plans.
-- Threaded inline feedback and private notes.
-- Optional Codex app-server side questions.
-- Focused section iteration with proposal diffs.
-- Self-contained release binaries for Linux, macOS, and Windows.
-- Licensed under GPLv3.
+- Initial release with local plan review, threaded feedback, private notes,
+  Codex side questions, section iteration, proposal diffs, and self-contained
+  binaries for Linux, macOS, and Windows.

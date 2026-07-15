@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Code2, Columns2, Eye, GitCompareArrows, ListTree, Loader2, MessageSquarePlus, Search, Sparkles } from "lucide-react";
+import { AlertTriangle, Code2, Columns2, Eye, GitCompareArrows, ListTree, Loader2, MessageSquarePlus, Search, Sparkles } from "lucide-react";
 import { renderPlanLines, renderSourceLines } from "../lib/markdown";
 import { htmlPreviewDocument } from "../lib/htmlPreview";
 import type { Anchor, ChangeView, DocumentSnapshot, PendingProposalSummary, PlanFormat, ReviewStop, RevisionComparison, RevisionFeedback, SideAnswer, Thread, ThreadIntent } from "../types";
@@ -52,6 +52,7 @@ interface PlanProps {
   onReplyThread: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
   onEditThread: (threadId: string) => void;
+  onMarkAddressed: (threadId: string) => void;
   onCreateFollowUp: (threadId: string) => void;
   onAskSide: (thread: Thread) => void;
   onIterateThread: (thread: Thread) => void | Promise<void>;
@@ -104,6 +105,7 @@ export const ReviewDocument = memo(function ReviewDocument({
   onReplyThread,
   onDeleteThread,
   onEditThread,
+  onMarkAddressed,
   onCreateFollowUp,
   onAskSide,
   onIterateThread,
@@ -190,7 +192,13 @@ export const ReviewDocument = memo(function ReviewDocument({
     [commentFilter, focusedThreadId, sideAnswers, threads],
   );
 	const activeDisplayedThreads = useMemo(() => displayedThreads.filter((thread) => thread.bucket === "active"), [displayedThreads]);
-	const overviewThreads = useMemo(() => displayedThreads.filter((thread) => thread.bucket === "attention" || (!comparison && thread.bucket === "history")), [comparison, displayedThreads]);
+	const attentionThreads = useMemo(() => displayedThreads.filter((thread) => thread.bucket === "attention"), [displayedThreads]);
+	const historyThreads = useMemo(() => comparison ? [] : displayedThreads.filter((thread) => thread.bucket === "history"), [comparison, displayedThreads]);
+	const [attentionExpanded, setAttentionExpanded] = useState(false);
+	useEffect(() => {
+	  if (attentionThreads.length === 0) setAttentionExpanded(false);
+	  else if (commentFilter.trim() || attentionThreads.some((thread) => thread.id === focusedThreadId)) setAttentionExpanded(true);
+	}, [attentionThreads, commentFilter, focusedThreadId]);
 	const threadsAtPlacement = useMemo(
 	  () => activeChange ? threadsByBackendPlacement(activeDisplayedThreads, activeChange.threadPlacements) : threadsByAnchorEnd(activeDisplayedThreads),
 	  [activeChange, activeDisplayedThreads],
@@ -409,29 +417,6 @@ export const ReviewDocument = memo(function ReviewDocument({
           />
         </label>
       </header>
-	  {overviewThreads.length > 0 ? <div className="comment-state-overview">
-		<CommentThreadStack
-		  threads={overviewThreads}
-		  sideAnswersByThread={sideAnswersByThread}
-		  focusedThreadId={focusedThreadId}
-		  reviewTargetThreadId={activeReviewStop?.kind === "comment" ? activeReviewStop.threadId : undefined}
-		  onHover={onHoverThread}
-		  onSetIntent={onSetThreadIntent}
-		  onReply={onReplyThread}
-		  onDelete={onDeleteThread}
-		  onEdit={onEditThread}
-		  onCreateFollowUp={onCreateFollowUp}
-		  onAskSide={onAskSide}
-		  onIterate={onIterateThread}
-		  onInclude={onIncludeAnswer}
-		  onKeepPrivate={onKeepAnswerPrivate}
-		  agentActions={threadAgentActions}
-		  disabled={disabled}
-		  sideQuestionsEnabled={sideQuestionsEnabled}
-		  placement="inline"
-		  historyOpen={Boolean(commentFilter.trim() || overviewThreads.some((thread) => thread.id === focusedThreadId))}
-		/>
-	  </div> : null}
 	  {proposal?.kind === "review" ? (
 	    <ProposalActions
 	      proposal={proposal}
@@ -444,17 +429,17 @@ export const ReviewDocument = memo(function ReviewDocument({
 	    />
 	  ) : null}
 	  {!proposal && comparisonLoading ? (
-        <div className="plan-comparison-loading" role="status" aria-live="polite">
-          <Loader2 size={15} className="animate-spin" /> Loading revision changes…
-        </div>
-      ) : null}
+	    <div className="plan-comparison-loading" role="status" aria-live="polite">
+	      <Loader2 size={15} className="animate-spin" /> Loading revision changes…
+	    </div>
+	  ) : null}
 	  {!proposal && comparison ? (
-        <div className="plan-comparison-banner">
+	    <div className="plan-comparison-banner">
 		  <span><GitCompareArrows size={14} /> Showing changes: {comparison.baseId} → {comparison.targetId}</span>
-          <span className="comparison-line-key">Line numbers: before → current</span>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onClearComparison}>Hide changes</button>
-        </div>
-      ) : null}
+	      <span className="comparison-line-key">Line numbers: before → current</span>
+	      <button type="button" className="btn btn-ghost btn-sm" onClick={onClearComparison}>Hide changes</button>
+	    </div>
+	  ) : null}
 	  {activeChange ? (
 		<ReviewNavigator
 		  identity={`${activeChange.baseId}:${activeChange.targetId}`}
@@ -463,6 +448,59 @@ export const ReviewDocument = memo(function ReviewDocument({
 		  onActiveChange={setActiveReviewStop}
 		/>
 	  ) : null}
+	  {attentionThreads.length > 0 ? <details className="comment-state-overview attention-overview" open={attentionExpanded} onToggle={(event) => setAttentionExpanded(event.currentTarget.open)}>
+		<summary className="attention-overview-summary">
+		  <span><AlertTriangle size={14} /> {attentionThreads.length} unanchored {attentionThreads.length === 1 ? "comment" : "comments"}</span>
+		  <small>Review separately · In place/Alongside applies only to anchored comments</small>
+		</summary>
+		<div className="attention-overview-body">
+		<CommentThreadStack
+		  threads={attentionThreads}
+		  sideAnswersByThread={sideAnswersByThread}
+		  focusedThreadId={focusedThreadId}
+		  reviewTargetThreadId={activeReviewStop?.kind === "comment" ? activeReviewStop.threadId : undefined}
+		  onHover={onHoverThread}
+		  onSetIntent={onSetThreadIntent}
+		  onReply={onReplyThread}
+		  onDelete={onDeleteThread}
+		  onEdit={onEditThread}
+		  onMarkAddressed={onMarkAddressed}
+		  onCreateFollowUp={onCreateFollowUp}
+		  onAskSide={onAskSide}
+		  onIterate={onIterateThread}
+		  onInclude={onIncludeAnswer}
+		  onKeepPrivate={onKeepAnswerPrivate}
+		  agentActions={threadAgentActions}
+		  disabled={disabled}
+		  sideQuestionsEnabled={sideQuestionsEnabled}
+		  placement="inline"
+		  historyOpen={false}
+		/>
+		</div>
+	  </details> : null}
+	  {historyThreads.length > 0 ? <div className="comment-state-overview history-overview">
+		<CommentThreadStack
+		  threads={historyThreads}
+		  sideAnswersByThread={sideAnswersByThread}
+		  focusedThreadId={focusedThreadId}
+		  onHover={onHoverThread}
+		  onSetIntent={onSetThreadIntent}
+		  onReply={onReplyThread}
+		  onDelete={onDeleteThread}
+		  onEdit={onEditThread}
+		  onMarkAddressed={onMarkAddressed}
+		  onCreateFollowUp={onCreateFollowUp}
+		  onAskSide={onAskSide}
+		  onIterate={onIterateThread}
+		  onInclude={onIncludeAnswer}
+		  onKeepPrivate={onKeepAnswerPrivate}
+		  agentActions={threadAgentActions}
+		  disabled={disabled}
+		  sideQuestionsEnabled={sideQuestionsEnabled}
+		  placement="inline"
+		  historyOpen={Boolean(commentFilter.trim() || historyThreads.some((thread) => thread.id === focusedThreadId))}
+		/>
+	  </div> : null}
 	  {!proposal && comparison && !comparison.isDirect && comparison.feedback.length > 0 ? (
 		<RevisionFeedbackSummary feedback={comparison.feedback} />
       ) : null}
@@ -490,7 +528,7 @@ export const ReviewDocument = memo(function ReviewDocument({
             ? comparisonGutterValues(row.beforeLineNumber, row.afterLineNumber)
             : null;
           return (
-			<div key={`${row.diffKind}-${row.beforeLineNumber ?? "-"}-${row.afterLineNumber ?? "-"}-${idx}`} className={`plan-row-with-comments${activeReviewStop?.kind === "change" && activeReviewStop.clusterId === row.clusterId ? " is-review-target" : ""}`}>
+			<div key={`${row.diffKind}-${row.beforeLineNumber ?? "-"}-${row.afterLineNumber ?? "-"}-${idx}`} className={`plan-row-with-comments${activeReviewStop?.kind === "change" && activeReviewStop.clusterId === row.clusterId ? " is-review-target" : ""}${commentView === "alongside" && lineThreads.length > 0 ? " has-alongside-comment" : ""}`}>
               <div
                 className="plan-row-main"
                 style={
@@ -591,6 +629,7 @@ export const ReviewDocument = memo(function ReviewDocument({
                     onReply={onReplyThread}
                     onDelete={onDeleteThread}
                     onEdit={onEditThread}
+					onMarkAddressed={onMarkAddressed}
 					onCreateFollowUp={onCreateFollowUp}
                     onAskSide={onAskSide}
                     onIterate={onIterateThread}
@@ -641,6 +680,7 @@ export const ReviewDocument = memo(function ReviewDocument({
               onReply={onReplyThread}
               onDelete={onDeleteThread}
               onEdit={onEditThread}
+			  onMarkAddressed={onMarkAddressed}
 			  onCreateFollowUp={onCreateFollowUp}
               onAskSide={onAskSide}
               onIterate={onIterateThread}

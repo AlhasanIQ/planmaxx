@@ -282,6 +282,7 @@ func (s *Session) SetDigest(digest Digest) {
 
 func (s *Session) AddTurnRevision(plan string, summary string) Revision {
 	s.PendingProposal = nil
+	s.reconcileActiveThreadAnchors(s.Plan, plan)
 	return s.addRevision(s.CurrentRevisionID, RevisionSourceTurn, plan, Anchor{}, summary)
 }
 
@@ -298,6 +299,19 @@ func (s *Session) AddExternalRevision(plan string, summary string) Revision {
 // unambiguous match in the new document. Otherwise the comment remains intact
 // and is marked stale for the reviewer to re-anchor deliberately.
 func (s *Session) ReconcileExternalPlan(previousSource string, nextSource string) {
+	s.reconcileActiveThreadAnchors(previousSource, nextSource)
+	if s.PendingProposal != nil {
+		s.PendingProposal.Obsolete = true
+	}
+	s.AddExternalRevision(nextSource, "Plan file changed outside PlanMaxx")
+}
+
+// reconcileActiveThreadAnchors maps coordinates across exactly one revision
+// edge. A line number has meaning only in its source revision, so only a unique
+// surviving text match may produce coordinates in the target revision. A
+// modified, split ambiguously, merged, duplicated, or deleted selection is
+// detached instead of inheriting a plausible-looking raw line number.
+func (s *Session) reconcileActiveThreadAnchors(previousSource string, nextSource string) {
 	for i := range s.Threads {
 		thread := &s.Threads[i]
 		if thread.Lifecycle() != ThreadLifecycleActive {
@@ -313,6 +327,13 @@ func (s *Session) ReconcileExternalPlan(previousSource string, nextSource string
 				continue
 			}
 			selected = textForAnchor(previousSource, thread.Anchor)
+		} else if !anchorMatchesText(previousSource, thread.Anchor, selected) {
+			// A quote found elsewhere is not enough when the inherited source
+			// coordinate no longer contains it. That means lineage was already
+			// lost on an earlier edge, so following the quote could cement a
+			// misplaced anchor.
+			_ = s.DetachThread(thread.ID)
+			continue
 		}
 		anchor, ok := uniqueAnchorForText(nextSource, selected, thread.Anchor)
 		if !ok {
@@ -321,10 +342,17 @@ func (s *Session) ReconcileExternalPlan(previousSource string, nextSource string
 		}
 		thread.Anchor = anchor
 	}
-	if s.PendingProposal != nil {
-		s.PendingProposal.Obsolete = true
+}
+
+func anchorMatchesText(plan string, anchor Anchor, selected string) bool {
+	if anchor.StartChar != 0 || anchor.EndChar != 0 {
+		return textForAnchor(plan, anchor) == selected
 	}
-	s.AddExternalRevision(nextSource, "Plan file changed outside PlanMaxx")
+	lines := strings.Split(plan, "\n")
+	if anchor.StartLine < 1 || anchor.EndLine < anchor.StartLine || anchor.EndLine > len(lines) {
+		return false
+	}
+	return strings.Join(lines[anchor.StartLine-1:anchor.EndLine], "\n") == selected
 }
 
 func (s *Session) CreateSectionProposal(input SectionProposalInput) SectionProposal {

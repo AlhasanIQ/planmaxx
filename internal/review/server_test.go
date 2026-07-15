@@ -1815,6 +1815,29 @@ func TestAddressedFeedbackRejectsEditAndCreatesFollowUp(t *testing.T) {
 	}
 }
 
+func TestDetachedFeedbackCanBeMarkedAddressedThroughAPI(t *testing.T) {
+	s := session.New("plan", "# Plan\nOld")
+	thread := s.AddThreadWithSelectedText(session.Anchor{StartLine: 2, EndLine: 2}, "Replace old", "Old")
+	s.ReconcileExternalPlan("# Plan\nOld", "# Plan\nNew")
+	server := NewServer(s)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/threads/"+thread.ID+"/mark-addressed", strings.NewReader(`{"revisionId":"rev-2"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("mark addressed = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if s.Threads[0].Lifecycle() != session.ThreadLifecycleAddressed || len(s.Revisions[1].Feedback) != 1 {
+		t.Fatalf("state after mark addressed: thread=%+v revision=%+v", s.Threads[0], s.Revisions[1])
+	}
+	state := buildClientState(*s, false)
+	if state.Threads[0].AddressedRevisionID != "rev-2" || state.Counts.DetachedFeedback != 0 || state.Counts.AddressedHistory != 1 {
+		t.Fatalf("projected state = %+v", state)
+	}
+	comparison := serveRevisionDiff(server, "rev-1", "rev-2")
+	if comparison.Code != http.StatusOK || !strings.Contains(comparison.Body.String(), `"threadId":"`+thread.ID+`"`) {
+		t.Fatalf("revision feedback missing from comparison: %d %s", comparison.Code, comparison.Body.String())
+	}
+}
+
 func TestFinalizeUsesCanonicalDraftContextInsteadOfSubmittedArrays(t *testing.T) {
 	s := session.New("plan", "# Plan")
 	s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "Canonical feedback")

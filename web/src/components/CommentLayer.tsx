@@ -13,6 +13,7 @@ interface CommentRailMetric {
 export function CommentThreadStack({
   threads, sideAnswersByThread, focusedThreadId, reviewTargetThreadId, onHover, onSetIntent, onReply, onDelete, onEdit,
   onCreateFollowUp, onAskSide, onIterate, onInclude, onKeepPrivate, agentActions, disabled, sideQuestionsEnabled,
+  onMarkAddressed,
   placement, anchorLine, top, hidden, historyOpen,
 }: {
   threads: Thread[];
@@ -24,6 +25,7 @@ export function CommentThreadStack({
   onReply: (threadId: string) => void;
   onDelete: (threadId: string) => void;
   onEdit: (threadId: string) => void;
+  onMarkAddressed: (threadId: string) => void;
   onCreateFollowUp: (threadId: string) => void;
   onAskSide: (thread: Thread) => void;
   onIterate: (thread: Thread) => void | Promise<void>;
@@ -49,7 +51,7 @@ export function CommentThreadStack({
     <ThreadCard
       key={thread.id} thread={thread}
       sideAnswers={sideAnswersByThread.get(thread.id) ?? []} isFocused={focusedThreadId === thread.id} isReviewTarget={reviewTargetThreadId === thread.id}
-      onHover={onHover} onSetIntent={onSetIntent} onReply={onReply} onDelete={onDelete} onEdit={onEdit} onCreateFollowUp={onCreateFollowUp}
+      onHover={onHover} onSetIntent={onSetIntent} onReply={onReply} onDelete={onDelete} onEdit={onEdit} onMarkAddressed={onMarkAddressed} onCreateFollowUp={onCreateFollowUp}
       onAskSide={onAskSide} onIterate={onIterate} onInclude={onInclude} onKeepPrivate={onKeepPrivate}
       agentAction={agentActions[thread.id]} disabled={disabled} sideQuestionsEnabled={sideQuestionsEnabled}
       presentation={placement === "inline" ? "inline" : "rail"}
@@ -60,9 +62,6 @@ export function CommentThreadStack({
       className={`plan-thread-stack is-${placement}`} aria-label="Comments" data-anchor-line={anchorLine}
       style={placement === "alongside" ? { top, visibility: hidden ? "hidden" : undefined } : undefined}
     >
-      {placement === "inline" && activeThreads.length > 0 ? (
-        <div className="inline-thread-stack-label">{activeThreads.length === 1 ? "Comment" : `${activeThreads.length} comments`}</div>
-      ) : null}
       {activeThreads.map(renderThread)}
       {attentionThreads.length > 0 ? (
         <div className="attention-thread-group">
@@ -94,13 +93,13 @@ export function useCommentRailMetrics(
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const articleRect = article.getBoundingClientRect();
+        const railRect = rail.getBoundingClientRect();
         const next = new Map<number, CommentRailMetric>();
         for (const line of lines) {
           const row = article.querySelector<HTMLElement>(`.line-row[data-comment-placement="${line}"]`);
           const stack = rail.querySelector<HTMLElement>(`[data-anchor-line="${line}"]`);
           if (!row || !stack) continue;
-          next.set(line, { top: Math.round(row.getBoundingClientRect().top - articleRect.top), height: Math.ceil(stack.getBoundingClientRect().height) });
+          next.set(line, { top: Math.round(row.getBoundingClientRect().top - railRect.top), height: Math.ceil(stack.getBoundingClientRect().height) });
         }
         setMetrics((current) => sameMetrics(current, next) ? current : next);
       });

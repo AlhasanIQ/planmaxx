@@ -160,6 +160,45 @@ func TestAddTurnRevisionUpdatesCurrentPlan(t *testing.T) {
 	}
 }
 
+func TestTurnRevisionMapsOnlyUniquelySurvivingCommentText(t *testing.T) {
+	s := New("plan-1", "alpha\nbeta\ngamma")
+	surviving := s.AddThreadWithSelectedText(Anchor{StartLine: 2, EndLine: 2}, "keep tracking beta", "beta")
+	deleted := s.AddThreadWithSelectedText(Anchor{StartLine: 3, EndLine: 3}, "change gamma", "gamma")
+
+	s.AddTurnRevision("intro\nalpha\nbeta", "insert and delete")
+
+	if got := s.Threads[0]; got.ID != surviving.ID || got.Lifecycle() != ThreadLifecycleActive || got.Anchor.StartLine != 3 {
+		t.Fatalf("surviving anchor was not mapped to the target revision: %+v", got)
+	}
+	if got := s.Threads[1]; got.ID != deleted.ID || got.Lifecycle() != ThreadLifecycleDetached || got.Anchor.StartLine != 3 {
+		t.Fatalf("deleted anchor should retain historical coordinates and detach: %+v", got)
+	}
+}
+
+func TestTurnRevisionDetachesAmbiguousInheritedAnchor(t *testing.T) {
+	s := New("plan-1", "alpha\nunique\nomega")
+	thread := s.AddThreadWithSelectedText(Anchor{StartLine: 2, EndLine: 2}, "track this", "unique")
+	s.AddTurnRevision("unique\nalpha\nunique\nomega", "duplicate selected text")
+	if got := s.Threads[0]; got.ID != thread.ID || got.Lifecycle() != ThreadLifecycleDetached {
+		t.Fatalf("ambiguous inherited anchor should detach: %+v", got)
+	}
+}
+
+func TestTurnRevisionDetachesAnchorWhoseSourceCoordinateAlreadyDrifted(t *testing.T) {
+	s := New("plan-1", "alpha\nbeta\ngamma")
+	thread := s.AddThreadWithSelectedText(Anchor{StartLine: 3, EndLine: 3}, "track beta", "beta")
+
+	s.AddTurnRevision("intro\nalpha\nbeta\ngamma", "insert intro")
+
+	got := s.Threads[0]
+	if got.ID != thread.ID || got.Lifecycle() != ThreadLifecycleDetached {
+		t.Fatalf("already-misplaced inherited anchor should detach: %+v", got)
+	}
+	if got.Anchor != (Anchor{StartLine: 3, EndLine: 3}) {
+		t.Fatalf("anchor = %#v, want historical drifted coordinate preserved", got.Anchor)
+	}
+}
+
 func TestCreateSectionProposalDoesNotMutatePlan(t *testing.T) {
 	s := New("plan-1", "# Plan\n\n- Old")
 

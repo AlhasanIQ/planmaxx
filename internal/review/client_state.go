@@ -8,7 +8,7 @@ import (
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 )
 
-const clientSchemaVersion = 3
+const clientSchemaVersion = 4
 
 type clientCapabilities struct {
 	CanFinalize        bool `json:"canFinalize"`
@@ -25,6 +25,7 @@ type threadCapabilities struct {
 	CanAsk            bool `json:"canAsk"`
 	CanIterate        bool `json:"canIterate"`
 	CanReanchor       bool `json:"canReanchor"`
+	CanMarkAddressed  bool `json:"canMarkAddressed"`
 	CanDelete         bool `json:"canDelete"`
 	CanCreateFollowUp bool `json:"canCreateFollowUp"`
 }
@@ -172,7 +173,7 @@ func buildThreadViews(source session.Session, locked bool) ([]threadView, review
 			bucket, delivery = "attention", "none"
 			counts.DetachedFeedback++
 			if !locked {
-				capabilities = threadCapabilities{CanEdit: true, CanReanchor: true, CanDelete: true}
+				capabilities = threadCapabilities{CanEdit: true, CanReanchor: true, CanMarkAddressed: true, CanDelete: true}
 			}
 		case session.ThreadLifecycleAddressed:
 			bucket, delivery = "history", "none"

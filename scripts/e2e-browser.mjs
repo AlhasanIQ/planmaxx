@@ -67,13 +67,34 @@ try {
   } else if (mode === "states") {
     await page.getByText("active instruction", { exact: true }).waitFor();
     await page.getByText("active private", { exact: true }).waitFor();
-    await page.getByText("Needs attention", { exact: true }).waitFor();
-    await page.getByText("detached feedback", { exact: true }).waitFor();
-    const history = page.getByText("Show addressed feedback (1)", { exact: true });
+    const navigator = page.getByRole("navigation", { name: "Review comments and changes" });
+    await navigator.waitFor();
+    const attentionSummary = page.getByText("1 unanchored comment", { exact: false });
+    await attentionSummary.waitFor();
+    const navigatorBeforeAttention = await page.evaluate(() => {
+      const nav = document.querySelector(".review-navigator");
+      const attention = document.querySelector(".attention-overview");
+      return Boolean(nav && attention && (nav.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING));
+    });
+    if (!navigatorBeforeAttention) throw new Error("review navigator is hidden behind unanchored feedback");
+    const detachedFeedback = page.getByText("detached feedback", { exact: true });
+    if (await detachedFeedback.isVisible()) throw new Error("unanchored feedback did not start collapsed");
+    await attentionSummary.click();
+    await detachedFeedback.waitFor();
+    await page.getByRole("button", { name: "Mark addressed…" }).click();
+    const addressDialog = page.getByRole("dialog", { name: "Record feedback as addressed" });
+    await addressDialog.waitFor();
+    if (await addressDialog.getByText("rev-2 · External source change · suggested", { exact: true }).count() !== 1) throw new Error("external revision was not suggested");
+    await addressDialog.getByRole("button", { name: "Record as addressed" }).click();
+    await page.getByText("Feedback recorded for this revision", { exact: true }).waitFor();
+    if (await page.getByText("1 unanchored comment", { exact: false }).count() !== 0) throw new Error("addressed feedback remained in attention");
+    await page.getByRole("button", { name: "Hide changes" }).click();
+    const history = page.getByText("Show addressed feedback (2)", { exact: true });
     await history.click();
     await page.getByText("addressed feedback", { exact: true }).waitFor();
+    await page.getByText("detached feedback", { exact: true }).waitFor();
     if (await page.getByRole("button", { name: "Use in iteration", exact: true }).count() !== 2) throw new Error("active intent controls are not scoped to active feedback");
-    if (await page.getByRole("button", { name: "Create follow-up" }).count() !== 1) throw new Error("addressed feedback is missing follow-up action");
+    if (await page.getByRole("button", { name: "Create follow-up" }).count() !== 2) throw new Error("addressed feedback is missing follow-up action");
     if (consoleErrors.length) throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
   } else if (mode !== "proposal") {
     throw new Error(`unknown browser E2E mode: ${mode}`);

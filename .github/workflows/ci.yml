@@ -24,6 +24,10 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Install web dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
       - name: Build web UI
         run: ./scripts/build-web.sh
 
@@ -44,6 +48,13 @@ jobs:
 
       - name: Smoke test
         run: ./scripts/e2e-smoke.sh
+
+      - name: Browser regression
+        run: |
+          cd web
+          bunx playwright install --with-deps chromium
+          cd ..
+          ./scripts/e2e-browser.sh
 
       - name: Validate installer
         run: bash -n install.sh

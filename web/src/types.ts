@@ -38,6 +38,7 @@ export interface ThreadCapabilities {
   canAsk: boolean;
   canIterate: boolean;
   canReanchor: boolean;
+  canMarkAddressed: boolean;
   canDelete: boolean;
   canCreateFollowUp: boolean;
 }
@@ -200,7 +201,7 @@ export interface ReviewStop {
 export type RevisionComparison = ChangeView;
 
 export interface Session {
-  schemaVersion: 3;
+  schemaVersion: 4;
   id: string;
   plan: string;
   planPath: string;
