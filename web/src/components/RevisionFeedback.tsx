@@ -24,7 +24,7 @@ export function RevisionFeedbackSummary({ feedback }: { feedback: RevisionFeedba
 export function RevisionFeedbackList({ feedback, activeFeedbackId }: { feedback: RevisionFeedback[]; activeFeedbackId?: string }) {
   return (
     <section className="comparison-feedback-list" aria-label="Feedback that led to this change">
-      <div className="comparison-feedback-title"><MessageSquareText size={13} /> Feedback applied to this change</div>
+      <div className="comparison-feedback-title"><MessageSquareText size={13} /> Feedback recorded for this revision</div>
       {feedback.map((entry) => (
         <article
           key={`${entry.revisionId}-${entry.threadId}`}

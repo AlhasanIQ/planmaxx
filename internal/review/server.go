@@ -49,6 +49,7 @@ type Server struct {
 	sectionIterations   sectioniter.Service
 	revisionStore       *revisions.Store
 	revisionPlanID      string
+	bundleStore         *BundleStore
 	comparisonCache     sync.Map
 }
 
@@ -98,6 +99,51 @@ func (s *Server) WithRevisionStore(store *revisions.Store, planID string) *Serve
 	s.revisionStore = store
 	s.revisionPlanID = planID
 	return s
+}
+
+// EnableBundle makes one user-scoped Git bundle the authoritative persistence
+// boundary for the complete review workspace.
+func (s *Server) EnableBundle(store *BundleStore) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if store == nil {
+		return errors.New("review bundle store is required")
+	}
+	s.bundleStore = store
+	s.autosavePath = store.Path()
+	s.autosaveStatus = "active"
+	requestedDocument := s.autosaveDocument
+	if requestedDocument.SourceHash == "" && s.session.PlanPath != "" {
+		requestedDocument = NewDocument(s.session.PlanPath, s.session.Plan)
+		s.autosaveDocument = requestedDocument
+	}
+	if saved, ok := store.Load(); ok {
+		s.session = &saved.Session
+		var migrated bool
+		var err error
+		s.autosaveStatus, migrated, err = migrateLoadedSession(s.session, saved.Status, true)
+		if err != nil {
+			return fmt.Errorf("migrate bundled review: %w", err)
+		}
+		s.autosaveDocument = saved.Document
+		s.autosaveGeneration = saved.Generation
+		if requestedDocument.SourceHash != "" && !saved.Document.SourceMatches(requestedDocument.SourceText) {
+			s.session.ReconcileExternalPlan(saved.Document.SourceText, requestedDocument.SourceText)
+			s.autosaveDocument = requestedDocument
+			return s.persistLocked()
+		}
+		if err := s.session.Validate(); err != nil {
+			return fmt.Errorf("validate bundled review: %w", err)
+		}
+		if migrated || store.requiresSave() {
+			return s.persistLocked()
+		}
+		return nil
+	}
+	if err := s.session.Validate(); err != nil {
+		return fmt.Errorf("validate review session: %w", err)
+	}
+	return s.persistLocked()
 }
 
 func (s *Server) EnableAutosave(path string) error {
@@ -392,6 +438,8 @@ func (s *Server) handleThreadAction(w http.ResponseWriter, r *http.Request) {
 		s.handleMoveThread(w, r, threadID)
 	case "reanchor":
 		s.handleReanchorThread(w, r, threadID)
+	case "mark-addressed":
+		s.handleMarkThreadAddressed(w, r, threadID)
 	case "edit":
 		s.handleEditThread(w, r, threadID)
 	case "kind":
@@ -669,6 +717,30 @@ func (s *Server) handleReanchorThread(w http.ResponseWriter, r *http.Request, th
 	})
 }
 
+func (s *Server) handleMarkThreadAddressed(w http.ResponseWriter, r *http.Request, threadID string) {
+	if s.isFinished() {
+		writeError(w, http.StatusConflict, "review already completed")
+		return
+	}
+	var request struct {
+		RevisionID string `json:"revisionId"`
+	}
+	if err := decodeJSON(r.Body, &request); err != nil || strings.TrimSpace(request.RevisionID) == "" {
+		writeError(w, http.StatusBadRequest, "invalid revision json")
+		return
+	}
+	s.mutateSession(w, func() (any, error) {
+		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+			return nil, err
+		}
+		if err := s.session.RecordDetachedThreadAddressed(threadID, request.RevisionID); err != nil {
+			return nil, transitionResponseError(err)
+		}
+		s.comparisonCache = sync.Map{}
+		return statusResponse("addressed"), nil
+	})
+}
+
 func (s *Server) handleEditThread(w http.ResponseWriter, r *http.Request, threadID string) {
 	if s.isFinished() {
 		writeError(w, http.StatusConflict, "review already completed")
@@ -807,26 +879,27 @@ func (s *Server) handleRevisionAction(w http.ResponseWriter, r *http.Request) {
 		threads = comparisonThreads(s.session.Threads, feedback)
 	}
 	store := s.revisionStore
+	bundle := s.bundleStore
 	s.mu.Unlock()
 	if !fromOK || !toOK {
 		writeError(w, http.StatusNotFound, "revision not found")
 		return
 	}
 	cacheKey, cacheable := revisionComparisonCacheKey(fromRevision, toRevision)
-	cacheable = cacheable && store != nil
+	cacheable = cacheable && (store != nil || bundle != nil)
 	if cacheable {
 		if cached, ok := s.comparisonCache.Load(cacheKey); ok {
 			writeJSON(w, reviewmodel.WithThreadPlacements(cached.(reviewmodel.ChangeView), threads))
 			return
 		}
 	}
-	if store != nil && fromRevision.CommitID != "" && toRevision.CommitID != "" {
-		fromPlan, err := store.Read(plumbing.NewHash(fromRevision.CommitID))
+	if (store != nil || bundle != nil) && fromRevision.CommitID != "" && toRevision.CommitID != "" {
+		fromPlan, err := readStoredRevision(bundle, store, fromRevision.CommitID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		toPlan, err := store.Read(plumbing.NewHash(toRevision.CommitID))
+		toPlan, err := readStoredRevision(bundle, store, toRevision.CommitID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -856,9 +929,9 @@ func (s *Server) handleRevisionRestore(w http.ResponseWriter, r *http.Request, r
 			return nil, responseError{status: http.StatusNotFound, message: "revision not found"}
 		}
 		content := revision.Plan
-		if s.revisionStore != nil && revision.CommitID != "" {
+		if (s.bundleStore != nil || s.revisionStore != nil) && revision.CommitID != "" {
 			var err error
-			content, err = s.revisionStore.Read(plumbing.NewHash(revision.CommitID))
+			content, err = readStoredRevision(s.bundleStore, s.revisionStore, revision.CommitID)
 			if err != nil {
 				return nil, err
 			}
@@ -1236,7 +1309,30 @@ func (s *Server) cancel() (Result, error) {
 	return Result{Session: *s.session, Canceled: true}, nil
 }
 
+// RecordSourceSave updates the persisted source baseline after PlanMaxx writes
+// the finalized plan back to its source path. This prevents a later review
+// from treating PlanMaxx's own write as an external edit.
+func (s *Server) RecordSourceSave(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.autosaveDocument.CanonicalPath == "" {
+		return nil
+	}
+	before := s.autosaveDocument
+	s.autosaveDocument = NewDocument(before.CanonicalPath, content)
+	if err := s.persistLocked(); err != nil {
+		if !autosaveWasCommitted(err) {
+			s.autosaveDocument = before
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *Server) persistLocked() error {
+	if s.bundleStore != nil {
+		return s.persistTransactionLocked()
+	}
 	if s.revisionStore != nil && s.revisionPlanID != "" {
 		return s.revisionStore.WithPlanTransaction(s.revisionPlanID, s.persistTransactionLocked)
 	}
@@ -1246,6 +1342,19 @@ func (s *Server) persistLocked() error {
 func (s *Server) persistTransactionLocked() error {
 	if err := s.session.Validate(); err != nil {
 		return fmt.Errorf("validate review session: %w", err)
+	}
+	if s.bundleStore != nil {
+		if s.autosaveStatus == "" {
+			s.autosaveStatus = "active"
+		}
+		working, generation, err := s.bundleStore.Save(s.autosaveStatus, s.autosaveDocument, *s.session)
+		if generation != s.autosaveGeneration {
+			s.autosaveGeneration = generation
+		}
+		if err == nil || autosaveWasCommitted(err) {
+			*s.session = working
+		}
+		return err
 	}
 	if err := s.syncRevisionStoreLocked(); err != nil {
 		return err
@@ -1341,7 +1450,7 @@ func revisionComparisonCacheKey(from, to session.Revision) (string, bool) {
 }
 
 func (s *Server) hydrateRevisionBodiesLocked() error {
-	if s.revisionStore == nil {
+	if s.revisionStore == nil && s.bundleStore == nil {
 		return nil
 	}
 	for i := range s.session.Revisions {
@@ -1349,7 +1458,7 @@ func (s *Server) hydrateRevisionBodiesLocked() error {
 		if revision.ID != s.session.CurrentRevisionID || revision.Plan != "" || revision.CommitID == "" {
 			continue
 		}
-		content, err := s.revisionStore.Read(plumbing.NewHash(revision.CommitID))
+		content, err := readStoredRevision(s.bundleStore, s.revisionStore, revision.CommitID)
 		if err != nil {
 			return fmt.Errorf("load revision %s from git store: %w", revision.ID, err)
 		}
@@ -1391,6 +1500,13 @@ func (s *Server) syncRevisionStoreLocked() error {
 }
 
 func (s *Server) reloadAutosaveLocked() error {
+	if s.bundleStore != nil {
+		saved, changed, err := s.bundleStore.Refresh()
+		if err != nil || !changed || saved.Generation <= s.autosaveGeneration {
+			return err
+		}
+		return s.installReloadedAutosaveLocked(saved)
+	}
 	if s.autosavePath == "" {
 		return nil
 	}
@@ -1398,6 +1514,10 @@ func (s *Server) reloadAutosaveLocked() error {
 	if err != nil || !ok || saved.Generation <= s.autosaveGeneration {
 		return err
 	}
+	return s.installReloadedAutosaveLocked(saved)
+}
+
+func (s *Server) installReloadedAutosaveLocked(saved Autosave) error {
 	next := saved.Session
 	status, _, err := migrateLoadedSession(&next, saved.Status, false)
 	if err != nil {
@@ -1421,6 +1541,13 @@ func (s *Server) reloadAutosaveLocked() error {
 		return fmt.Errorf("validate reloaded autosave: %w", err)
 	}
 	return nil
+}
+
+func readStoredRevision(bundle *BundleStore, store *revisions.Store, commitID string) (string, error) {
+	if bundle != nil {
+		return bundle.ReadRevision(commitID)
+	}
+	return store.Read(plumbing.NewHash(commitID))
 }
 
 func cloneSession(source session.Session) session.Session {
@@ -1465,7 +1592,7 @@ func (s *Server) syncExternalSourceLocked() error {
 }
 
 func writeSourceSyncError(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrAutosaveConflict) {
+	if errors.Is(err, ErrAutosaveConflict) || errors.Is(err, ErrBundleConflict) {
 		writeError(w, http.StatusConflict, "review state changed in another PlanMaxx session; reload the review before continuing")
 		return
 	}
@@ -1478,7 +1605,7 @@ func writeSourceSyncError(w http.ResponseWriter, err error) {
 }
 
 func writePersistenceError(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrAutosaveConflict) || errors.Is(err, revisions.ErrHeadChanged) {
+	if errors.Is(err, ErrAutosaveConflict) || errors.Is(err, ErrBundleConflict) || errors.Is(err, revisions.ErrHeadChanged) {
 		writeError(w, http.StatusConflict, "review state changed in another PlanMaxx session; reload the review before continuing")
 		return
 	}

@@ -143,6 +143,53 @@ func (s *Session) AddressThread(threadID string, anchor Anchor) error {
 	return nil
 }
 
+// RecordDetachedThreadAddressed lets the reviewer resolve conservative
+// re-anchoring fallout after confirming that a specific revision did in fact
+// apply the feedback. The original coordinates remain historical evidence;
+// they are not made active against the current plan.
+func (s *Session) RecordDetachedThreadAddressed(threadID, revisionID string) error {
+	thread, err := s.threadPointer(threadID)
+	if err != nil {
+		return err
+	}
+	if thread.Lifecycle() != ThreadLifecycleDetached {
+		return blocked("only detached feedback can be recorded as addressed")
+	}
+	revisionIndex := -1
+	for index := range s.Revisions {
+		if s.Revisions[index].ID == revisionID {
+			revisionIndex = index
+			break
+		}
+	}
+	if revisionIndex < 0 {
+		return &TransitionError{Kind: TransitionMissing, Message: "revision not found"}
+	}
+	if s.Revisions[revisionIndex].ParentID == "" {
+		return blocked("the initial revision cannot have addressed feedback")
+	}
+	if len(thread.Messages) > 0 && s.Revisions[revisionIndex].CreatedAt.Before(thread.Messages[0].CreatedAt) {
+		return blocked("feedback cannot be addressed by an earlier revision")
+	}
+	for _, feedback := range s.Revisions[revisionIndex].Feedback {
+		if feedback.ThreadID == threadID {
+			return blocked("feedback is already recorded in that revision")
+		}
+	}
+	s.Revisions[revisionIndex].Feedback = append(s.Revisions[revisionIndex].Feedback, RevisionFeedback{
+		RevisionID:   revisionID,
+		ThreadID:     thread.ID,
+		Anchor:       thread.Anchor,
+		ResultAnchor: Anchor{},
+		SelectedText: thread.SelectedText,
+		Kind:         thread.Kind,
+		Messages:     append([]Message(nil), thread.Messages...),
+	})
+	thread.Status = ThreadStatusResolved
+	s.makeAnswersPrivateForThread(threadID)
+	return nil
+}
+
 func (s *Session) DetachThread(threadID string) error {
 	thread, err := s.threadPointer(threadID)
 	if err != nil {

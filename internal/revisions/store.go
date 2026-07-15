@@ -53,6 +53,11 @@ func Open(path string) (*Store, error) {
 // OpenExisting opens a store without creating one. It is used only to migrate
 // the old cache-backed location into durable application data.
 func OpenExisting(path string) (*Store, bool, error) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, fmt.Errorf("inspect existing bare revision store: %w", err)
+	}
 	release, err := acquireFileLock(repositoryLockPath(path))
 	if err != nil {
 		return nil, false, err
@@ -71,6 +76,17 @@ func OpenExisting(path string) (*Store, bool, error) {
 func PlanID(path string) string {
 	sum := sha256.Sum256([]byte(path))
 	return fmt.Sprintf("%x", sum[:16])
+}
+
+// PlanRef is the legacy ref imported into a per-plan review bundle.
+func PlanRef(planID string) string { return refName(planID).String() }
+
+// Path exposes the legacy repository location for a one-time native Git fetch.
+func (s *Store) Path() string { return s.path }
+
+func (s *Store) HasPlan(planID string) bool {
+	_, err := s.Head(planID)
+	return err == nil
 }
 
 func (s *Store) Head(planID string) (plumbing.Hash, error) {
@@ -123,7 +139,7 @@ func (s *Store) Commit(planID string, parent plumbing.Hash, content, message str
 // WithPlanTransaction serializes all durable work for one logical plan across
 // PlanMaxx processes. Callers hold it across Git, journal, and autosave writes.
 func (s *Store) WithPlanTransaction(planID string, fn func() error) error {
-	release, err := acquireFileLock(filepath.Join(s.path, "planmaxx-locks", "plan-"+planID+".lock"))
+	release, err := acquireFileLock(runtimeLockPath("plan-"+planID, s.path))
 	if err != nil {
 		return err
 	}
@@ -140,7 +156,16 @@ func (s *Store) withRepositoryWriteLock(fn func() error) error {
 	return fn()
 }
 
-func repositoryLockPath(path string) string { return path + ".planmaxx-write.lock" }
+func repositoryLockPath(path string) string { return runtimeLockPath("repository", path) }
+
+func runtimeLockPath(kind, path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(abs)))
+	return filepath.Join(os.TempDir(), "planmaxx-locks", fmt.Sprintf("legacy-%s-%x.lock", kind, sum[:16]))
+}
 
 func (s *Store) Read(hash plumbing.Hash) (string, error) {
 	commit, err := s.repo.CommitObject(hash)

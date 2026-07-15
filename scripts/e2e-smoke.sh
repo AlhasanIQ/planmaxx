@@ -17,7 +17,7 @@ trap cleanup EXIT INT TERM
 PLAN="$TMPDIR_PLANMAXX/real-world-plan.md"
 STDOUT_LOG="$TMPDIR_PLANMAXX/stdout.log"
 STDERR_LOG="$TMPDIR_PLANMAXX/stderr.log"
-HANDOFF="$TMPDIR_PLANMAXX/handoff.md"
+SAVED_PLAN="$TMPDIR_PLANMAXX/saved-plan.md"
 
 cat > "$PLAN" <<'PLAN'
 # Billing Export Rollout
@@ -36,7 +36,7 @@ support teams.
 PLAN
 
 cd "$ROOT"
-go run ./cmd/planmaxx review --no-browser --handoff-out "$HANDOFF" "$PLAN" >"$STDOUT_LOG" 2>"$STDERR_LOG" &
+go run ./cmd/planmaxx review --no-browser --save-to-file "$SAVED_PLAN" "$PLAN" >"$STDOUT_LOG" 2>"$STDERR_LOG" &
 PID=$!
 
 URL=""
@@ -84,5 +84,5 @@ wait "$PID"
 PID=""
 
 grep -q 'Validate audit logging before export rollout.' "$STDOUT_LOG"
-cmp -s "$STDOUT_LOG" "$HANDOFF"
+cmp -s "$PLAN" "$SAVED_PLAN"
 printf 'PlanMaxx smoke passed: %s\n' "$URL"

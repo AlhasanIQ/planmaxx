@@ -57,7 +57,7 @@ export function TopBar(props: Props) {
   const themeLabel = themeMode === "system" ? "System" : resolvedTheme === "dark" ? "Dark" : "Light";
   return (
     <header className="sticky top-0 z-10 border-b border-border bg-surface-elevated/80 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-[1240px] items-center gap-3 px-4">
+      <div className="mx-auto flex h-14 max-w-[1600px] items-center gap-3 px-4">
         <div className="flex items-center gap-2.5">
           <span className="grid size-7 place-items-center rounded-md bg-accent text-white font-bold">
             P
@@ -66,7 +66,7 @@ export function TopBar(props: Props) {
         </div>
         <button
           type="button"
-          className="btn btn-ghost"
+          className="btn btn-ghost shrink-0 whitespace-nowrap"
           onClick={onOpenRevisions}
           disabled={disabled}
           title={`Revisions — current ${currentRevisionId || "none"}`}
@@ -74,7 +74,7 @@ export function TopBar(props: Props) {
         >
           <History size={13} />
           <span className="hidden lg:inline">Revisions</span>
-          <strong>{currentRevisionId || "none"}</strong>
+          <strong className="whitespace-nowrap">{currentRevisionId || "none"}</strong>
           <ChevronDown size={12} aria-hidden />
         </button>
         <span

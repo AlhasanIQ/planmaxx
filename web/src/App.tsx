@@ -8,6 +8,7 @@ import { CompletedScreen } from "./components/CompletedScreen";
 import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
 import { SubmissionReviewDialog, type SubmissionMode } from "./components/dialogs/SubmissionReviewDialog";
+import { AddressFeedbackDialog } from "./components/dialogs/AddressFeedbackDialog";
 import type { Anchor, Digest, RevisionComparison, Session, Thread, ThreadIntent } from "./types";
 import { anchorLabel } from "./lib/anchors";
 import { sideQuestionContext } from "./lib/selectionContext";
@@ -29,6 +30,7 @@ type DialogState =
   | null
   | { kind: "reply"; threadId: string }
   | { kind: "delete"; threadId: string }
+  | { kind: "markAddressed"; threadId: string }
   | { kind: "ask"; thread: Thread }
   | { kind: "submission"; mode: SubmissionMode; digest: Digest }
   | { kind: "revisions" }
@@ -271,6 +273,16 @@ function useReviewController() {
     }
   }
 
+  async function handleMarkAddressed(threadId: string, revisionId: string) {
+    setDialog(null);
+    const ok = await withBusy("Recording addressed feedback…", () => api.markThreadAddressed(threadId, revisionId));
+    if (ok) {
+      await refresh();
+      await reloadVisibleComparison();
+      pushToast("success", `Feedback recorded in ${revisionId}`);
+    }
+  }
+
   async function handleAsk(thread: Thread, question: string) {
     setDialog(null);
     return askSideQuestion(thread, question, session);
@@ -431,6 +443,7 @@ function useReviewController() {
     handleIterateSection,
 	 handleIterateDraft,
     handleIterateThread,
+    handleMarkAddressed,
     handlePromote,
     handlePlanIteration,
     handleReply,
@@ -500,6 +513,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleIterateSection,
 	handleIterateDraft,
     handleIterateThread,
+    handleMarkAddressed,
     handlePromote,
     handlePlanIteration,
     handleReply,
@@ -629,6 +643,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
             setFocusedThreadId(id);
           }}
 		  onCreateFollowUp={handleCreateFollowUp}
+		  onMarkAddressed={(id) => setDialog({ kind: "markAddressed", threadId: id })}
           onAskSide={(thread) => setDialog({ kind: "ask", thread })}
           onIterateThread={handleIterateThread}
 		  onIncludeAnswer={handlePromote}
@@ -680,6 +695,14 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           onConfirm={() => handleDelete(dialog.threadId)}
         />
       )}
+      {dialog?.kind === "markAddressed" && session.threads.find((thread) => thread.id === dialog.threadId) ? (
+        <AddressFeedbackDialog
+          thread={session.threads.find((thread) => thread.id === dialog.threadId)!}
+          revisions={session.revisions}
+          onCancel={() => setDialog(null)}
+          onConfirm={(revisionId) => handleMarkAddressed(dialog.threadId, revisionId)}
+        />
+      ) : null}
       {dialog?.kind === "ask" && (
         <PromptDialog
           title="Ask Codex an ephemeral /btw question"

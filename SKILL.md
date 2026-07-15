@@ -1,39 +1,38 @@
 ---
 name: planmaxx
-description: Use when you have drafted a plan, design, spec, or implementation plan and need user review before proceeding. Also use when the user asks to review, approve, or iterate on an agent-written plan. Run PlanMaxx as the blocking review gate instead of asking the user to manually inspect a pasted plan.
+description: Use when an agent-written plan, design, or spec needs user review before implementation, or when the user asks to review, approve, or iterate on a plan.
 ---
 
 <!-- planmaxx-managed-skill -->
 
 # PlanMaxx
 
-Use PlanMaxx after drafting a plan that needs user review before implementation.
-
-## Workflow
-
-1. Write the plan to a Markdown (`.md`) or HTML (`.html`) file.
-2. Run `planmaxx review --handoff-out /tmp/planmaxx-handoff.md <plan-file>`.
+1. Write the plan to a Markdown or HTML file.
+2. Run `planmaxx review <plan-file>`. On finalization, PlanMaxx writes the
+   finalized plan back to that source file and prints the approved handoff to
+   stdout. Use `--save-to-file /tmp/final-plan.md` to write only the finalized
+   plan content to a different file instead.
 3. Wait for the command to finish.
-4. Treat stderr as status output only. It includes the local review URL and autosave path.
-5. Treat stdout, or the `--handoff-out` file, as the next instruction from the user.
+4. Treat stderr as status output and stdout as the user's next instruction.
 
-## Outcomes
+Applying proposals updates PlanMaxx's review state. No plan file is written on
+cancel; finalization is the only action that saves the finalized plan.
 
-- Approved: continue from the final plan and approved review digest.
-- Iterated: review the proposal, then approve, discard, or iterate again.
-- Canceled: stop. No handoff was produced.
+Outcomes:
 
-Do not continue implementation after a canceled review.
+- Approved: continue from the reviewed plan and digest.
+- Iterated: wait while the user reviews the proposal.
+- Canceled: stop; no handoff was produced.
 
-## Useful Flags
+Useful flags:
 
-- `--no-browser`: print the review URL without opening a browser.
-- `--host <host>`: bind the local review server host. Default: `127.0.0.1`.
-- `--port <port>`: bind a fixed port. Default: `0`, meaning a random available port.
-- `--handoff-out <path>`: write the final handoff to a file as well as stdout.
-- `--autosave-out <path>`: write recoverable review state to a specific file.
-- `--side-question-timeout <duration>`: timeout for one Codex side question or iteration. Default: `30m`.
+- Review state defaults to one user-scoped `.planmaxx` bundle. Add
+  `--local-bundle` to keep `<plan-file>.planmaxx` beside the plan instead.
+- `--no-browser`: print the URL without opening the browser. The browser is
+  opened by default.
+- `--save-to-file <path>`: write only the finalized Markdown or HTML plan to
+  this path instead of the source plan. The handoff still goes to stdout. The
+  file is written only after approval; canceling writes no plan file.
 
-## Codex Side Actions
-
-When `CODEX_THREAD_ID` is available, PlanMaxx may use Codex app-server for side questions and section iteration. Do not fake this context manually. If unavailable, PlanMaxx still supports normal review, comments, approval, iteration, and handoff.
+PlanMaxx uses Codex app-server for side questions and iteration only when the
+environment already provides `CODEX_THREAD_ID`.

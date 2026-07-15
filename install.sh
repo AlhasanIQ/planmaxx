@@ -160,7 +160,7 @@ install_binary() {
 install_codex_skill() {
   local skill_dir skill_file skill_url
 
-  if "$BIN_PATH" skill install --target codex; then
+  if "$BIN_PATH" skill install; then
     return
   fi
 
@@ -253,7 +253,7 @@ case "$INSTALL_CODEX_SKILL" in
     install_codex_skill
     ;;
   0|false|FALSE|no|NO|"")
-    log "Optional Codex skill not installed. To enable automatic plan review later, run: ${BIN_PATH} skill install --target codex"
+    log "Optional Codex skill not installed. To enable automatic plan review later, run: ${BIN_PATH} skill install"
     ;;
   *)
     die "invalid PLANMAXX_INSTALL_CODEX_SKILL value: ${INSTALL_CODEX_SKILL} (expected 1/0, true/false, yes/no)"

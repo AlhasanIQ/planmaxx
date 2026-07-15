@@ -4,193 +4,160 @@
 
 <h1 align="center">PlanMaxx</h1>
 
-<p align="center">
-  <strong>Review, discuss, and refine coding-agent plans before they become code.</strong>
-</p>
+<p align="center"><strong>Review and refine coding-agent plans before implementation.</strong></p>
 
-<p align="center">
-  A beautiful, local-first review workspace delivered as one self-contained executable.
-</p>
-
-<p align="center">
-  <a href="https://github.com/AlhasanIQ/planmaxx/actions/workflows/ci.yml"><img src="https://github.com/AlhasanIQ/planmaxx/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="https://github.com/AlhasanIQ/planmaxx/releases"><img src="https://img.shields.io/github/v/release/AlhasanIQ/planmaxx?display_name=tag&sort=semver" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/AlhasanIQ/planmaxx" alt="GPLv3 license"></a>
-</p>
-
-<p align="center">
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#screenshots">Screenshots</a> ·
-  <a href="#what-it-does">Features</a> ·
-  <a href="#development">Contributing</a>
-</p>
-
----
-
-PlanMaxx gives coding-agent plans a proper review loop: a readable visualizer,
-anchored comments, private side conversations that preserve context, revision
-history, and multi-turn iteration before handoff. It works with Claude Code and
-other plan-file workflows and is currently optimized for Codex.
+PlanMaxx is a local review UI for Markdown and HTML plans. It supports anchored
+comments, private notes and side questions, revision history, iteration, and an
+approved handoff back to the agent.
 
 ## Install
 
-PlanMaxx is distributed as a self-contained binary. Go, Bun, and Node are not
-required for users.
-
 ```bash
-bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/AlhasanIQ/planmaxx/main/install.sh | bash'
-```
-
-By default the installer puts `planmaxx` in `$HOME/.local/bin` on Linux and
-macOS. On Windows bash environments, it installs `planmaxx.exe` in the same
-location. Use `--install-dir` or `PLANMAXX_INSTALL_DIR` to choose another
-directory.
-
-```bash
+bash -c 'set -o pipefail; curl -fsSL https://github.com/AlhasanIQ/planmaxx/releases/latest/download/install.sh | bash'
 planmaxx version
 ```
 
+The installer puts the PlanMaxx binary in `$HOME/.local/bin` by default.
+Use `--install-dir` or `PLANMAXX_INSTALL_DIR` to change the location.
+Review storage uses native Git, so `git` must also be installed and available
+on `PATH`.
+
+Update an installed release in place with:
+
+```bash
+planmaxx update
+```
+
+Released builds check GitHub for updates at review startup at most once every
+24 hours. If one exists, the final handoff tells the calling agent to notify
+you and use the update command. Check failures never block review. Set
+`PLANMAXX_NO_UPDATE_CHECK=1` to disable automatic checks.
+
 ### Automatic Codex Skill
 
-PlanMaxx can also install an optional user-level Codex skill. In that mode,
-Codex can discover PlanMaxx from the skill frontmatter and use it automatically
-when an agent-written plan is ready for user review.
-
-Install the binary only for manual use:
+To install the optional Codex skill with the binary:
 
 ```bash
-bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/AlhasanIQ/planmaxx/main/install.sh | bash'
+bash -c 'set -o pipefail; curl -fsSL https://github.com/AlhasanIQ/planmaxx/releases/latest/download/install.sh | bash -s -- --install-codex-skill'
 ```
 
-Install the binary and opt into automatic Codex plan review:
+Choose the scope that fits your workflow:
 
-```bash
-bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/AlhasanIQ/planmaxx/main/install.sh | bash -s -- --install-codex-skill'
-```
-
-You can also add or remove the skill later:
-
-```bash
-planmaxx skill install --target codex
-planmaxx skill remove --target codex
-```
-
-The skill is installed under `$HOME/.agents/skills/planmaxx` by default. Use
-`--repo /path/to/repo` with either command to install it under that
-repository's `.agents/skills/planmaxx` directory.
+- **User-wide (default):** `planmaxx skill install` installs the skill at
+  `~/.agents/skills/planmaxx/`; remove it with `planmaxx skill remove`.
+- **Repository-local:** `planmaxx skill install --repo /path/to/repo` installs
+  it at `/path/to/repo/.agents/skills/planmaxx/`; remove it with
+  `planmaxx skill remove --repo /path/to/repo`.
 
 ## Quick Start
 
-When working with an agent, ask it to use PlanMaxx for plan review, or just
-tell the agent to "use planmaxx". The agent should write its plan to a Markdown
-or HTML file, run the review, wait for your decision, and continue only from the
-PlanMaxx handoff.
-
-If you already have a Markdown or HTML plan file, run:
+Ask your agent to use PlanMaxx, or tell the agent to "use planmaxx". For an
+existing plan, run:
 
 ```bash
 planmaxx review path/to/plan.md
-# or
 planmaxx review path/to/plan.html
 ```
 
-PlanMaxx starts a local server on `127.0.0.1`, opens your browser, and blocks
-until you approve, reject, or cancel the review.
+PlanMaxx opens a local browser and waits for one outcome:
 
-On approval or rejection, the command prints the reviewed plan and review digest
-to stdout. Return that output to your agent if it is not already running the
-command itself.
+- **Finalize** approves the current plan and emits its handoff.
+- **Iterate** creates a proposal to review before it becomes a revision.
+- **Cancel** exits without a handoff.
+
+The approved handoff is always printed to stdout. On finalization, PlanMaxx
+writes the finalized plan back to its source file by default. Pass
+`--save-to-file <path>` to write only the finalized plan content to a different
+file instead; the handoff prompt is never written there. No plan file is
+written on cancel.
 
 ## Screenshots
 
-![PlanMaxx desktop review workspace](docs/screenshots/review-desktop.png)
+In-place review keeps the proposed diff and its dedicated review thread in one
+reading flow.
 
-The review workspace keeps the plan, anchored comments, revision history, and
-handoff preview visible in one local browser session.
+![PlanMaxx in-place review thread beneath a proposed diff](docs/screenshots/review-desktop.png)
 
-HTML plans open in a scriptless, network-blocked Preview. Switch to Source for
-exact line and text comments, side questions, iteration, and revision diffs;
-the final handoff always contains the original active HTML source, never a DOM
-serialization of the preview.
+Alongside review anchors a separate feedback card to its source line, while the
+handoff preview makes the final agent context inspectable before approval.
 
 <p>
+  <img src="docs/screenshots/thread-card.png" alt="PlanMaxx alongside feedback card connected to line 14" width="320">
   <img src="docs/screenshots/handoff-preview.png" alt="PlanMaxx handoff preview" width="360">
-  <img src="docs/screenshots/thread-card.png" alt="PlanMaxx annotated thread card with btw answer" width="320">
 </p>
 
-The submission review shows what will be sent back to Codex. Feedback defaults
-to **Use in iteration**, private notes stay local, and `/btw` answers remain
-private unless you explicitly include them.
+## Review behavior
 
-## What It Does
+- Comments attach to exact source lines or text ranges.
+- Active feedback can drive iteration or remain private.
+- Detached feedback can be reanchored or recorded as addressed on the revision
+  that applied it.
+- Addressed feedback remains read-only revision history.
+- Previous/Next moves through feedback and changed regions.
+- `/btw` answers remain private unless explicitly included.
+- Applying a proposal creates a revision; creating or refining one does not.
+- The complete review workspace is one private `.planmaxx` Git bundle in the
+  platform's user-state directory. It includes revision commits, a pending
+  proposal ref, feedback notes, finalization tags, and versioned domain state;
+  nothing is written beside the plan by default. Pass `--local-bundle` to keep
+  `<plan-file>.planmaxx` beside the plan instead.
 
-- Renders long plans in a readable local review UI.
-- Adds threaded comments anchored to lines or text ranges.
-- Keeps private notes out of the final handoff.
-- Lets you include useful side-question answers in the next iteration or approval.
-- Supports focused section rewrites and proposal diffs before final approval.
-- Provides Previous/Next navigation across feedback and every otherwise
-  uncovered change in a proposal or revision comparison.
-- Separates active feedback, items that need re-anchoring, and addressed
-  revision history without conflating them into one status.
-- Turns final-review feedback into a whole-plan proposal; the checked-out plan
-  stays unchanged until **Apply as new revision** is clicked.
-- Autosaves review state next to the plan file as
-  `<plan-file>.planmaxx-review.json`, with a cache-directory fallback if that
-  location is not writable.
+HTML opens in a scriptless, network-blocked Preview. Comments, iteration, and
+diffs use Source mode so the original HTML remains authoritative.
 
-## Codex Integration
+## Storage tools
 
-Basic review works with Markdown (`.md`, `.markdown`) and HTML (`.html`, `.htm`)
-plan files. Unknown extensions retain the historical Markdown behavior.
-
-Side questions and section rewrites require a Codex app-server context. When
-`CODEX_THREAD_ID` is available, PlanMaxx starts:
+Inspect the bundle, active write lock, matching review processes, and any
+legacy sidecars or revision stores:
 
 ```bash
-codex app-server --listen stdio://
+planmaxx doctor path/to/plan.md
 ```
 
-If that context is unavailable, PlanMaxx disables agent-assisted side actions
-instead of guessing from copied context.
+Create a verified, portable copy of the complete review workspace:
+
+```bash
+planmaxx snapshot path/to/plan.md --out review-backup.planmaxx
+```
+
+The `export` command is an alias for `snapshot`. Existing destinations require
+`--force`. Legacy files are imported on the next review but are never deleted
+automatically. Both storage commands accept `--bundle <path>` when a review was
+created with a non-default bundle location.
+
+## Codex
+
+When `CODEX_THREAD_ID` is available, PlanMaxx uses `codex app-server` for side
+questions and section iteration. Normal review and handoff work without it.
 
 ## Privacy
 
-PlanMaxx is local-first. The review server binds to `127.0.0.1` by default and
-review state is stored in a local autosave file. Side questions and section
-rewrites are sent through Codex only when the current Codex thread context is
-available.
+The server binds to `127.0.0.1` by default and stores review state locally.
+Agent-assisted actions send their context through the active Codex task.
+Released builds also make a cached request to the public GitHub Releases API at
+review startup; set `PLANMAXX_NO_UPDATE_CHECK=1` to disable it.
 
 ## Development
 
-Requirements for contributors:
-
-- Go 1.22+
-- Bun
+Requires Go 1.22+ and Bun.
 
 ```bash
 cd web && bun install
+cd ..
 ./scripts/build-web.sh
 go test ./...
 go vet ./...
 cd web && bun test && bunx tsc --noEmit
-./scripts/e2e-smoke.sh
 ```
 
-The web UI is built into `internal/review/static/` and embedded into the Go
-binary. That directory is generated and ignored. On a fresh clone, run
-`./scripts/build-web.sh` before `go build` or `go test ./...`.
+Build the UI before Go builds or tests. Generated files under
+`internal/review/static/` are embedded in the binary and must not be committed.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/release.md](docs/release.md).
 
-For UI screenshots, run `node scripts/render-review.mjs`.
-
-## Release
-
-Releases are built by GitHub Actions from version tags. Each release includes
-Linux, macOS, and Windows archives, a version-matched `SKILL.md`,
-`checksums.txt`, and tagged source archives.
-
-See [docs/release.md](docs/release.md).
+Additional end-to-end and visual checks are available through
+`scripts/e2e-smoke.sh`, `scripts/e2e-browser.sh`, and
+`scripts/render-review.mjs`.
 
 ## License
 
-PlanMaxx is licensed under GPLv3. See [LICENSE](LICENSE).
+GPLv3. See [LICENSE](LICENSE).

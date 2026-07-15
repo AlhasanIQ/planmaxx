@@ -117,7 +117,7 @@ async function waitForReviewURL(child, stderrChunks) {
 
 async function seedReview(url) {
   const auditThread = await requestJSON(url, "/api/threads", {
-    anchor: { startLine: 13, endLine: 14 },
+    anchor: { startLine: 14, endLine: 14 },
     body: "Verify audit logs include export requester before finance starts using this.",
   });
   await requestJSON(url, `/api/threads/${encodeURIComponent(auditThread.id)}/reply`, {
@@ -127,17 +127,10 @@ async function seedReview(url) {
     threadID: auditThread.id,
     question: "What should we double-check before making this export available to support?",
   });
-
-  const rolloutThread = await requestJSON(url, "/api/threads", {
-    anchor: { startLine: 15, endLine: 16 },
-    body: "Add a rollback owner and expected time to disable the feature flag.",
-  });
-  await requestJSON(url, `/api/threads/${encodeURIComponent(rolloutThread.id)}/move`, {
-    x: 760,
-    y: 332,
-  });
-  await requestJSON(url, `/api/threads/${encodeURIComponent(rolloutThread.id)}/kind`, {
-    kind: "note",
+  await requestJSON(url, "/api/revisions/propose-section", {
+    threadId: auditThread.id,
+    anchor: { startLine: 14, endLine: 14 },
+    instruction: "Clarify the audit-log requirements for this export.",
   });
 }
 
@@ -152,12 +145,19 @@ function fakeCodexScript() {
   return `#!/usr/bin/env node
 const readline = require("node:readline");
 
-const answer = "Codex says audit fields should be emitted after the export stream finishes, so requester, account ID, and row count stay tied to the same export attempt.";
+const sideQuestionAnswer = "Codex says audit fields should be emitted after the export stream finishes, so requester, account ID, and row count stay tied to the same export attempt.";
 let forkCounter = 0;
 let turnCounter = 0;
 
 function send(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
+}
+
+function answerFor(params) {
+  const prompt = params.input?.[0]?.text ?? "";
+  const revision = prompt.match(/<planmaxx_iteration\\b[^>]*\\brevision="([^"]+)"/);
+  if (!revision) return sideQuestionAnswer;
+  return '<planmaxx_proposal version="1" revision="' + revision[1] + '"><summary>Clarified audit logging.</summary><replacement target="lines"><expected>4. Ensure audit logs include export requester, account ID, date range, and row count.</expected><content>4. Ensure audit logs record the export requester, account ID, date range, row count, and retention window.</content></replacement></planmaxx_proposal>';
 }
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -185,7 +185,7 @@ rl.on("line", (line) => {
     const turnId = "planmaxx-render-turn-" + (++turnCounter);
     send({ id, result: { turn: { id: turnId, status: "inProgress" } } });
     setTimeout(() => {
-      send({ method: "item/completed", params: { threadId: params.threadId, turnId, item: { type: "agentMessage", text: answer } } });
+      send({ method: "item/completed", params: { threadId: params.threadId, turnId, item: { type: "agentMessage", text: answerFor(params) } } });
       send({ method: "turn/completed", params: { threadId: params.threadId, turn: { id: turnId, status: "completed" } } });
     }, 5);
     return;
@@ -196,6 +196,7 @@ rl.on("line", (line) => {
 }
 
 async function renderScreenshots(chromium, url) {
+  const renderTheme = process.env.PLANMAXX_RENDER_THEME === "light" ? "light" : "dark";
   let browser;
   try {
     browser = await chromium.launch();
@@ -207,17 +208,39 @@ async function renderScreenshots(chromium, url) {
   }
 
   try {
-    const page = await browser.newPage({ viewport: { width: 1440, height: 760 } });
+    const page = await browser.newPage({
+      viewport: { width: 1600, height: 1020 },
+      deviceScaleFactor: 2,
+    });
+    await page.addInitScript((theme) => window.localStorage.setItem("planmaxx.theme", theme), renderTheme);
     await page.goto(url, { waitUntil: "networkidle" });
     await page.waitForSelector(".thread", { timeout: 5_000 });
+    await page.waitForSelector(".inline-proposal-controls", { timeout: 5_000 });
+    await page.waitForSelector(".review-navigator", { timeout: 5_000 });
+    await page.waitForFunction(() => document.querySelector('button[title="Show threads directly below their anchored range"]')?.getAttribute("aria-pressed") === "true");
     await page.evaluate(() => window.scrollTo(0, 0));
+    await page.evaluate(() => { document.querySelector("main").style.zoom = "1.08"; });
+    await page.waitForTimeout(250);
     await page.screenshot({
       path: path.join(readmeScreenshotDir, "review-desktop.png"),
       fullPage: false,
     });
-    await page.locator(".handoff-panel").screenshot({
+    await page.evaluate(() => { document.querySelector("main").style.zoom = "1"; });
+    await page.waitForTimeout(150);
+    await page.getByRole("button", { name: "Discard" }).click();
+    await page.locator(".inline-proposal-controls").waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "Finalize" }).click();
+    await page.locator('dialog[aria-label="Review approval"]').waitFor({ state: "visible" });
+    await page.locator(".modal-card").screenshot({
       path: path.join(readmeScreenshotDir, "handoff-preview.png"),
     });
+    await page.keyboard.press("Escape");
+    await page.locator('dialog[aria-label="Review approval"]').waitFor({ state: "hidden" });
+    const alongsideButton = page.getByRole("button", { name: "Alongside" });
+    await alongsideButton.click();
+    await page.waitForFunction(() => document.querySelector('button[title="Show threads beside their final anchored line"]')?.getAttribute("aria-pressed") === "true");
+    await page.waitForSelector(".plan-comment-rail .thread", { timeout: 5_000 });
+    await page.waitForTimeout(250);
     await page.setViewportSize({ width: 1440, height: 1080 });
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.locator('[data-thread-id="thread-1"]').screenshot({

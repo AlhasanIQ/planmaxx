@@ -35,11 +35,12 @@ func (b *lockedBuffer) String() string {
 }
 
 type reviewProcess struct {
-	url    string
-	stdout *lockedBuffer
-	stderr *lockedBuffer
-	done   chan error
-	cancel context.CancelFunc
+	url      string
+	planPath string
+	stdout   *lockedBuffer
+	stderr   *lockedBuffer
+	done     chan error
+	cancel   context.CancelFunc
 }
 
 func TestFinalizeSimplePlanWritesHandoff(t *testing.T) {
@@ -112,6 +113,35 @@ func TestAgentProposalApplyAndRestoreUseDurableRevisionHistory(t *testing.T) {
 	}
 	finalize(t, review.url, digest("Revision history approved", nil, nil))
 	waitSuccess(t, review)
+}
+
+func TestFinalizeWritesAppliedPlanToSourceByDefault(t *testing.T) {
+	fake := installFakeCodex(t, `<planmaxx_proposal version="1" revision="{{REVISION}}"><summary>Clarified the first step.</summary><replacement target="lines"><expected>1. Verify the CLI contract and localhost server behavior.</expected><content>1. Verify the CLI contract, localhost server behavior, and recovery path.</content></replacement></planmaxx_proposal>`)
+	review := startReview(t, realisticPlan("Save source plan"), map[string]string{
+		"PATH":            fake.pathEnv,
+		"CODEX_THREAD_ID": "current-thread",
+	})
+
+	var proposal struct {
+		ID string `json:"id"`
+	}
+	postJSONInto(t, review.url+"/api/revisions/propose-section", `{"anchor":{"startLine":10,"endLine":10},"instruction":"Clarify the first step."}`, http.StatusOK, &proposal)
+	postJSON(t, review.url+"/api/revisions/proposals/"+proposal.ID+"/apply", `{}`, http.StatusOK)
+
+	state := getState(t, review.url)
+	if !strings.Contains(state.Plan, "recovery path") {
+		t.Fatalf("expected applied revision, got %q", state.Plan)
+	}
+	finalize(t, review.url, digest("Applied revision approved", nil, nil))
+	waitSuccess(t, review)
+
+	saved, err := os.ReadFile(review.planPath)
+	if err != nil {
+		t.Fatalf("read source plan: %v", err)
+	}
+	if got := string(saved); got != state.Plan {
+		t.Fatalf("source plan = %q, want finalized plan %q", got, state.Plan)
+	}
 }
 
 func TestMoveAndReanchorPersistUntilFinalize(t *testing.T) {
@@ -224,19 +254,23 @@ func TestSideQuestionTimeoutBoundsSlowAppServer(t *testing.T) {
 	waitSuccess(t, review)
 }
 
-func TestHandoffOutMirrorsStdout(t *testing.T) {
+func TestSaveToFileWritesPlanContent(t *testing.T) {
 	dir := t.TempDir()
-	handoffPath := filepath.Join(dir, "handoff.md")
-	review := startReviewWithArgs(t, realisticPlan("Handoff out"), []string{"--no-browser", "--handoff-out", handoffPath}, nil)
+	savedPlanPath := filepath.Join(dir, "saved-plan.md")
+	plan := realisticPlan("Save to file")
+	review := startReviewWithArgs(t, plan, []string{"--no-browser", "--save-to-file", savedPlanPath}, nil)
 
 	finalize(t, review.url, digest("Handoff file approved", nil, nil))
 	waitSuccess(t, review)
-	fileOutput, err := os.ReadFile(handoffPath)
+	fileOutput, err := os.ReadFile(savedPlanPath)
 	if err != nil {
-		t.Fatalf("read handoff file: %v", err)
+		t.Fatalf("read saved plan: %v", err)
 	}
-	if string(fileOutput) != review.stdout.String() {
-		t.Fatalf("expected file output to mirror stdout")
+	if got := string(fileOutput); got != plan {
+		t.Fatalf("saved plan = %q, want %q", got, plan)
+	}
+	if strings.Contains(string(fileOutput), "Continue the user's approved plan work.") {
+		t.Fatalf("saved plan must not contain the handoff prompt")
 	}
 }
 
@@ -428,7 +462,7 @@ func startReviewFull(t *testing.T, plan string, args []string, env map[string]st
 	cmd := exec.CommandContext(ctx, "go", commandArgs...)
 	cmd.Dir = root
 
-	basePath := t.TempDir() // empty by default — nothing resolves on it
+	basePath := installGitOnlyPath(t).pathEnv
 	if installFakeOpenInPath {
 		fakeOpen := installFakeOpen(t, 0)
 		basePath = fakeOpen.pathEnv
@@ -467,10 +501,11 @@ func startReviewFull(t *testing.T, plan string, args []string, env map[string]st
 		t.Fatalf("start review command: %v", err)
 	}
 	review := &reviewProcess{
-		stdout: stdout,
-		stderr: stderr,
-		done:   make(chan error, 1),
-		cancel: cancel,
+		planPath: planPath,
+		stdout:   stdout,
+		stderr:   stderr,
+		done:     make(chan error, 1),
+		cancel:   cancel,
 	}
 	go func() {
 		review.done <- cmd.Wait()
@@ -712,8 +747,36 @@ func installFakeOpen(t *testing.T, exitCode int) fakeCommand {
 
 func installNoOpenPath(t *testing.T) fakeCommand {
 	t.Helper()
+	return installGitOnlyPath(t)
+}
 
-	return fakeCommand{pathEnv: t.TempDir()}
+func installGitOnlyPath(t *testing.T) fakeCommand {
+	t.Helper()
+	dir := t.TempDir()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git for review storage: %v", err)
+	}
+	target := filepath.Join(dir, filepath.Base(gitPath))
+	if err := os.Symlink(gitPath, target); err != nil {
+		source, openErr := os.Open(gitPath)
+		if openErr != nil {
+			t.Fatalf("open git executable: %v", openErr)
+		}
+		defer source.Close()
+		destination, createErr := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o700)
+		if createErr != nil {
+			t.Fatalf("copy git executable: %v", createErr)
+		}
+		if _, copyErr := io.Copy(destination, source); copyErr != nil {
+			_ = destination.Close()
+			t.Fatalf("copy git executable: %v", copyErr)
+		}
+		if closeErr := destination.Close(); closeErr != nil {
+			t.Fatalf("close copied git executable: %v", closeErr)
+		}
+	}
+	return fakeCommand{dir: dir, pathEnv: dir}
 }
 
 func installFakeCodex(t *testing.T, answer string) fakeCommand {

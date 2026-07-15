@@ -29,7 +29,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function normalizeSession(raw: Session): Session {
-  if (raw.schemaVersion !== 3) {
+  if (raw.schemaVersion !== 4) {
     throw new Error(`Unsupported PlanMaxx API schema ${String(raw.schemaVersion ?? "missing")}; reload the rebuilt app.`);
   }
   return raw;
@@ -77,6 +77,11 @@ export const api = {
     request<{ status: string }>(`/api/threads/${encodeURIComponent(threadId)}/edit`, {
       method: "POST",
       body: JSON.stringify({ anchor, body, selectedText }),
+    }),
+  markThreadAddressed: (threadId: string, revisionId: string) =>
+    request<{ status: string }>(`/api/threads/${encodeURIComponent(threadId)}/mark-addressed`, {
+      method: "POST",
+      body: JSON.stringify({ revisionId }),
     }),
   sideQuestion: (threadId: string, question: string, context: SideQuestionContext) =>
     request<SideAnswer>("/api/side-questions", {

@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   EyeOff,
   MessageCircleQuestion,
+  MessageSquareText,
   Pencil,
   Reply,
   Sparkles,
@@ -23,6 +24,7 @@ interface ThreadCardProps {
   onReply: (id: string) => void;
   onDelete: (id: string) => void;
   onEdit: (id: string) => void;
+  onMarkAddressed: (id: string) => void;
   onCreateFollowUp: (id: string) => void;
   onAskSide: (thread: Thread) => void;
   onIterate: (thread: Thread) => void | Promise<void>;
@@ -37,7 +39,7 @@ interface ThreadCardProps {
 export function ThreadCard(props: ThreadCardProps) {
   const {
     thread, sideAnswers, isFocused, isReviewTarget, onHover, onSetIntent, onReply, onDelete,
-    onEdit, onCreateFollowUp, onAskSide, onIterate, onInclude, onKeepPrivate,
+    onEdit, onMarkAddressed, onCreateFollowUp, onAskSide, onIterate, onInclude, onKeepPrivate,
     agentAction, disabled, sideQuestionsEnabled, presentation = "rail",
   } = props;
   const active = thread.lifecycle === "active";
@@ -56,9 +58,9 @@ export function ThreadCard(props: ThreadCardProps) {
     >
       <header className="thread-card-header">
         <div className="thread-card-heading">
-          {!active ? <span className={`thread-card-eyebrow is-${thread.lifecycle}`}>
+          {active ? <span className="thread-card-eyebrow is-active"><MessageSquareText size={11} /> {presentation === "inline" ? "Review thread" : "Feedback"}</span> : <span className={`thread-card-eyebrow is-${thread.lifecycle}`}>
             {detached ? <><AlertTriangle size={11} /> Needs re-anchor</> : <><CheckCircle2 size={11} /> Addressed feedback</>}
-          </span> : null}
+          </span>}
           <h3>{anchorLabel(thread.anchor)}</h3>
         </div>
         <div className="thread-card-tools">
@@ -74,12 +76,12 @@ export function ThreadCard(props: ThreadCardProps) {
         </> : <span className="thread-intent-copy">{detached ? "Not submitted until re-anchored" : `Recorded${thread.addressedRevisionId ? ` in ${thread.addressedRevisionId}` : " in revision history"}`}</span>}
       </div>
 
-      {detached ? <p className="thread-history-note">The anchored text could not be mapped safely. Edit this feedback to select a current location.</p> : null}
+      {detached ? <p className="thread-history-note">The anchored text could not be mapped safely. Re-anchor it if work remains, or record it as addressed if a revision already applied it.</p> : null}
       {thread.lifecycle === "addressed" ? <p className="thread-history-note">This feedback is read-only. Create a follow-up for additional changes.</p> : null}
 
       <ul className="thread-message-list">
         {thread.messages.map((message) => <li key={message.id} className="thread-message">
-          <div className="thread-message-meta"><span className="chip">{message.author}</span><span className="text-[11px] text-foreground-muted">{relativeTime(message.createdAt)}</span></div>
+          <div className="thread-message-meta"><span className="thread-actor">{actorLabel(message.author)}</span><span className="text-[11px] text-foreground-muted">{relativeTime(message.createdAt)}</span></div>
           <p className="whitespace-pre-wrap break-words text-foreground">{message.body}</p>
         </li>)}
       </ul>
@@ -92,8 +94,8 @@ export function ThreadCard(props: ThreadCardProps) {
               : answer.included ? <span className="pill pill-go"><ArrowRight size={10} /> included</span>
               : <span className="pill pill-stay"><EyeOff size={10} /> private</span>}
           </div>
-          <p className="mt-1 font-medium text-foreground">{answer.question}</p>
-          <p className="mt-1 whitespace-pre-wrap text-foreground-muted">{answer.answer}</p>
+          <p className="thread-agent-question"><span>You asked</span> {answer.question}</p>
+          <div className="thread-agent-answer"><div className="thread-message-meta"><span className="thread-actor is-agent"><Sparkles size={11} /> Codex</span><span className="text-[11px] text-foreground-muted">{relativeTime(answer.createdAt)}</span></div><p className="whitespace-pre-wrap text-foreground-muted">{answer.answer}</p></div>
           {answer.capabilities.canInclude || answer.capabilities.canKeepPrivate ? <div className="mt-2 flex justify-end">
             {answer.included ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onKeepPrivate(answer.id)} disabled={processing}>Keep answer private</button>
               : <button type="button" className="btn btn-sm" onClick={() => onInclude(answer.id)} disabled={processing}><ArrowRight size={12} /> Include answer</button>}
@@ -108,9 +110,14 @@ export function ThreadCard(props: ThreadCardProps) {
         {sideQuestionsEnabled && thread.capabilities.canAsk ? <button type="button" className="btn btn-sm" onClick={() => onAskSide(thread)} disabled={processing}><MessageCircleQuestion size={13} /> {agentAction === "asking" ? "Asking…" : "Ask /btw"}</button> : null}
         {thread.capabilities.canIterate ? <button type="button" className="btn btn-sm" onClick={() => onIterate(thread)} disabled={processing}><Sparkles size={13} /> {agentAction === "iterating" ? "Iterating…" : "Iterate now"}</button> : null}
       </div> : null}
+      {thread.capabilities.canMarkAddressed ? <div className="thread-card-actions"><button type="button" className="btn btn-primary btn-sm" onClick={() => onMarkAddressed(thread.id)} disabled={processing}><CheckCircle2 size={13} /> Mark addressed…</button></div> : null}
       {thread.capabilities.canCreateFollowUp ? <div className="thread-card-actions"><button type="button" className="btn btn-sm" onClick={() => onCreateFollowUp(thread.id)} disabled={processing}><Reply size={13} /> Create follow-up</button></div> : null}
     </section>
   );
+}
+
+function actorLabel(author: string) {
+  return /(?:codex|agent|assistant)/i.test(author) ? "Codex" : "You";
 }
 
 function IntentToggle({ intent, onChange, disabled }: { intent: ThreadIntent; onChange: (intent: ThreadIntent) => void; disabled: boolean }) {

@@ -29,7 +29,7 @@ describe("sideQuestionContext", () => {
 
 function sessionFixture(thread: Thread): Session {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     id: "session-1",
     plan: "# Plan\nSelect a specific word here.",
     planPath: "/repo/plan.md",

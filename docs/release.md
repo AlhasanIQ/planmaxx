@@ -1,61 +1,37 @@
 # Release
 
-PlanMaxx releases are built from tags that match `v*`.
-
-## Build Model
-
-The release workflow:
-
-1. installs Go and Bun,
-2. builds the React UI into `internal/review/static/`,
-3. runs Go and web checks,
-4. cross-compiles self-contained binaries,
-5. archives each binary,
-6. publishes archives, the version-matched `SKILL.md`, and `checksums.txt` to
-   GitHub Releases.
-
-Generated UI assets are not committed. Release binaries embed them.
-
-## Source
-
-Each release is tied to a version tag. The corresponding GPLv3 source is the
-tagged repository source archive that GitHub publishes with the release. The
-binary archives include `README.md`, `LICENSE`, and `SKILL.md`; rebuild from
-source with:
-
-```bash
-cd web && bun install
-./scripts/build-web.sh
-go build ./cmd/planmaxx
-```
-
-## Artifacts
-
-Release asset names use:
-
-```text
-planmaxx_<version>_<os>_<arch>.tar.gz
-```
-
-Supported targets:
-
-- `linux/amd64`
-- `linux/arm64`
-- `darwin/amd64`
-- `darwin/arm64`
-- `windows/amd64`
-- `windows/arm64`
-
-## Manual Release
+Tags matching `v*` trigger GitHub Actions to build and publish self-contained
+archives for Linux, macOS, and Windows on amd64 and arm64. Releases also include
+`SKILL.md`, checksums, and GitHub's tagged source archive.
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-After the workflow finishes, download one artifact and run:
+After publication, verify one archive:
 
 ```bash
 planmaxx version
 planmaxx review --no-browser path/to/plan.md
 ```
+
+Release assets use `planmaxx_<version>_<os>_<arch>.tar.gz`. Generated UI files
+are embedded in binaries and are not committed.
+
+`planmaxx update` depends on the semantic-version tag, archive naming pattern,
+and `checksums.txt` asset. It selects the archive for the current OS and
+architecture and verifies its checksum before replacing the executable. Keep
+all three stable for every release.
+
+To rebuild from source:
+
+```bash
+cd web && bun install
+cd ..
+./scripts/build-web.sh
+go build ./cmd/planmaxx
+```
+
+If a release fails, fix the workflow and manually run **Release** with the same
+tag; it rebuilds that tag.

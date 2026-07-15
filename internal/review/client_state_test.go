@@ -15,7 +15,7 @@ func TestBuildClientStateHasVersionedNonNullContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{`"schemaVersion":3`, `"revisions":[`, `"threads":[]`, `"sideAnswers":[]`, `"reviewerDecisions":[]`, `"promotedSideAnswers":[]`, `"counts":{`, `"canIterate":true`, `"phase":"active"`} {
+	for _, expected := range []string{`"schemaVersion":4`, `"revisions":[`, `"threads":[]`, `"sideAnswers":[]`, `"reviewerDecisions":[]`, `"promotedSideAnswers":[]`, `"counts":{`, `"canIterate":true`, `"phase":"active"`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("client state missing %s: %s", expected, text)
 		}
@@ -77,7 +77,7 @@ func TestBuildClientStateOwnsCommentBucketsCapabilitiesAndCounts(t *testing.T) {
 	if byID[instruction.ID].Bucket != "active" || !byID[instruction.ID].Capabilities.CanIterate || byID[private.ID].Delivery != "private" {
 		t.Fatalf("active projections = %+v", state.Threads)
 	}
-	if byID[detached.ID].Bucket != "attention" || !byID[detached.ID].Capabilities.CanReanchor || byID[detached.ID].Capabilities.CanReply {
+	if byID[detached.ID].Bucket != "attention" || !byID[detached.ID].Capabilities.CanReanchor || !byID[detached.ID].Capabilities.CanMarkAddressed || byID[detached.ID].Capabilities.CanReply {
 		t.Fatalf("detached projection = %+v", byID[detached.ID])
 	}
 }
