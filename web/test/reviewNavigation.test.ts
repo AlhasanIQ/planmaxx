@@ -9,6 +9,8 @@ const stop = (value: Partial<ReviewStop> = {}): ReviewStop => ({
 describe("review navigation presentation", () => {
   test("labels replacement, add-only, and remove-only ranges", () => {
     expect(reviewStopLabel(stop({ beforeStart: 2, beforeEnd: 3, afterStart: 2, afterEnd: 4 }))).toBe("Change · lines 2–3 → lines 2–4");
+    expect(reviewStopLabel(stop({ kind: "comment", beforeStart: 5, beforeEnd: 8, afterStart: 20, afterEnd: 25 }))).toBe("Comment · lines 5–8");
+    expect(reviewStopLabel(stop({ kind: "feedback", beforeStart: 5, beforeEnd: 5, afterStart: 20, afterEnd: 22 }))).toBe("Accepted feedback · line 5 → lines 20–22");
     expect(reviewStopLabel(stop({ beforeStart: undefined, afterStart: 7, afterEnd: 7 }))).toBe("Change · line 7");
     expect(reviewStopLabel(stop({ beforeStart: 9, beforeEnd: 10, afterStart: undefined }))).toBe("Change · lines 9–10");
   });
@@ -18,7 +20,7 @@ describe("review navigation presentation", () => {
       stop({ id: "comment:one", kind: "comment", threadId: "one" }),
       stop({ id: "feedback:r:t", kind: "feedback", revisionId: "r", threadId: "t" }),
       stop(),
-    ])).toBe("2 feedback items · 1 other change");
+    ])).toBe("2 comments · 1 change");
   });
 
   test("selects exact comment, feedback, and change targets", () => {

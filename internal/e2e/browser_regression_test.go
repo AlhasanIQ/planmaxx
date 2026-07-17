@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AlhasanIQ/planmaxx/internal/planformat"
 	"github.com/AlhasanIQ/planmaxx/internal/review"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 )
@@ -67,6 +68,11 @@ func TestBrowserDiffRegression(t *testing.T) {
 		_ = s.AddressThread(addressed.ID, addressed.Anchor)
 		s.AddExternalRevision("one\ntwo\nchanged\nfour", "External source change")
 		runBrowserRegression(t, s, "states")
+	})
+
+	t.Run("html document outline opens source location", func(t *testing.T) {
+		s := session.NewWithFormat("browser-html-outline", "<main>\n<h1>Launch plan</h1>\n<section aria-label=\"Rollout controls\">\n<h2>Safety checks</h2>\n<p>Ship carefully.</p>\n</section>\n</main>", planformat.HTML)
+		runBrowserRegression(t, s, "html")
 	})
 }
 

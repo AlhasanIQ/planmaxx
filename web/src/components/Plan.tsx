@@ -7,12 +7,15 @@ import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
 import { comparisonGutterValues, comparisonLineIdentity } from "../lib/comparisonLines";
 import { highlightCodeBlocks, type HighlightToken } from "../lib/codeHighlight";
+import { documentOutline, type OutlineItem } from "../lib/documentOutline";
+import { reviewScrollBehavior } from "../lib/reviewNavigation";
 import { groupSideAnswersByThread, threadsByAnchorEnd, threadsByBackendPlacement, visibleThreads } from "../lib/threadPlacement";
 import { CommentThreadStack, useCommentRailMetrics, type CommentView } from "./CommentLayer";
 import { ProposalActions } from "./ProposalActions";
 import { RevisionFeedbackList, RevisionFeedbackSummary } from "./RevisionFeedback";
 import { RenderedLine } from "./RenderedLine";
 import { ReviewNavigator } from "./ReviewNavigator";
+import { DocumentOutline } from "./DocumentOutline";
 import { DraftBoundaryHandles, draftFromSelection, restoreNativeSelection, selectedTextForAnchorInArticle, usePlanHighlights } from "./SelectionLayer";
 
 export type { CommentView } from "./CommentLayer";
@@ -120,6 +123,10 @@ export const ReviewDocument = memo(function ReviewDocument({
   const lines = useMemo(() => renderLines(plan), [plan, renderLines]);
   const highlightedCode = useHighlightedCode(planFormat === "markdown" ? plan : "", theme);
 	const activeChange = proposal ? proposalChange : comparison;
+  const outlineItems = useMemo(
+    () => documentOutline(activeChange ? snapshotRenderText(activeChange.after) : plan, planFormat),
+    [activeChange, plan, planFormat],
+  );
   const [activeReviewStop, setActiveReviewStop] = useState<ReviewStop | null>(null);
 	useEffect(() => {
 	  if (!activeChange) setActiveReviewStop(null);
@@ -143,6 +150,7 @@ export const ReviewDocument = memo(function ReviewDocument({
         afterLineNumber: undefined,
         clusterId: undefined,
 		rowId: `line-${index + 1}`,
+        sourceLineNumber: index + 1,
       }));
     }
 	const diffLines = activeChange.rows;
@@ -161,6 +169,7 @@ export const ReviewDocument = memo(function ReviewDocument({
         afterLineNumber: comparisonIdentity?.afterLineNumber,
 		clusterId: diffLine.clusterId,
 		rowId: diffLine.id,
+        sourceLineNumber: diffLine.after,
       };
     });
 	}, [activeChange, comparison, comparisonAfterLines, comparisonBeforeLines, lines, renderLines]);
@@ -353,8 +362,19 @@ export const ReviewDocument = memo(function ReviewDocument({
     ? inlineCommentComposerPlacement(draft.anchor.endLine, lines.length)
     : null;
 
+  function navigateToOutline(item: OutlineItem) {
+    if (showHTMLPreview) setHTMLView("source");
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = document.querySelector<HTMLElement>(`[data-document-line="${item.line}"]`);
+      target?.scrollIntoView({
+        block: "start",
+        behavior: reviewScrollBehavior(Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)),
+      });
+    }));
+  }
+
   return (
-    <div className={`plan-with-comment-rail is-${showHTMLPreview ? "inline" : commentView}`}>
+    <div className={`plan-with-comment-rail is-${showHTMLPreview ? "inline" : commentView}${activeChange ? " has-review-navigation" : ""}`}>
     <article
       ref={articleRef}
       className="plan-markdown relative overflow-hidden rounded-[var(--radius-card)] border border-border bg-surface-elevated shadow-[var(--shadow-soft)]"
@@ -439,14 +459,6 @@ export const ReviewDocument = memo(function ReviewDocument({
 	      <span className="comparison-line-key">Line numbers: before → current</span>
 	      <button type="button" className="btn btn-ghost btn-sm" onClick={onClearComparison}>Hide changes</button>
 	    </div>
-	  ) : null}
-	  {activeChange ? (
-		<ReviewNavigator
-		  identity={`${activeChange.baseId}:${activeChange.targetId}`}
-		  stops={activeChange.reviewStops}
-		  onFocusThread={onFocusThread}
-		  onActiveChange={setActiveReviewStop}
-		/>
 	  ) : null}
 	  {attentionThreads.length > 0 ? <details className="comment-state-overview attention-overview" open={attentionExpanded} onToggle={(event) => setAttentionExpanded(event.currentTarget.open)}>
 		<summary className="attention-overview-summary">
@@ -542,6 +554,7 @@ export const ReviewDocument = memo(function ReviewDocument({
 				  data-comment-placement={commentPlacement}
 				  data-change-cluster={row.clusterId}
 				  data-change-row={row.rowId}
+                  data-document-line={row.sourceLineNumber}
                   className={`line-row${line.kind === "blank" ? " is-blank" : ""}${
                     line.kind === "table-header" ? " is-table-header" : ""
                   }${line.kind === "table-divider" ? " is-table-divider" : ""}${
@@ -697,6 +710,15 @@ export const ReviewDocument = memo(function ReviewDocument({
           );
         })}
       </aside>
+    ) : null}
+    <DocumentOutline items={outlineItems} onNavigate={navigateToOutline} />
+    {activeChange ? (
+      <ReviewNavigator
+        identity={`${activeChange.baseId}:${activeChange.targetId}`}
+        stops={activeChange.reviewStops}
+        onFocusThread={onFocusThread}
+        onActiveChange={setActiveReviewStop}
+      />
     ) : null}
     </div>
   );

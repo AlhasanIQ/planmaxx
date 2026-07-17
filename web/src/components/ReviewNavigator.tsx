@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight, ListChecks } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, GitPullRequestArrow, MessageSquareText } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReviewStop } from "../types";
 import { nextReviewIndex, reviewNavigationIdentity, reviewScrollBehavior, reviewStopLabel, reviewStopSelector, reviewStopSummary } from "../lib/reviewNavigation";
 
@@ -22,38 +22,55 @@ export function ReviewNavigator({
     onActiveChange(null);
   }, [signature, onActiveChange]);
 
-  function activate(next: number) {
+  const activate = useCallback((next: number) => {
     if (next < 0 || next >= stops.length) return;
     const stop = stops[next];
     setIndex(next);
     onActiveChange(stop);
     if (stop.kind === "comment" && stop.threadId) onFocusThread(stop.threadId);
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => scrollToStop(stop)));
-  }
+  }, [onActiveChange, onFocusThread, stops]);
 
-  function move(direction: -1 | 1) {
+  const move = useCallback((direction: -1 | 1) => {
 	const next = nextReviewIndex(index, direction, stops.length);
 	if (next !== index) activate(next);
-  }
+  }, [activate, index, stops.length]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
+      event.preventDefault();
+      move(event.key === "ArrowUp" ? -1 : 1);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [move]);
 
   const current = index >= 0 ? stops[index] : null;
   return (
     <nav className="review-navigator" aria-label="Review comments and changes">
       <div className="review-navigator-summary">
-        <ListChecks size={14} />
-        <span>{current ? reviewStopLabel(current) : reviewStopSummary(stops)}</span>
+        <span className={`review-navigator-kind is-${current?.kind ?? "idle"}`} aria-hidden="true">
+          {current?.kind === "comment" || current?.kind === "feedback" ? <MessageSquareText size={15} /> : <GitPullRequestArrow size={15} />}
+        </span>
+        <span className="review-navigator-copy">
+          <strong>{current ? reviewStopLabel(current) : "Review queue"}</strong>
+          <small>{reviewStopSummary(stops)}</small>
+        </span>
       </div>
       <span className="sr-only" aria-live="polite">
         {current ? `${reviewStopLabel(current)}. ${index + 1} of ${stops.length}` : reviewStopSummary(stops)}
       </span>
-      {stops.length > 0 ? <span className="review-navigator-progress">
-        {current ? `${index + 1} of ${stops.length}` : `${stops.length} to review`}
+      {stops.length > 0 ? <span className="review-navigator-progress" aria-hidden="true">
+        {`${Math.max(0, index + 1)} / ${stops.length}`}
       </span> : null}
-      <button type="button" className="btn btn-sm" onClick={() => move(-1)} aria-disabled={index <= 0}>
-        <ChevronLeft size={13} /> Previous
+      <button type="button" className="review-navigator-button" onClick={() => move(-1)} disabled={index <= 0} aria-label="Previous review item" title="Previous review item (Alt+↑)">
+        <ChevronLeft size={17} />
       </button>
-      <button type="button" className="btn btn-sm btn-primary" onClick={() => move(1)} aria-disabled={stops.length === 0 || index >= stops.length - 1}>
-        Next <ChevronRight size={13} />
+      <button type="button" className="review-navigator-button is-next" onClick={() => move(1)} disabled={stops.length === 0 || index >= stops.length - 1} aria-label="Next review item" title="Next review item (Alt+↓)">
+        <ChevronRight size={17} />
       </button>
     </nav>
   );
@@ -61,9 +78,13 @@ export function ReviewNavigator({
 
 function scrollToStop(stop: ReviewStop) {
   const selector = reviewStopSelector(stop);
-  const target = selector ? document.querySelector<HTMLElement>(selector) : null;
-  target?.scrollIntoView({
-    block: "center",
+  const targets = selector ? [...document.querySelectorAll<HTMLElement>(selector)] : [];
+  if (targets.length === 0) return;
+  const first = targets[0].getBoundingClientRect();
+  const last = targets[targets.length - 1].getBoundingClientRect();
+  const center = (first.top + last.bottom) / 2;
+  window.scrollTo({
+    top: Math.max(0, window.scrollY + center - window.innerHeight / 2),
     behavior: reviewScrollBehavior(Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)),
   });
 }

@@ -76,8 +76,9 @@ type FeedbackPlacement struct {
 }
 
 // ReviewStop is the backend-owned queue used to inspect a proposal or
-// comparison. Comments only cover a change cluster when their actual rendered
-// placement is inside that cluster; a remote comment never hides distant edits.
+// comparison. Feedback and changed regions deliberately remain separate stops:
+// an instruction's anchor explains why a revision happened, while the resulting
+// edit can span a larger range or occur somewhere else entirely.
 type ReviewStop struct {
 	ID          string `json:"id"`
 	Kind        string `json:"kind"`
@@ -145,6 +146,10 @@ func Build(input BuildInput) ChangeView {
 }
 
 func buildReviewStops(input BuildInput, view ChangeView) []ReviewStop {
+	threads := make(map[string]session.Thread, len(input.Threads))
+	for _, thread := range input.Threads {
+		threads[thread.ID] = thread
+	}
 	placements := make(map[string]ThreadPlacement, len(view.ThreadPlacements))
 	for _, placement := range view.ThreadPlacements {
 		placements[placement.ThreadID] = placement
@@ -153,16 +158,16 @@ func buildReviewStops(input BuildInput, view ChangeView) []ReviewStop {
 	for _, placement := range view.FeedbackPlacements {
 		feedbackPlacements[placement.RevisionID+":"+placement.ThreadID] = placement
 	}
-	covered := map[string]bool{}
 	stops := make([]ReviewStop, 0, len(input.ReviewThreadIDs)+len(view.FeedbackPlacements)+len(view.Clusters))
 	sequence := 0
 	type orderedStop struct {
 		stop     ReviewStop
 		sequence int
+		orderRow int
 	}
 	ordered := []orderedStop{}
 	appendStop := func(stop ReviewStop) {
-		ordered = append(ordered, orderedStop{stop: stop, sequence: sequence})
+		ordered = append(ordered, orderedStop{stop: stop, sequence: sequence, orderRow: reviewOrderRow(stop, view)})
 		sequence++
 	}
 	for _, threadID := range input.ReviewThreadIDs {
@@ -171,8 +176,9 @@ func buildReviewStops(input BuildInput, view ChangeView) []ReviewStop {
 			continue
 		}
 		stop := stopAtRow(ReviewStop{ID: "comment:" + threadID, Kind: ReviewStopComment, ThreadID: threadID}, placement.RowIndex, view)
-		if stop.ClusterID != "" {
-			covered[stop.ClusterID] = true
+		if thread, ok := threads[threadID]; ok {
+			stop.BeforeStart, stop.BeforeEnd = thread.Anchor.StartLine, thread.Anchor.EndLine
+			stop.AfterStart, stop.AfterEnd = 0, 0
 		}
 		appendStop(stop)
 	}
@@ -182,28 +188,36 @@ func buildReviewStops(input BuildInput, view ChangeView) []ReviewStop {
 			continue
 		}
 		stop := stopAtRow(ReviewStop{ID: "feedback:" + feedback.RevisionID + ":" + feedback.ThreadID, Kind: ReviewStopFeedback, ThreadID: feedback.ThreadID, RevisionID: feedback.RevisionID}, placement.RowIndex, view)
-		if stop.ClusterID != "" {
-			covered[stop.ClusterID] = true
-		}
+		stop.BeforeStart, stop.BeforeEnd = feedback.Anchor.StartLine, feedback.Anchor.EndLine
+		stop.AfterStart, stop.AfterEnd = feedback.ResultAnchor.StartLine, feedback.ResultAnchor.EndLine
 		appendStop(stop)
 	}
 	for _, cluster := range view.Clusters {
-		if covered[cluster.ID] {
-			continue
-		}
 		row := view.Rows[cluster.FirstRow]
 		appendStop(ReviewStop{ID: "change:" + cluster.ID, Kind: ReviewStopChange, RowID: row.ID, RowIndex: cluster.FirstRow, ClusterID: cluster.ID, BeforeStart: cluster.BeforeStart, BeforeEnd: cluster.BeforeEnd, AfterStart: cluster.AfterStart, AfterEnd: cluster.AfterEnd})
 	}
 	sort.SliceStable(ordered, func(left, right int) bool {
-		if ordered[left].stop.RowIndex == ordered[right].stop.RowIndex {
+		if ordered[left].orderRow == ordered[right].orderRow {
 			return ordered[left].sequence < ordered[right].sequence
 		}
-		return ordered[left].stop.RowIndex < ordered[right].stop.RowIndex
+		return ordered[left].orderRow < ordered[right].orderRow
 	})
 	for _, item := range ordered {
 		stops = append(stops, item.stop)
 	}
 	return stops
+}
+
+func reviewOrderRow(stop ReviewStop, view ChangeView) int {
+	if stop.ClusterID == "" || stop.Kind == ReviewStopChange {
+		return stop.RowIndex
+	}
+	for _, cluster := range view.Clusters {
+		if cluster.ID == stop.ClusterID {
+			return cluster.FirstRow
+		}
+	}
+	return stop.RowIndex
 }
 
 func stopAtRow(stop ReviewStop, rowIndex int, view ChangeView) ReviewStop {

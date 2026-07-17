@@ -53,7 +53,7 @@ func TestBuildClientStateProjectsPendingProposalAndCommentPlacement(t *testing.T
 	if state.Capabilities.CanFinalize || state.Capabilities.CanEditFeedback || !state.Capabilities.CanApplyProposal {
 		t.Fatalf("unexpected proposal capabilities %+v", state.Capabilities)
 	}
-	if state.Capabilities.CanIterate || len(state.ActiveChange.ReviewStops) != 2 {
+	if state.Capabilities.CanIterate || len(state.ActiveChange.ReviewStops) != 3 {
 		t.Fatalf("pending proposal actions/stops = caps=%+v stops=%+v", state.Capabilities, state.ActiveChange.ReviewStops)
 	}
 }

@@ -93,7 +93,10 @@ handoff preview makes the final agent context inspectable before approval.
 - Detached feedback can be reanchored or recorded as addressed on the revision
   that applied it.
 - Addressed feedback remains read-only revision history.
-- Previous/Next moves through feedback and changed regions.
+- The floating review queue moves through every feedback item and every changed
+  region independently, with `Alt+↑` / `Alt+↓` keyboard navigation.
+- The document outline follows Markdown headings and HTML headings or labelled
+  sections, and opens HTML Source when a preview section is selected.
 - `/btw` answers remain private unless explicitly included.
 - Applying a proposal creates a revision; creating or refining one does not.
 - The complete review workspace is one private `.planmaxx` Git bundle in the

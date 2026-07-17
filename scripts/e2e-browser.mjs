@@ -2,7 +2,7 @@ import { chromium } from "../web/node_modules/playwright/index.mjs";
 
 const url = process.argv[2];
 const mode = process.argv[3] ?? "proposal";
-if (!url) throw new Error("usage: e2e-browser.mjs <review-url> [proposal|revision|states]");
+if (!url) throw new Error("usage: e2e-browser.mjs <review-url> [proposal|revision|states|html]");
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ colorScheme: "dark" });
@@ -30,9 +30,11 @@ try {
     await revisionDialog.getByRole("button", { name: "Close", exact: true }).click();
     await page.getByText("Showing changes: rev-1 → rev-2", { exact: false }).waitFor();
 	const revisionNavigator = page.getByRole("navigation", { name: "Review comments and changes" });
-	await revisionNavigator.getByRole("button", { name: "Next" }).click();
-	await revisionNavigator.getByText("1 of 1", { exact: true }).waitFor();
-	if (!(await revisionNavigator.getByRole("button", { name: "Next" }).isDisabled())) throw new Error("revision navigation does not stop at the end");
+	await revisionNavigator.getByRole("button", { name: "Next review item" }).click();
+	await revisionNavigator.getByText("1 / 2", { exact: true }).waitFor();
+	await revisionNavigator.getByRole("button", { name: "Next review item" }).click();
+	await revisionNavigator.getByText("2 / 2", { exact: true }).waitFor();
+	if (!(await revisionNavigator.getByRole("button", { name: "Next review item" }).isDisabled())) throw new Error("revision navigation does not stop at the end");
     const feedback = page.getByText("revision placement comment", { exact: true });
     if (await feedback.count() !== 1) {
       throw new Error("accepted revision feedback was missing or duplicated");
@@ -71,12 +73,14 @@ try {
     await navigator.waitFor();
     const attentionSummary = page.getByText("1 unanchored comment", { exact: false });
     await attentionSummary.waitFor();
-    const navigatorBeforeAttention = await page.evaluate(() => {
+    const navigatorFloatsAboveAttention = await page.evaluate(() => {
       const nav = document.querySelector(".review-navigator");
       const attention = document.querySelector(".attention-overview");
-      return Boolean(nav && attention && (nav.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING));
+      if (!nav || !attention) return false;
+      const style = getComputedStyle(nav);
+      return style.position === "fixed" && Number(style.zIndex) > (Number.parseInt(getComputedStyle(attention).zIndex, 10) || 0);
     });
-    if (!navigatorBeforeAttention) throw new Error("review navigator is hidden behind unanchored feedback");
+    if (!navigatorFloatsAboveAttention) throw new Error("review navigator is hidden behind unanchored feedback");
     const detachedFeedback = page.getByText("detached feedback", { exact: true });
     if (await detachedFeedback.isVisible()) throw new Error("unanchored feedback did not start collapsed");
     await attentionSummary.click();
@@ -96,6 +100,16 @@ try {
     if (await page.getByRole("button", { name: "Use in iteration", exact: true }).count() !== 2) throw new Error("active intent controls are not scoped to active feedback");
     if (await page.getByRole("button", { name: "Create follow-up" }).count() !== 2) throw new Error("addressed feedback is missing follow-up action");
     if (consoleErrors.length) throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
+  } else if (mode === "html") {
+    await page.getByTitle("Browse document sections").click();
+    const outline = page.getByRole("navigation", { name: "Document sections" });
+    await outline.getByTitle("Safety checks · line 4").click();
+    await page.locator('[data-document-line="4"]').waitFor();
+    if (await page.getByRole("button", { name: "Source" }).getAttribute("aria-pressed") !== "true") {
+      throw new Error("HTML outline selection did not open source mode");
+    }
+    if (await page.locator(".html-plan-preview").count() !== 0) throw new Error("HTML preview remained visible after source navigation");
+    if (consoleErrors.length) throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
   } else if (mode !== "proposal") {
     throw new Error(`unknown browser E2E mode: ${mode}`);
   } else {
@@ -105,20 +119,28 @@ try {
     throw new Error("submission actions are enabled while a proposal is pending");
   }
 
+  const outlineTrigger = page.getByTitle("Browse document sections");
+  await outlineTrigger.click();
+  const outline = page.getByRole("navigation", { name: "Document sections" });
+  await outline.getByTitle("Regression fixture · line 1").click();
+  if (await page.locator('[data-document-line="1"]').count() !== 1) throw new Error("document outline did not map its heading to the current diff row");
+
   const navigator = page.getByRole("navigation", { name: "Review comments and changes" });
   await navigator.waitFor();
-  if (await navigator.getByText("5 to review", { exact: true }).count() !== 1) throw new Error("proposal review queue count is incorrect");
+  if (await navigator.getByText("0 / 6", { exact: true }).count() !== 1) throw new Error("proposal review queue count is incorrect");
   await page.getByPlaceholder("Filter comments").fill("no matching comment");
-  await navigator.getByRole("button", { name: "Next" }).click();
-  await navigator.getByText("1 of 5", { exact: true }).waitFor();
+  await navigator.getByRole("button", { name: "Next review item" }).click();
+  await navigator.getByText("1 / 6", { exact: true }).waitFor();
   if (await page.getByText("replace both lines", { exact: true }).count() !== 1) throw new Error("navigation did not reveal a filtered comment");
-  for (let step = 2; step <= 5; step++) {
-    await navigator.getByRole("button", { name: "Next" }).click();
-    await navigator.getByText(`${step} of 5`, { exact: true }).waitFor();
+  for (let step = 2; step <= 6; step++) {
+    await navigator.getByRole("button", { name: "Next review item" }).click();
+    await navigator.getByText(`${step} / 6`, { exact: true }).waitFor();
   }
-  if (!(await navigator.getByRole("button", { name: "Next" }).isDisabled())) throw new Error("review navigation wraps past the final stop");
-  await navigator.getByRole("button", { name: "Previous" }).click();
-  await navigator.getByText("4 of 5", { exact: true }).waitFor();
+  if (!(await navigator.getByRole("button", { name: "Next review item" }).isDisabled())) throw new Error("review navigation wraps past the final stop");
+  await navigator.getByRole("button", { name: "Previous review item" }).click();
+  await navigator.getByText("5 / 6", { exact: true }).waitFor();
+  await page.keyboard.press("Alt+ArrowDown");
+  await navigator.getByText("6 / 6", { exact: true }).waitFor();
   await page.getByPlaceholder("Filter comments").fill("");
 
   const addedTableRows = page.locator(".line-row.is-proposal-add.is-table-row");

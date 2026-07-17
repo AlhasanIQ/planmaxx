@@ -80,19 +80,25 @@ func TestReviewStopsKeepRemoteCommentAndDistantChanges(t *testing.T) {
 	}
 }
 
-func TestReviewStopsDoNotDuplicateClusterCoveredByComments(t *testing.T) {
+func TestReviewStopsKeepCommentsAndTheirChangedClusterSeparate(t *testing.T) {
 	threads := []session.Thread{{ID: "one", Anchor: session.Anchor{StartLine: 2, EndLine: 2}}, {ID: "two", Anchor: session.Anchor{StartLine: 2, EndLine: 2}}}
 	view := Build(BuildInput{Mode: ModeProposal, Before: "one\nold\nthree", After: "one\nnew\nthree", Threads: threads, ReviewThreadIDs: []string{"one", "two"}})
-	if len(view.ReviewStops) != 2 || view.ReviewStops[0].Kind != ReviewStopComment || view.ReviewStops[1].Kind != ReviewStopComment {
-		t.Fatalf("covered cluster produced redundant change stop: %+v", view.ReviewStops)
+	if len(view.ReviewStops) != 3 || view.ReviewStops[0].Kind != ReviewStopComment || view.ReviewStops[1].Kind != ReviewStopComment || view.ReviewStops[2].Kind != ReviewStopChange {
+		t.Fatalf("comment and resulting change were not independently reviewable: %+v", view.ReviewStops)
+	}
+	if view.ReviewStops[0].BeforeStart != 2 || view.ReviewStops[0].BeforeEnd != 2 {
+		t.Fatalf("comment stop lost its source anchor: %+v", view.ReviewStops[0])
 	}
 }
 
 func TestReviewStopsUseFeedbackOnlyForDirectComparisons(t *testing.T) {
 	feedback := []session.RevisionFeedback{{RevisionID: "rev-2", ThreadID: "thread", Anchor: session.Anchor{StartLine: 2, EndLine: 2}, ResultAnchor: session.Anchor{StartLine: 2, EndLine: 2}}}
 	direct := Build(BuildInput{Mode: ModeRevision, IsDirect: true, Before: "a\nold", After: "a\nnew", Feedback: feedback})
-	if len(direct.ReviewStops) != 1 || direct.ReviewStops[0].Kind != ReviewStopFeedback {
+	if len(direct.ReviewStops) != 2 || direct.ReviewStops[0].Kind != ReviewStopFeedback || direct.ReviewStops[1].Kind != ReviewStopChange {
 		t.Fatalf("direct stops = %+v", direct.ReviewStops)
+	}
+	if direct.ReviewStops[0].BeforeStart != 2 || direct.ReviewStops[0].AfterStart != 2 {
+		t.Fatalf("feedback stop lost its before/result anchors: %+v", direct.ReviewStops[0])
 	}
 	multi := Build(BuildInput{Mode: ModeRevision, IsDirect: false, Before: "a\nold", After: "a\nnew", Feedback: feedback})
 	if len(multi.ReviewStops) != 1 || multi.ReviewStops[0].Kind != ReviewStopChange {

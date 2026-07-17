@@ -3,12 +3,13 @@ import type { ReviewStop } from "../types";
 export function reviewStopRange(stop: ReviewStop): string {
   const current = lineRange(stop.afterStart, stop.afterEnd);
   const before = lineRange(stop.beforeStart, stop.beforeEnd);
+  if (stop.kind === "comment") return before || current || "anchored feedback";
   if (current && before && current !== before) return `${before} → ${current}`;
   return current || before || "changed region";
 }
 
 export function reviewStopLabel(stop: ReviewStop): string {
-  const kind = stop.kind === "comment" ? "Feedback" : stop.kind === "feedback" ? "Accepted feedback" : "Change";
+  const kind = stop.kind === "comment" ? "Comment" : stop.kind === "feedback" ? "Accepted feedback" : "Change";
   return `${kind} · ${reviewStopRange(stop)}`;
 }
 
@@ -16,8 +17,8 @@ export function reviewStopSummary(stops: ReviewStop[]): string {
   const comments = stops.filter((stop) => stop.kind === "comment" || stop.kind === "feedback").length;
   const changes = stops.filter((stop) => stop.kind === "change").length;
   const parts = [];
-  if (comments) parts.push(`${comments} feedback item${comments === 1 ? "" : "s"}`);
-  if (changes) parts.push(`${changes} other change${changes === 1 ? "" : "s"}`);
+  if (comments) parts.push(`${comments} comment${comments === 1 ? "" : "s"}`);
+  if (changes) parts.push(`${changes} change${changes === 1 ? "" : "s"}`);
   return parts.join(" · ") || "Nothing to review";
 }
 
