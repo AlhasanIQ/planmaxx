@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.0 - 2026-07-18
+
+- Added a document outline for Markdown and HTML plans, with heading-aware
+  navigation that stays aligned to the current revision and review comparison.
+- Improved review navigation so feedback and changed regions remain easy to
+  traverse alongside the outline.
+
 ## v0.3.0 - 2026-07-15
 
 - Replaced adjacent JSON autosaves and the shared revision repository with one
