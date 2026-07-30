@@ -2,7 +2,7 @@ import { chromium } from "../web/node_modules/playwright/index.mjs";
 
 const url = process.argv[2];
 const mode = process.argv[3] ?? "proposal";
-if (!url) throw new Error("usage: e2e-browser.mjs <review-url> [proposal|revision|states|html]");
+if (!url) throw new Error("usage: e2e-browser.mjs <review-url> [proposal|revision|states|html|markdown-workflows]");
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ colorScheme: "dark" });
@@ -11,6 +11,15 @@ page.on("console", (message) => {
   if (message.type() === "error") consoleErrors.push(message.text());
 });
 page.on("pageerror", (error) => consoleErrors.push(error.message));
+
+async function previewHoverState(page, locator) {
+  await page.evaluate(() => {
+    window.__planmaxxHoverEvents = [];
+  });
+  await locator.hover();
+  await page.waitForFunction(() => window.__planmaxxHoverEvents.length > 0);
+  return page.evaluate(() => window.__planmaxxHoverEvents.at(-1));
+}
 
 try {
   await page.goto(url, { waitUntil: "networkidle" });
@@ -101,14 +110,320 @@ try {
     if (await page.getByRole("button", { name: "Create follow-up" }).count() !== 2) throw new Error("addressed feedback is missing follow-up action");
     if (consoleErrors.length) throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
   } else if (mode === "html") {
+    const preview = page.frameLocator(".html-plan-preview");
+    await preview.getByRole("heading", { name: "Launch & rollback plan" }).waitFor();
+    await preview.getByRole("table", { name: "Rollout gates" }).waitFor();
+    await preview.getByRole("img", { name: "Rollout flow" }).waitFor();
+    await preview.getByText("planmaxx review launch.html", { exact: true }).waitFor();
+    await page.evaluate(() => {
+      window.__planmaxxHoverEvents = [];
+      window.addEventListener("message", (event) => {
+        if (event.data?.type === "planmaxx:preview-hover") window.__planmaxxHoverEvents.push(event.data);
+      });
+    });
+    await page.getByText("Existing list comment", { exact: true }).waitFor();
+    await page.getByText("Existing table comment", { exact: true }).waitFor();
+    await page.getByText("Existing heading element comment", { exact: true }).waitFor();
+
+    const existingHeadingHover = await previewHoverState(page, preview.getByRole("heading", { name: "Safety checks" }));
+    if (existingHeadingHover.tagName !== "h2" || existingHeadingHover.state !== "existing" || existingHeadingHover.rectCount < 1) {
+      throw new Error(`existing element hover target is incorrect: ${JSON.stringify(existingHeadingHover)}`);
+    }
+
+    const tableHover = await previewHoverState(page, preview.getByText("Required", { exact: true }));
+    if (tableHover.tagName !== "td" || tableHover.state !== "new" || tableHover.rectCount < 1) {
+      throw new Error(`table-cell hover target is incorrect: ${JSON.stringify(tableHover)}`);
+    }
+    const svgPathHover = await previewHoverState(page, preview.locator("path"));
+    if (svgPathHover.tagName !== "path" || svgPathHover.rectCount < 1) {
+      throw new Error(`SVG path hover target is incorrect: ${JSON.stringify(svgPathHover)}`);
+    }
+    const summary = preview.getByText("Fallback", { exact: true });
+    const summaryHover = await previewHoverState(page, summary);
+    if (summaryHover.tagName !== "summary" || summaryHover.rectCount < 1) {
+      throw new Error(`details summary hover target is incorrect: ${JSON.stringify(summaryHover)}`);
+    }
+    await summary.click();
+    if (await preview.locator("details").getAttribute("open") === null) {
+      throw new Error("HTML element targeting prevented native details toggling");
+    }
+    if (await page.getByRole("complementary", { name: "HTML preview comment" }).count() !== 0) {
+      throw new Error("native details toggling opened an element-comment composer");
+    }
+
+    await page.evaluate(() => {
+      window.__planmaxxPreviewPositions = [];
+      window.addEventListener("message", (event) => {
+        if (event.data?.type === "planmaxx:preview-position") window.__planmaxxPreviewPositions.push(event.data);
+      });
+    });
+    await preview.getByText("Verify the final checkpoint.", { exact: true }).evaluate((element) => element.scrollIntoView());
+    await page.waitForTimeout(100);
+    const multilineHover = await previewHoverState(
+      page,
+      preview.getByText("the deliberately long inline planning constraint that wraps across multiple rendered lines before approval", { exact: true }),
+    );
+    if (multilineHover.tagName !== "span" || multilineHover.rectCount < 2) {
+      throw new Error(`multiline inline hover did not use segmented borders: ${JSON.stringify(multilineHover)}`);
+    }
+    await preview.getByText("Verify the final checkpoint.", { exact: true }).evaluate((element) => element.scrollIntoView());
+    await page.waitForTimeout(100);
+    const previewPosition = await page.evaluate(() => window.__planmaxxPreviewPositions.at(-1));
+    if (!previewPosition?.line || previewPosition.line <= 1) throw new Error(`Preview did not publish its scrolled source position: ${JSON.stringify(previewPosition)}`);
+    await page.getByRole("button", { name: "Source" }).click();
+    const appendixSourceRow = page.locator(`[data-document-line="${previewPosition.line}"]`);
+    await appendixSourceRow.waitFor();
+    await page.waitForTimeout(100);
+    const restoredSourcePosition = await appendixSourceRow.evaluate((row) => ({
+      top: row.getBoundingClientRect().top,
+      bottom: row.getBoundingClientRect().bottom,
+      viewport: window.innerHeight,
+      scrollY: window.scrollY,
+    }));
+    if (
+      restoredSourcePosition.scrollY <= 0 ||
+      restoredSourcePosition.bottom <= 60 ||
+      restoredSourcePosition.top >= restoredSourcePosition.viewport
+    ) {
+      throw new Error(`Preview scroll position was not restored in Source: ${JSON.stringify(restoredSourcePosition)} preview=${JSON.stringify(previewPosition)}`);
+    }
+    await page.waitForFunction(() => document.querySelectorAll('[data-document-line="2"] .line-content span[style*="color"]').length > 1);
+    if (await page.locator('[data-document-line="2"] .line-content').getAttribute("data-source-indent") !== "1") {
+      throw new Error("HTML Source did not apply structural indentation");
+    }
+    if (await page.locator('[data-document-line="5"] .line-content').getAttribute("data-source-indent") !== "2") {
+      throw new Error("nested HTML Source indentation is incorrect");
+    }
+
+    await page.locator('[data-document-line="28"]').evaluate((row) => {
+      window.scrollTo({ top: window.scrollY + row.getBoundingClientRect().top - 72, behavior: "auto" });
+    });
+    await page.waitForTimeout(100);
+    const sourceScrollState = await page.locator('[data-document-line="28"]').evaluate((row) => ({
+      top: row.getBoundingClientRect().top,
+      scrollY: window.scrollY,
+      maxScroll: document.documentElement.scrollHeight - window.innerHeight,
+      viewport: window.innerHeight,
+      articleScrollTop: row.closest("article")?.scrollTop,
+    }));
+    if (sourceScrollState.scrollY <= 0 || sourceScrollState.top >= sourceScrollState.viewport) {
+      throw new Error(`Source test could not establish a scrolled position: ${JSON.stringify(sourceScrollState)}`);
+    }
+    await page.getByRole("button", { name: "Preview" }).click();
+    const restoredPreviewTarget = preview.getByText("Verify alert routing.", { exact: true });
+    await restoredPreviewTarget.waitFor();
+    await page.waitForTimeout(100);
+    const restoredPreviewPosition = await restoredPreviewTarget.evaluate((target) => ({
+      top: target.getBoundingClientRect().top,
+      bottom: target.getBoundingClientRect().bottom,
+      height: window.innerHeight,
+      scrollY: window.scrollY,
+    }));
+    if (
+      restoredPreviewPosition.scrollY <= 0 ||
+      restoredPreviewPosition.bottom <= 0 ||
+      restoredPreviewPosition.top >= restoredPreviewPosition.height
+    ) {
+      const positions = await page.evaluate(() => window.__planmaxxPreviewPositions);
+      throw new Error(`Source scroll position was not restored in Preview: ${JSON.stringify(restoredPreviewPosition)} source=${JSON.stringify(sourceScrollState)} positions=${JSON.stringify(positions)}`);
+    }
+
+    await preview.getByRole("heading", { name: "Safety checks" }).click();
+    await page.locator(".thread.is-focus").filter({ hasText: "Existing heading element comment" }).waitFor();
+    if (await page.getByRole("complementary", { name: "HTML preview comment" }).count() !== 0) {
+      throw new Error("clicking an already-commented HTML element opened a duplicate composer");
+    }
+
+    const previewListItem = preview.getByText("Ship & iterate carefully.", { exact: true });
+    const listHover = await previewHoverState(page, previewListItem);
+    if (listHover.tagName !== "li" || listHover.state !== "new" || listHover.rectCount < 1) {
+      throw new Error(`list-item hover target is incorrect: ${JSON.stringify(listHover)}`);
+    }
+    await previewListItem.click();
+    const elementComposer = page.getByRole("complementary", { name: "HTML preview comment" });
+    await elementComposer.waitFor();
+    if (!((await elementComposer.innerText()).includes("Line 8"))) {
+      throw new Error("a nested range comment hijacked the full list-element target");
+    }
+    await elementComposer.getByRole("button", { name: "Cancel" }).click();
+    await previewListItem.evaluate((item) => {
+      const text = [...item.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
+      if (!text) throw new Error("HTML preview paragraph has no text node");
+      const range = document.createRange();
+      range.setStart(text, 7);
+      range.setEnd(text, 14);
+      const selection = document.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      item.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    });
+    const previewComposer = page.getByRole("complementary", { name: "HTML preview comment" });
+    await previewComposer.waitFor({ timeout: 5_000 }).catch(async (error) => {
+      const frameState = await preview.locator("body").evaluate(() => {
+        const comments = [];
+        const walker = document.createTreeWalker(document, NodeFilter.SHOW_COMMENT);
+        let comment;
+        while ((comment = walker.nextNode())) comments.push(comment.data);
+        return {
+          bridgeConfigured: Boolean(window.__PLANMAXX_PREVIEW__),
+          comments,
+          selection: document.getSelection()?.toString() ?? "",
+        };
+      });
+      throw new Error(`HTML preview selection did not open the composer: ${error}\nframe=${JSON.stringify(frameState)}\nconsole=${consoleErrors.join("\n")}`);
+    });
+    const selectionHoverState = await page.evaluate(() => window.__planmaxxHoverEvents.at(-1));
+    if (selectionHoverState?.state !== "none") {
+      throw new Error(`text range selection did not suppress the element hover target: ${JSON.stringify(selectionHoverState)}`);
+    }
+    await previewComposer.getByPlaceholder("Leave a comment for this selection...").fill("Can this preserve rollback?");
+    await previewComposer.getByRole("button", { name: "/btw", exact: true }).click();
+    await page.getByText("Keep the rollback owner explicit and verify the fallback path before rollout.", { exact: true }).waitFor();
+    const includeAnswer = page.getByRole("button", { name: "Include answer", exact: true });
+    await includeAnswer.click();
+    await page.getByText("/btw answer will be used for iteration or approval", { exact: true }).waitFor();
+    await preview.locator("body").evaluate(() => document.getSelection()?.removeAllRanges());
+
+    await preview.getByText("Error budget", { exact: true }).first().click();
+    await page.getByRole("complementary", { name: "HTML preview comment" }).waitFor();
+    await page.getByRole("complementary", { name: "HTML preview comment" }).getByRole("button", { name: "Cancel" }).click();
+
+    await preview.getByText("Deploy", { exact: true }).click();
+    await page.getByRole("complementary", { name: "HTML preview comment" }).waitFor();
+    await page.getByRole("complementary", { name: "HTML preview comment" }).getByRole("button", { name: "Cancel" }).click();
+
+    await page.getByRole("button", { name: "Alongside" }).click();
+    await page.locator(".html-preview-comment-rail").getByText("Existing list comment", { exact: true }).waitFor();
+    const alongsideHover = await previewHoverState(page, preview.getByText("Required", { exact: true }));
+    if (alongsideHover.tagName !== "td" || alongsideHover.rectCount < 1) {
+      throw new Error(`HTML hover targeting failed with alongside comments: ${JSON.stringify(alongsideHover)}`);
+    }
+    const htmlRailPosition = await page.evaluate(() => {
+      const frame = document.querySelector(".html-plan-preview");
+      const rail = document.querySelector(".html-preview-comment-rail");
+      if (!frame || !rail) return null;
+      const frameRect = frame.getBoundingClientRect();
+      const railRect = rail.getBoundingClientRect();
+      return { separate: railRect.left >= frameRect.right, aligned: railRect.top <= frameRect.top && frameRect.top - railRect.top < 120 };
+    });
+    if (!htmlRailPosition?.separate || !htmlRailPosition.aligned) throw new Error("HTML alongside comments are not positioned beside the rendered plan");
+    await page.getByRole("button", { name: "In place" }).click();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileHover = await previewHoverState(page, preview.getByText("Ship & iterate carefully.", { exact: true }));
+    if (mobileHover.tagName !== "li" || mobileHover.rectCount < 1) {
+      throw new Error(`HTML hover targeting failed at the mobile breakpoint: ${JSON.stringify(mobileHover)}`);
+    }
+    await page.setViewportSize({ width: 1280, height: 720 });
+
     await page.getByTitle("Browse document sections").click();
     const outline = page.getByRole("navigation", { name: "Document sections" });
-    await outline.getByTitle("Safety checks · line 4").click();
-    await page.locator('[data-document-line="4"]').waitFor();
-    if (await page.getByRole("button", { name: "Source" }).getAttribute("aria-pressed") !== "true") {
-      throw new Error("HTML outline selection did not open source mode");
+    for (const section of [
+      "Launch & rollback plan · line 2",
+      "Rollout controls · line 4",
+      "Safety checks · line 5",
+    ]) {
+      await outline.getByTitle(section).click();
+      if (await page.getByRole("button", { name: "Preview" }).getAttribute("aria-pressed") !== "true") {
+        throw new Error(`HTML outline selection left preview mode: ${section}`);
+      }
+      if (await page.locator(".html-plan-preview").count() !== 1 || await page.locator(".line-row").count() !== 0) {
+        throw new Error(`HTML outline selection rendered source rows instead of Preview: ${section}`);
+      }
     }
-    if (await page.locator(".html-plan-preview").count() !== 0) throw new Error("HTML preview remained visible after source navigation");
+
+    await previewListItem.evaluate((item) => {
+      const text = [...item.childNodes].find((node) => node.nodeType === Node.TEXT_NODE);
+      const range = document.createRange();
+      range.setStart(text, 7);
+      range.setEnd(text, 14);
+      const selection = document.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      item.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    });
+    await page.getByRole("complementary", { name: "HTML preview comment" }).getByPlaceholder("Leave a comment for this selection...").fill("Make this safer");
+    await page.getByRole("complementary", { name: "HTML preview comment" }).getByRole("button", { name: "Iterate section" }).click();
+    await page.getByText("Pending proposal", { exact: true }).waitFor();
+    if (await page.getByRole("button", { name: "Source" }).getAttribute("aria-pressed") !== "true") throw new Error("HTML proposal did not switch to source comparison");
+    await page.getByPlaceholder("Ask for a narrower, clearer, or more specific version...").fill("Mention rollback");
+    await page.getByRole("button", { name: "Iterate again" }).click();
+    await page.getByText("Added rollback emphasis.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Apply as new revision" }).click();
+    await page.getByText("Showing changes: rev-1 → rev-2", { exact: false }).waitFor();
+    if (consoleErrors.length) throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
+  } else if (mode === "markdown-workflows") {
+    await page.getByText("Existing nested-list comment", { exact: true }).waitFor();
+    await page.getByText("Existing table-row comment", { exact: true }).waitFor();
+    if (await page.locator(".line-row.is-table-row").count() < 2) throw new Error("Markdown table did not render as table rows");
+    if (await page.getByText("flowchart LR", { exact: false }).count() !== 1) throw new Error("Markdown diagram code block disappeared");
+
+    const rolloutLine = page.locator('[data-document-line="8"] .line-content');
+    await rolloutLine.evaluate((line) => {
+      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        const start = node.data.indexOf("Ship carefully");
+        if (start < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + "Ship carefully".length);
+        const selection = document.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        line.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        return;
+      }
+      throw new Error("could not select Markdown rollout text");
+    });
+    const composer = page.getByPlaceholder("Leave a comment for this selection...");
+    await composer.fill("What is the safest rollout?");
+    await page.getByRole("button", { name: "/btw", exact: true }).click();
+    await page.getByText("Keep the rollback owner explicit and verify the fallback path before rollout.", { exact: true }).waitFor({ timeout: 5_000 }).catch(async (error) => {
+      throw new Error(`Markdown /btw answer did not render: ${error}\npage=${(await page.locator("body").innerText()).slice(-3000)}`);
+    });
+
+    await page.getByRole("button", { name: "Ask /btw" }).first().click();
+    const askDialog = page.getByRole("dialog", { name: "Ask the agent a side question" });
+    await askDialog.getByLabel("Question").fill("Any other risk?");
+    await askDialog.getByRole("button", { name: "Ask /btw" }).click();
+    await page.waitForFunction((answer) => [...document.querySelectorAll("p")].filter((node) => node.textContent === answer).length === 2,
+      "Keep the rollback owner explicit and verify the fallback path before rollout.");
+
+    await rolloutLine.evaluate((line) => {
+      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        const start = node.data.indexOf("Ship carefully");
+        if (start < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + "Ship carefully".length);
+        const selection = document.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        line.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        return;
+      }
+    });
+    await page.getByPlaceholder("Leave a comment for this selection...").fill("Use a canary");
+    await page.getByRole("button", { name: "Iterate section" }).click();
+    await page.getByText("Pending proposal", { exact: true }).waitFor();
+    await page.getByPlaceholder("Ask for a narrower, clearer, or more specific version...").fill("Add a rollback gate");
+    await page.getByRole("button", { name: "Iterate again" }).click();
+    await page.getByText("Added rollback wording.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Apply as new revision" }).click();
+    await page.getByText("Showing changes: rev-1 → rev-2", { exact: false }).waitFor();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Alongside" }).click();
+    const mobileRail = page.locator(".plan-comment-rail");
+    await mobileRail.waitFor();
+    const mobileLayout = await mobileRail.evaluate((rail) => {
+      const rect = rail.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, viewport: window.innerWidth, visible: rect.width > 0 };
+    });
+    if (!mobileLayout.visible || mobileLayout.left < 0 || mobileLayout.right > mobileLayout.viewport + 1) throw new Error("mobile alongside comments overflow the viewport");
     if (consoleErrors.length) throw new Error(`browser console errors:\n${consoleErrors.join("\n")}`);
   } else if (mode !== "proposal") {
     throw new Error(`unknown browser E2E mode: ${mode}`);

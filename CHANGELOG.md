@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+## v0.6.0 - 2026-07-30
+
+- Made rendered HTML Preview a complete review surface with source-mapped text
+  and element annotations, persistent highlights, rendered outline navigation,
+  inline/alongside threads, and the existing comment, private-note, `/btw`, and
+  section-iteration actions. Preview remains isolated and network-blocked, with
+  only a nonce-restricted PlanMaxx annotation bridge allowed to execute.
+- Added precise rendered-HTML element targeting on hover, including segmented
+  borders for wrapped inline content, SVG and table geometry, element labels,
+  and a distinct existing-comment state. Text-range selection suppresses the
+  element target, exact element comments no longer collide with nested range
+  comments, and native `<details>` toggling remains available.
+- Synchronized HTML Preview and Source positions in both directions and kept
+  the rendered iframe mounted across view switches, so moving between tabs no
+  longer returns to the top. HTML Source now uses line-preserving structural
+  indentation and Shiki highlighting without changing comment anchor offsets.
+- Expanded browser coverage across Markdown and rendered HTML for in-place and
+  alongside comments, repeated `/btw` questions, promoted answers, multi-step
+  section refinement, lists, tables, code/diagram blocks, SVG, details, and
+  responsive layouts. Fixed the mobile top bar and long source rows so review
+  controls and plan content no longer create horizontal page overflow.
+
 ## v0.5.0 - 2026-07-30
 
 - Added Claude Code side questions and iteration through context-preserving

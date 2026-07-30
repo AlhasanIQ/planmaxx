@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderPlanLines, renderSourceLines } from "../src/lib/markdown";
+import { htmlSourceIndentation, renderPlanLines, renderSourceLines } from "../src/lib/markdown";
 
 describe("renderPlanLines", () => {
   test("escapes raw html while preserving markdown formatting", () => {
@@ -107,5 +107,32 @@ describe("renderSourceLines", () => {
     expect(lines[0].html).toContain("&lt;h1&gt;Plan &amp; safety&lt;/h1&gt;");
     expect(lines[0].html).not.toContain("<h1>");
     expect(lines[1].kind).toBe("blank");
+  });
+
+  test("beautifies HTML indentation without changing source line text", () => {
+    const source = [
+      "<main>",
+      "<section>",
+      "<h2>Safety</h2>",
+      "<img src=\"data:image/png;base64,x\">",
+      "</section>",
+      "</main>",
+    ].join("\n");
+    const lines = renderSourceLines(source);
+
+    expect(htmlSourceIndentation(source.split("\n"))).toEqual([0, 1, 2, 2, 1, 0]);
+    expect(lines.map((line) => line.sourceIndent)).toEqual([0, 1, 2, 2, 1, 0]);
+    expect(lines.map((line) => line.html).join("\n")).toContain("&lt;h2&gt;Safety&lt;/h2&gt;");
+  });
+
+  test("does not treat tag-like text inside raw HTML blocks as structure", () => {
+    expect(htmlSourceIndentation([
+      "<main>",
+      "<style>",
+      ".label::before { content: '<section>'; }",
+      "</style>",
+      "<p>Ready</p>",
+      "</main>",
+    ])).toEqual([0, 1, 2, 1, 1, 0]);
   });
 });

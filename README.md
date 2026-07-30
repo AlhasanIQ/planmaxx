@@ -147,7 +147,7 @@ handoff preview makes the final agent context inspectable before approval.
 - The floating review queue moves through every feedback item and every changed
   region independently, with `Alt+↑` / `Alt+↓` keyboard navigation.
 - The document outline follows Markdown headings and HTML headings or labelled
-  sections, and opens HTML Source when a preview section is selected.
+  sections, and navigates the rendered HTML Preview without leaving it.
 - `/btw` answers remain private unless explicitly included.
 - Applying a proposal creates a revision; creating or refining one does not.
 - The complete review workspace is one private `.planmaxx` Git bundle in the
@@ -156,8 +156,13 @@ handoff preview makes the final agent context inspectable before approval.
   nothing is written beside the plan by default. Pass `--local-bundle` to keep
   `<plan-file>.planmaxx` beside the plan instead.
 
-HTML opens in a scriptless, network-blocked Preview. Comments, iteration, and
-diffs use Source mode so the original HTML remains authoritative.
+HTML opens in an isolated, network-blocked Preview. Select rendered text or
+click an element to comment, keep a private note, ask `/btw`, or iterate that
+source-mapped section. Existing comments highlight their rendered targets and
+remain fully editable in the Preview comment list. Authored scripts, event
+handlers, controls, and remote resources are removed; only PlanMaxx's
+nonce-restricted annotation bridge can run. Proposal and revision diffs use
+Source mode so the original HTML remains authoritative.
 
 ## Storage tools
 

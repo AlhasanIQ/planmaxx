@@ -97,6 +97,7 @@ export interface LineRender {
   kind: "blank" | "heading" | "list" | "code" | "hr" | "quote" | "table-header" | "table-divider" | "table-row" | "text";
   level?: number; // for heading
   indent?: number; // for list
+  sourceIndent?: number; // visual-only HTML source indentation
   marker?: string; // for list (e.g., "-", "1.")
   html: string; // inner HTML for content area
 }
@@ -200,10 +201,72 @@ export function renderPlanLines(plan: string): LineRender[] {
 export function renderSourceLines(source: string): LineRender[] {
   const lines = source.split(/\r?\n/);
   if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
-  return lines.map((line) => ({
+  const indents = htmlSourceIndentation(lines);
+  return lines.map((line, index) => ({
     kind: line === "" ? "blank" : "code",
+    sourceIndent: indents[index],
     html: line === "" ? "" : `<span class="font-mono text-[12.5px]">${escapeHTML(line)}</span>`,
   }));
+}
+
+const htmlVoidElements = new Set([
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+  "meta", "param", "source", "track", "wbr",
+]);
+const htmlRawTextElements = new Set(["script", "style", "textarea", "title"]);
+
+// Beautification remains visual and line preserving. Source characters stay
+// untouched so selections and comment anchors continue to address the exact
+// reviewed document, while structural rows receive predictable indentation.
+export function htmlSourceIndentation(lines: string[]): number[] {
+  let depth = 0;
+  let rawTextElement: string | null = null;
+  return lines.map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return depth;
+    if (rawTextElement) {
+      const closing = new RegExp(`</${rawTextElement}\\s*>`, "i");
+      if (!closing.test(trimmed)) return depth;
+      const indent = Math.max(0, depth - (trimmed.startsWith("</") ? 1 : 0));
+      depth = Math.max(0, depth - 1);
+      rawTextElement = null;
+      return indent;
+    }
+
+    const leadingClosers = leadingClosingTagCount(trimmed);
+    const indent = Math.max(0, depth - leadingClosers);
+    let opens = 0;
+    let closes = 0;
+    const tags = trimmed.matchAll(/<!--[\s\S]*?-->|<![^>]*>|<\?[\s\S]*?\?>|<\/?([a-zA-Z][\w:-]*)(?:\s[^<>]*?)?\/?>/g);
+    for (const match of tags) {
+      const token = match[0];
+      const tag = match[1]?.toLowerCase();
+      if (!tag || token.startsWith("<!") || token.startsWith("<?")) continue;
+      if (token.startsWith("</")) closes += 1;
+      else if (!token.endsWith("/>") && !htmlVoidElements.has(tag)) {
+        opens += 1;
+        if (
+          htmlRawTextElements.has(tag) &&
+          !new RegExp(`</${tag}\\s*>`, "i").test(trimmed.slice((match.index ?? 0) + token.length))
+        ) {
+          rawTextElement = tag;
+        }
+      }
+    }
+    depth = Math.max(0, depth + opens - closes);
+    return indent;
+  });
+}
+
+function leadingClosingTagCount(line: string): number {
+  let rest = line;
+  let count = 0;
+  while (true) {
+    const match = /^<\/[a-zA-Z][\w:-]*\s*>/.exec(rest);
+    if (!match) return count;
+    count += 1;
+    rest = rest.slice(match[0].length).trimStart();
+  }
 }
 
 function tableAt(lines: string[], start: number): { consumed: number; lines: LineRender[] } | null {

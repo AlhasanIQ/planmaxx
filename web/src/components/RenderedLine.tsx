@@ -3,11 +3,12 @@ import type React from "react";
 import type { HighlightToken } from "../lib/codeHighlight";
 
 export const RenderedLine = memo(function RenderedLine({
-  html, lineNumber, isTableRow, anchoredThreadId, codeTokens, onFocusThread,
+  html, lineNumber, isTableRow, sourceIndent, anchoredThreadId, codeTokens, onFocusThread,
 }: {
   html: string;
   lineNumber?: number;
   isTableRow: boolean;
+  sourceIndent?: number;
   anchoredThreadId: string | undefined;
   codeTokens?: HighlightToken[];
   onFocusThread: (threadId: string) => void;
@@ -36,7 +37,14 @@ export const RenderedLine = memo(function RenderedLine({
 
   const anchorProps = anchoredThreadId ? { onClick: activate, onKeyDown, role: "button" as const, tabIndex: 0 } : {};
   return (
-    <div className="line-content" data-line-content={lineNumber} data-structured-row={isTableRow || undefined} {...anchorProps}>
+    <div
+      className="line-content"
+      data-line-content={lineNumber}
+      data-source-indent={sourceIndent}
+      data-structured-row={isTableRow || undefined}
+      style={sourceIndent ? { paddingLeft: `calc(12px + ${sourceIndent} * 16px)` } : undefined}
+      {...anchorProps}
+    >
       {content}
     </div>
   );

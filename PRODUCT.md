@@ -36,6 +36,12 @@ caller. Reviewers can explicitly select `codex`, `claude`, or `none`.
 - Assisted prompts run in validated disposable forks and must not mutate the
   workspace. Codex is read-only and network-disabled; Claude Code disables
   customizations and built-in tools for the child process.
+- HTML plans remain source-authoritative while Preview is a first-class review
+  surface. Rendered text selections and element targets map back to source
+  anchors used by comments, side questions, iteration, revisions, and handoff.
+- Preview removes authored scripts, event handlers, controls, and remote
+  resources. A nonce-restricted PlanMaxx bridge runs in an opaque,
+  network-blocked iframe solely to relay annotations and highlights.
 - Attachment availability and operation capabilities come from the server.
 - The UI describes the calling agent as waiting and the final handoff as ready;
   it does not claim the caller resumed before stdout is delivered.

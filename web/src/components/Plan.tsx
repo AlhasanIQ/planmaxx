@@ -1,12 +1,13 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertTriangle, Code2, Columns2, Eye, GitCompareArrows, ListTree, Loader2, MessageSquarePlus, Search, Sparkles } from "lucide-react";
 import { renderPlanLines, renderSourceLines } from "../lib/markdown";
-import { htmlPreviewDocument } from "../lib/htmlPreview";
+import { htmlPreviewAnnotation, htmlPreviewDocument, sourceOffsetsForAnchor, type HTMLPreviewAnnotation } from "../lib/htmlPreview";
 import type { Anchor, ChangeView, DocumentSnapshot, PendingProposalSummary, PlanFormat, ReviewStop, RevisionComparison, RevisionFeedback, SideAnswer, Thread, ThreadIntent } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
 import { comparisonGutterValues, comparisonLineIdentity } from "../lib/comparisonLines";
-import { highlightCodeBlocks, type HighlightToken } from "../lib/codeHighlight";
+import { highlightCodeBlocks, highlightHTMLSource, type HighlightToken } from "../lib/codeHighlight";
 import { documentOutline, type OutlineItem } from "../lib/documentOutline";
 import { reviewScrollBehavior } from "../lib/reviewNavigation";
 import { groupSideAnswersByThread, threadsByAnchorEnd, threadsByBackendPlacement, visibleThreads } from "../lib/threadPlacement";
@@ -119,9 +120,14 @@ export const ReviewDocument = memo(function ReviewDocument({
 }: PlanProps) {
   const articleRef = useRef<HTMLElement>(null);
   const commentRailRef = useRef<HTMLElement>(null);
+  const htmlPreviewRef = useRef<HTMLIFrameElement>(null);
+  const htmlPositionRef = useRef<{ line: number; offset: number; ratio: number } | null>(null);
+  const pendingSourceRestoreRef = useRef(false);
+  const pendingPreviewRestoreLineRef = useRef<number | null>(null);
+  const [htmlPreviewReady, setHTMLPreviewReady] = useState(0);
   const renderLines = planFormat === "html" ? renderSourceLines : renderPlanLines;
   const lines = useMemo(() => renderLines(plan), [plan, renderLines]);
-  const highlightedCode = useHighlightedCode(planFormat === "markdown" ? plan : "", theme);
+  const highlightedCode = useHighlightedCode(plan, planFormat, theme);
 	const activeChange = proposal ? proposalChange : comparison;
   const outlineItems = useMemo(
     () => documentOutline(activeChange ? snapshotRenderText(activeChange.after) : plan, planFormat),
@@ -296,6 +302,7 @@ export const ReviewDocument = memo(function ReviewDocument({
   }
 
   function currentSelectedText(current: CommentDraft): string {
+    if (showHTMLPreview) return current.selectedText;
     return selectedTextForAnchorInArticle(articleRef.current, current.anchor) || current.selectedText;
   }
 
@@ -363,7 +370,10 @@ export const ReviewDocument = memo(function ReviewDocument({
     : null;
 
   function navigateToOutline(item: OutlineItem) {
-    if (showHTMLPreview) setHTMLView("source");
+    if (showHTMLPreview) {
+      postHTMLPreviewScroll({ startLine: item.line, endLine: item.line });
+      return;
+    }
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       const target = document.querySelector<HTMLElement>(`[data-document-line="${item.line}"]`);
       target?.scrollIntoView({
@@ -373,8 +383,146 @@ export const ReviewDocument = memo(function ReviewDocument({
     }));
   }
 
+  const htmlPreviewAnnotations = useMemo(() => {
+    const annotations: HTMLPreviewAnnotation[] = [];
+    for (const thread of threads) {
+      if (thread.lifecycle !== "active") continue;
+      const annotation = htmlPreviewAnnotation(plan, thread.anchor, thread.id);
+      if (!annotation) continue;
+      annotations.push({
+        ...annotation,
+        active: thread.id === hoveredThreadId || thread.id === focusedThreadId,
+      });
+    }
+    if (draft) {
+      const annotation = htmlPreviewAnnotation(plan, draft.anchor, "draft");
+      if (annotation) annotations.push({ ...annotation, active: true, draft: true });
+    }
+    return annotations;
+  }, [draft, focusedThreadId, hoveredThreadId, plan, threads]);
+
+  const postHTMLPreviewAnnotations = useCallback(() => {
+    htmlPreviewRef.current?.contentWindow?.postMessage({
+      type: "planmaxx:preview-annotations",
+      annotations: htmlPreviewAnnotations,
+      disabled,
+    }, "*");
+  }, [disabled, htmlPreviewAnnotations]);
+
+  const postHTMLPreviewScroll = useCallback((anchor: Anchor, ratio?: number) => {
+    const range = sourceOffsetsForAnchor(plan, anchor);
+    htmlPreviewRef.current?.contentWindow?.postMessage({
+      type: "planmaxx:preview-scroll",
+      ...range,
+      ratio,
+      behavior: reviewScrollBehavior(Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)),
+    }, "*");
+  }, [plan]);
+
+  const captureHTMLSourcePosition = useCallback(() => {
+    const line = sourceLineAtViewport(articleRef.current);
+    if (!line) return;
+    htmlPositionRef.current = {
+      line,
+      offset: sourceOffsetsForAnchor(plan, { startLine: line, endLine: line }).start,
+      ratio: pageScrollRatio(),
+    };
+  }, [plan]);
+
+  function changeHTMLView(next: "preview" | "source") {
+    if (next === htmlView) return;
+    if (next === "preview") {
+      captureHTMLSourcePosition();
+      pendingPreviewRestoreLineRef.current = htmlPositionRef.current?.line ?? null;
+    } else {
+      pendingSourceRestoreRef.current = true;
+    }
+    setHTMLView(next);
+  }
+
+  useEffect(() => {
+    if (planFormat !== "html" || htmlView !== "source" || activeChange || !pendingSourceRestoreRef.current) return;
+    const line = htmlPositionRef.current?.line;
+    if (!line) {
+      pendingSourceRestoreRef.current = false;
+      return;
+    }
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = articleRef.current?.querySelector<HTMLElement>(`[data-document-line="${line}"]`);
+      if (target) {
+        const top = window.scrollY + target.getBoundingClientRect().top - 72;
+        window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
+      }
+      const ratio = htmlPositionRef.current?.ratio;
+      if (ratio !== undefined) {
+        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        window.scrollTo({ top: ratio * maxScroll, behavior: "auto" });
+      }
+      pendingSourceRestoreRef.current = false;
+      captureHTMLSourcePosition();
+    }));
+  }, [activeChange, captureHTMLSourcePosition, htmlView, planFormat]);
+
+  useEffect(() => {
+    if (planFormat !== "html" || htmlView !== "source" || activeChange) return;
+    let frame = 0;
+    const capture = () => {
+      frame = 0;
+      if (!pendingSourceRestoreRef.current) captureHTMLSourcePosition();
+    };
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(capture);
+    };
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    schedule();
+    return () => {
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [activeChange, captureHTMLSourcePosition, htmlView, planFormat]);
+
+  useEffect(() => {
+    if (!showHTMLPreview || htmlPreviewReady === 0) return;
+    postHTMLPreviewAnnotations();
+  }, [htmlPreviewReady, postHTMLPreviewAnnotations, showHTMLPreview]);
+
+  useEffect(() => {
+    if (!showHTMLPreview || htmlPreviewReady === 0 || !focusedAnchor) return;
+    postHTMLPreviewScroll(focusedAnchor);
+  }, [focusedAnchor, htmlPreviewReady, postHTMLPreviewScroll, showHTMLPreview]);
+
+  const handleHTMLPreviewReady = useCallback(() => {
+    setHTMLPreviewReady((value) => value + 1);
+    const line = pendingPreviewRestoreLineRef.current ?? htmlPositionRef.current?.line;
+    if (line) postHTMLPreviewScroll({ startLine: line, endLine: line }, htmlPositionRef.current?.ratio);
+  }, [postHTMLPreviewScroll]);
+
+  const handleHTMLPreviewPosition = useCallback((position: { line: number; offset: number; ratio: number }) => {
+    if (!showHTMLPreview) return;
+    const pendingLine = pendingPreviewRestoreLineRef.current;
+    const pendingRatio = htmlPositionRef.current?.ratio;
+    if (pendingLine !== null && pendingRatio !== undefined && Math.abs(position.ratio - pendingRatio) > 0.08) {
+      postHTMLPreviewScroll({ startLine: pendingLine, endLine: pendingLine }, pendingRatio);
+      return;
+    }
+    pendingPreviewRestoreLineRef.current = null;
+    htmlPositionRef.current = position;
+  }, [postHTMLPreviewScroll, showHTMLPreview]);
+
+  const handleHTMLPreviewSelection = useCallback((selection: { anchor: Anchor; selectedText: string }) => {
+    if (disabled) return;
+    setDraft({
+      anchor: selection.anchor,
+      selectedText: selection.selectedText,
+      body: "",
+      intent: "instruction",
+    });
+  }, [disabled]);
+
   return (
-    <div className={`plan-with-comment-rail is-${showHTMLPreview ? "inline" : commentView}${activeChange ? " has-review-navigation" : ""}`}>
+    <div className={`plan-with-comment-rail is-${commentView === "alongside" && (!showHTMLPreview || activeDisplayedThreads.length > 0) ? "alongside" : "inline"}${showHTMLPreview ? " has-html-preview" : ""}${activeChange ? " has-review-navigation" : ""}`}>
     <article
       ref={articleRef}
       className="plan-markdown relative overflow-hidden rounded-[var(--radius-card)] border border-border bg-surface-elevated shadow-[var(--shadow-soft)]"
@@ -406,7 +554,7 @@ export const ReviewDocument = memo(function ReviewDocument({
               <button
                 type="button"
                 className={`btn btn-sm${htmlView === "preview" ? " btn-primary" : " btn-ghost"}`}
-                onClick={() => setHTMLView("preview")}
+                onClick={() => changeHTMLView("preview")}
                 aria-pressed={htmlView === "preview"}
                 disabled={Boolean(proposal || comparison)}
                 title={proposal || comparison ? "Preview is unavailable while showing source changes" : "Render the HTML plan safely"}
@@ -416,7 +564,7 @@ export const ReviewDocument = memo(function ReviewDocument({
               <button
                 type="button"
                 className={`btn btn-sm${htmlView === "source" || proposal || comparison ? " btn-primary" : " btn-ghost"}`}
-                onClick={() => setHTMLView("source")}
+                onClick={() => changeHTMLView("source")}
                 aria-pressed={htmlView === "source" || Boolean(proposal || comparison)}
               >
                 <Code2 size={13} /> Source
@@ -518,14 +666,52 @@ export const ReviewDocument = memo(function ReviewDocument({
       ) : null}
       {showHTMLPreview ? (
         <div className="html-preview-notice">
-          HTML is rendered in a scriptless, network-blocked sandbox. Switch to Source to comment or iterate.
-          {threads.length > 0 ? ` ${threads.length} existing ${threads.length === 1 ? "comment is" : "comments are"} available in Source.` : ""}
+          Select rendered text or click an element to review it. The plan stays network-blocked in an isolated sandbox; proposed changes open in Source.
         </div>
       ) : null}
       <div className="plan-body py-2">
-        {showHTMLPreview ? (
-          <HTMLPlanPreview source={plan} theme={theme} />
-        ) : displayRows.map((row, idx) => {
+	        {planFormat === "html" && !activeChange ? (
+	          <div hidden={!showHTMLPreview}>
+            <HTMLPlanPreview
+              frameRef={htmlPreviewRef}
+              source={plan}
+              theme={theme}
+              onReady={handleHTMLPreviewReady}
+              onPosition={handleHTMLPreviewPosition}
+              onSelection={handleHTMLPreviewSelection}
+              onFocusThread={onFocusThread}
+            />
+            {commentView === "inline" && activeDisplayedThreads.length > 0 ? (
+              <section className="html-preview-comments" aria-label="Comments on rendered HTML">
+                <div className="html-preview-comments-heading">
+                  <span>Comments on this preview</span>
+                  <small>Hover or open a thread to highlight its rendered target.</small>
+                </div>
+                <CommentThreadStack
+                  threads={activeDisplayedThreads}
+                  sideAnswersByThread={sideAnswersByThread}
+                  focusedThreadId={focusedThreadId}
+                  onHover={onHoverThread}
+                  onSetIntent={onSetThreadIntent}
+                  onReply={onReplyThread}
+                  onDelete={onDeleteThread}
+                  onEdit={onEditThread}
+                  onMarkAddressed={onMarkAddressed}
+                  onCreateFollowUp={onCreateFollowUp}
+                  onAskSide={onAskSide}
+                  onIterate={onIterateThread}
+                  onInclude={onIncludeAnswer}
+                  onKeepPrivate={onKeepAnswerPrivate}
+                  agentActions={threadAgentActions}
+                  disabled={disabled}
+                  sideQuestionsEnabled={sideQuestionsEnabled}
+                  placement="inline"
+                />
+              </section>
+            ) : null}
+	          </div>
+	        ) : null}
+	        {!showHTMLPreview ? displayRows.map((row, idx) => {
           const lineNumber = row.anchorLineNumber;
           const line = row.line;
           const isProposedLine = Boolean(proposal && row.diffKind === "add");
@@ -607,6 +793,7 @@ export const ReviewDocument = memo(function ReviewDocument({
 					html={line.html}
 					lineNumber={commentable ? lineNumber : undefined}
                     isTableRow={line.kind === "table-header" || line.kind === "table-divider" || line.kind === "table-row"}
+                    sourceIndent={planFormat === "html" ? line.sourceIndent : undefined}
                     anchoredThreadId={anchoredThreadId}
                     codeTokens={isProposedLine || lineNumber === undefined ? undefined : highlightedCode.get(lineNumber)}
                     onFocusThread={onFocusThread}
@@ -667,7 +854,7 @@ export const ReviewDocument = memo(function ReviewDocument({
               </div>
             </div>
           );
-        })}
+	        }) : null}
       </div>
       {!showHTMLPreview ? (
         <DraftBoundaryHandles
@@ -676,8 +863,52 @@ export const ReviewDocument = memo(function ReviewDocument({
           onChange={updateDraftAnchor}
         />
       ) : null}
+      {showHTMLPreview && draft ? createPortal(
+        <aside className="html-preview-composer-floating" aria-label="HTML preview comment">
+          <InlineCommentComposer
+            draft={draft}
+            spacerLines={0}
+            submitting={submittingDraft}
+            agentAction={draftAgentAction}
+            disabled={disabled}
+            setDraft={setDraft}
+            onCancel={cancelDraft}
+            onSubmit={submitDraft}
+            onAskSide={askSideFromDraft}
+            onIterate={iterateDraft}
+          />
+        </aside>,
+        document.body,
+      ) : null}
     </article>
-    {commentView === "alongside" && !showHTMLPreview ? (
+    {commentView === "alongside" && showHTMLPreview && activeDisplayedThreads.length > 0 ? (
+      <aside className="plan-comment-rail html-preview-comment-rail" aria-label="Comments alongside rendered HTML">
+        <div className="html-preview-comments-heading">
+          <span>Preview comments</span>
+          <small>Hover or open a thread to highlight its target.</small>
+        </div>
+        <CommentThreadStack
+          threads={activeDisplayedThreads}
+          sideAnswersByThread={sideAnswersByThread}
+          focusedThreadId={focusedThreadId}
+          onHover={onHoverThread}
+          onSetIntent={onSetThreadIntent}
+          onReply={onReplyThread}
+          onDelete={onDeleteThread}
+          onEdit={onEditThread}
+          onMarkAddressed={onMarkAddressed}
+          onCreateFollowUp={onCreateFollowUp}
+          onAskSide={onAskSide}
+          onIterate={onIterateThread}
+          onInclude={onIncludeAnswer}
+          onKeepPrivate={onKeepAnswerPrivate}
+          agentActions={threadAgentActions}
+          disabled={disabled}
+          sideQuestionsEnabled={sideQuestionsEnabled}
+          placement="alongside"
+        />
+      </aside>
+    ) : commentView === "alongside" ? (
       <aside ref={commentRailRef} className="plan-comment-rail" aria-label="Comments alongside plan lines">
         {commentRailLines.map((lineNumber) => {
           const metric = commentRailMetrics.get(lineNumber);
@@ -728,32 +959,105 @@ function snapshotRenderText(snapshot: DocumentSnapshot): string {
   return snapshot.lines.join("\n") + (snapshot.terminalNewline ? "\n" : "");
 }
 
+function sourceLineAtViewport(article: HTMLElement | null): number | null {
+  if (!article) return null;
+  const threshold = 72;
+  const rows = [...article.querySelectorAll<HTMLElement>("[data-document-line]")];
+  const visible = rows.find((row) => {
+    const rect = row.getBoundingClientRect();
+    return rect.bottom > threshold && rect.top < window.innerHeight;
+  });
+  const line = Number(visible?.dataset.documentLine);
+  return Number.isInteger(line) && line > 0 ? line : null;
+}
+
+function pageScrollRatio(): number {
+  const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  return maxScroll > 0 ? window.scrollY / maxScroll : 0;
+}
+
 export const Plan = ReviewDocument;
 
-function HTMLPlanPreview({ source, theme }: { source: string; theme: "light" | "dark" }) {
+function HTMLPlanPreview({
+  frameRef,
+  source,
+  theme,
+  onReady,
+  onPosition,
+  onSelection,
+  onFocusThread,
+}: {
+  frameRef: React.RefObject<HTMLIFrameElement>;
+  source: string;
+  theme: "light" | "dark";
+  onReady: () => void;
+  onPosition: (position: { line: number; offset: number; ratio: number }) => void;
+  onSelection: (selection: { anchor: Anchor; selectedText: string }) => void;
+  onFocusThread: (threadId: string) => void;
+}) {
   const srcDoc = useMemo(() => htmlPreviewDocument(source, theme), [source, theme]);
+  useEffect(() => {
+    function handleMessage(event: MessageEvent) {
+      if (event.source !== frameRef.current?.contentWindow) return;
+      const message = event.data as {
+        type?: string;
+        anchor?: Anchor;
+        selectedText?: string;
+        threadId?: string;
+        line?: number;
+        offset?: number;
+        ratio?: number;
+      };
+      if (message.type === "planmaxx:preview-ready") {
+        onReady();
+      } else if (
+        message.type === "planmaxx:preview-position" &&
+        Number.isInteger(message.line) &&
+        Number.isFinite(message.offset) &&
+        Number.isFinite(message.ratio)
+      ) {
+        onPosition({ line: message.line!, offset: message.offset!, ratio: message.ratio! });
+      } else if (
+        message.type === "planmaxx:preview-selection" &&
+        message.anchor &&
+        typeof message.selectedText === "string"
+      ) {
+        onSelection({ anchor: message.anchor, selectedText: message.selectedText });
+      } else if (message.type === "planmaxx:preview-focus-thread" && message.threadId) {
+        onFocusThread(message.threadId);
+      }
+    }
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [frameRef, onFocusThread, onPosition, onReady, onSelection]);
+
   return (
     <iframe
+      ref={frameRef}
       className="html-plan-preview"
       title="Rendered HTML plan preview"
-      sandbox=""
+      sandbox="allow-scripts"
       srcDoc={srcDoc}
+      onLoad={onReady}
     />
   );
 }
 
-function useHighlightedCode(plan: string, theme: "light" | "dark") {
+function useHighlightedCode(plan: string, format: PlanFormat, theme: "light" | "dark") {
   const [highlighted, setHighlighted] = useState<Map<number, HighlightToken[]>>(new Map());
 
   useEffect(() => {
     let current = true;
-    void highlightCodeBlocks(plan, theme).then((next) => {
+    const highlight = format === "html"
+      ? highlightHTMLSource(plan, theme)
+      : highlightCodeBlocks(plan, theme);
+    void highlight.then((next) => {
       if (current) setHighlighted(next);
     });
     return () => {
       current = false;
     };
-  }, [plan, theme]);
+  }, [format, plan, theme]);
 
   return highlighted;
 }

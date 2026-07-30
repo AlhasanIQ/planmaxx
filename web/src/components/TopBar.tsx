@@ -63,7 +63,7 @@ export function TopBar(props: Props) {
   const themeLabel = themeMode === "system" ? "System" : resolvedTheme === "dark" ? "Dark" : "Light";
   return (
     <header className="sticky top-0 z-10 border-b border-border bg-surface-elevated/80 backdrop-blur">
-      <div className="mx-auto flex h-14 max-w-[1600px] items-center gap-3 px-4">
+      <div className="topbar-shell mx-auto flex h-14 max-w-[1600px] items-center gap-3 px-4">
         <div className="flex items-center gap-2.5">
           <span className="grid size-7 place-items-center rounded-md bg-accent text-white font-bold">
             P
@@ -110,8 +110,8 @@ export function TopBar(props: Props) {
           </span>
           {attentionCount > 0 ? <span className="pill pill-attention" title="Detached feedback needs re-anchoring before it can be used"><AlertTriangle size={11} /> {attentionCount} need attention</span> : null}
         </div>
-        <div className="ml-auto flex items-center gap-3">
-          <StatusBadge kind={statusKind} label={statusLabel} />
+        <div className="topbar-actions ml-auto flex items-center gap-3">
+          <span className="topbar-status"><StatusBadge kind={statusKind} label={statusLabel} /></span>
           <button
             type="button"
             className="btn btn-ghost"
@@ -122,24 +122,24 @@ export function TopBar(props: Props) {
             <ThemeIcon size={13} />
             <span className="hidden sm:inline">{themeLabel}</span>
           </button>
-          <button type="button" className="btn" onClick={onCancel} disabled={disabled}>
-            Cancel
+          <button type="button" className="btn topbar-action" onClick={onCancel} disabled={disabled} aria-label="Cancel review">
+            <XOctagon size={14} /><span>Cancel</span>
           </button>
           <button
             type="button"
-            className="btn"
+            className="btn topbar-action"
             onClick={onIterate}
             disabled={disabled || iterateDisabled}
           >
-            <Sparkles size={14} /> Iterate
+            <Sparkles size={14} /> <span>Iterate</span>
           </button>
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-primary topbar-action"
             onClick={onFinalize}
             disabled={disabled || finalizeDisabled}
           >
-            <CheckCircle2 size={14} /> Finalize
+            <CheckCircle2 size={14} /> <span>Finalize</span>
           </button>
         </div>
       </div>

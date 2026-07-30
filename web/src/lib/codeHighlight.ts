@@ -94,3 +94,24 @@ export async function highlightCodeBlocks(
 
   return highlighted;
 }
+
+export async function highlightHTMLSource(
+  source: string,
+  theme: "light" | "dark",
+): Promise<Map<number, HighlightToken[]>> {
+  const highlighted = new Map<number, HighlightToken[]>();
+  const shikiTheme = theme === "dark" ? "github-dark" : "github-light";
+  try {
+    const result = (await highlighter).codeToTokens(source, {
+      lang: "html",
+      theme: shikiTheme,
+    });
+    result.tokens.forEach((tokens, index) => {
+      highlighted.set(index + 1, tokens.map(({ content, color, fontStyle }) => ({ content, color, fontStyle })));
+    });
+  } catch {
+    // Exact escaped source remains available while the highlighter loads or
+    // if a future grammar rejects otherwise-reviewable input.
+  }
+  return highlighted;
+}
