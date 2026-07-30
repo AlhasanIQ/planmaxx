@@ -29,11 +29,19 @@ describe("htmlPreviewDocument", () => {
   });
 
   test("publishes source-backed scroll positions for Preview and Source synchronization", () => {
-    const document = htmlPreviewDocument("<main>\n<section><h2>Safety</h2></section>\n</main>", "light");
+    const document = htmlPreviewDocument(
+      "<html><head><style>.plan { color: red; }</style></head><body><main>\n<section><h2>Safety</h2></section>\n</main></body></html>",
+      "light",
+    );
 
     expect(document).toContain("planmaxx:preview-position");
     expect(document).toContain("currentSourcePosition");
+    expect(document).toContain("renderedSourceEntries");
+    expect(document).toContain("body.querySelectorAll");
+    expect(document).toContain("scrollRectForSourceSpan");
     expect(document).toContain("sourcePosition(offset).line");
+    expect(document).not.toContain("ratio: maxScroll");
+    expect(document).not.toContain("ratioTop");
   });
 
   test("renders segmented element targets without conflating text-range comments", () => {
@@ -45,6 +53,30 @@ describe("htmlPreviewDocument", () => {
     expect(document).toContain("Open comment");
     expect(document).toContain("annotation.start === span.start && annotation.end === span.end");
     expect(document).toContain("if (hasTextSelection()) setHoverTarget(null)");
+  });
+
+  test("publishes exact comment geometry and reserves safe inline slots", () => {
+    const document = htmlPreviewDocument(
+      "<main><ol><li>Step</li></ol><table><tr><td>Gate</td></tr></table><svg><text>Flow</text></svg></main>",
+      "light",
+    );
+
+    expect(document).toContain("planmaxx:preview-layout");
+    expect(document).toContain("data-planmaxx-inline-slot");
+    expect(document).toContain('element.closest("table")');
+    expect(document).toContain('element.closest("svg")');
+    expect(document).toContain('element.closest("li")');
+    expect(document).toContain("slot.scrollIntoView");
+    expect(document).toContain("planmaxx:preview-scroll-by");
+  });
+
+  test("supports two-way range and thread focus animations", () => {
+    const document = htmlPreviewDocument("<p>Ship safely</p>", "dark");
+
+    expect(document).toContain("annotationAtPoint");
+    expect(document).toContain("planmaxx:preview-focus-thread");
+    expect(document).toContain("planmaxx:preview-ping");
+    expect(document).toContain("planmaxx-target-ping");
   });
 
   test("keeps authored HTML and applies the selected base theme", () => {

@@ -6,6 +6,7 @@ import { anchorLabel } from "../lib/anchors";
 export function ProposalActions({
   proposal,
   disabled,
+  refineDisabled,
   iterating,
   prominent = false,
   onApply,
@@ -14,6 +15,7 @@ export function ProposalActions({
 }: {
   proposal: PendingProposalSummary;
   disabled: boolean;
+  refineDisabled: boolean;
   iterating: boolean;
   prominent?: boolean;
   onApply: (proposalId: string) => void;
@@ -21,7 +23,7 @@ export function ProposalActions({
   onIterate: (anchor: Anchor, instruction: string) => Promise<boolean>;
 }) {
   const [instruction, setInstruction] = useState("");
-  const canIterate = instruction.trim().length > 0 && !disabled;
+  const canIterate = instruction.trim().length > 0 && !refineDisabled;
 
   async function iterateAgain() {
     if (!canIterate) return;
@@ -52,7 +54,7 @@ export function ProposalActions({
           className="field mt-1 min-h-20 resize-y font-sans"
           value={instruction}
           onChange={(event) => setInstruction(event.target.value)}
-          disabled={disabled}
+          disabled={refineDisabled}
           placeholder="Ask for a narrower, clearer, or more specific version..."
         />
       </label>

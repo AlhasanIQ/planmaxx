@@ -569,7 +569,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
 	}, [revisionDiff, session]);
 
   if (completion) {
-    return <CompletedScreen state={completion} />;
+    return <CompletedScreen state={completion} agentAvailable={session?.agent.available ?? false} />;
   }
 
   if (!session) {
@@ -638,6 +638,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
 		  onIterateDraft={handleIterateDraft}
           disabled={busy || Boolean(session.pendingProposal)}
 		  proposalDisabled={busy || !session.capabilities.canApplyProposal}
+          proposalRefineDisabled={busy || !session.agent.available}
           proposalIterating={iteratingSection}
           onApplyProposal={handleApplyProposal}
           onDiscardProposal={handleDiscardProposal}

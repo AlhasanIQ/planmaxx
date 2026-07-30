@@ -2,9 +2,10 @@ import { ArrowRight, CheckCircle2, X } from "lucide-react";
 
 interface Props {
   state: "finalized" | "canceled";
+  agentAvailable: boolean;
 }
 
-export function CompletedScreen({ state }: Props) {
+export function CompletedScreen({ state, agentAvailable }: Props) {
   const canceled = state === "canceled";
 
   return (
@@ -26,13 +27,15 @@ export function CompletedScreen({ state }: Props) {
           <p
             className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-accent/10 px-3 py-1 text-xs font-medium text-accent"
           >
-            <ArrowRight size={12} /> Handoff ready
+            <ArrowRight size={12} /> {agentAvailable ? "Handoff ready" : "Plan saved"}
           </p>
         ) : null}
         <p className="mt-3 text-sm text-foreground-muted">
           {canceled
             ? "PlanMaxx exited without handing off. You can close this window."
-            : "The approved plan and your reviewer items are ready for the calling agent. You can close this window."}
+            : agentAvailable
+              ? "The approved plan and your reviewer items are ready for the calling agent. You can close this window."
+              : "The approved plan was saved and the review handoff is being returned in the terminal. You can close this window."}
         </p>
       </div>
     </div>

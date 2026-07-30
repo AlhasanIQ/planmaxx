@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +19,7 @@ import (
 const (
 	skillTargetCodex  = "codex"
 	skillTargetClaude = "claude"
+	skillTargetGrok   = "grok"
 	skillFileName     = "SKILL.md"
 
 	planmaxxReminderStart = "<!-- planmaxx skill reminder:start -->"
@@ -79,19 +82,38 @@ const (
 `
 )
 
+var legacyManagedSkillHashes = map[string]struct{}{
+	"9570c87d0ccb0563a4c246034f752676a4b4fd5231392dd9b7736bc5eb1a6ab2": {},
+	"7fab2bb1d2b394df651269b2a565d81a379407d73c9c359c35a044e7e9ba7220": {},
+	"721a0c0c9028caa76758509f8c12a8edcb64a716fc463d7a81f8655c798b29a4": {},
+	"5e65408969c831171f1434c26da3e4c10ce12648f6adb858139d52cdcbe99998": {},
+}
+
 //go:embed SKILL.md
-var defaultSkillTemplate []byte
+var defaultCodexSkillTemplate []byte
+
+//go:embed SKILL.claude.md
+var defaultClaudeSkillTemplate []byte
+
+//go:embed SKILL.grok.md
+var defaultGrokSkillTemplate []byte
 
 var (
-	skillTemplateEmbedded = append([]byte(nil), defaultSkillTemplate...)
-	skillUserHomeDir      = os.UserHomeDir
-	skillUserConfigDir    = os.UserConfigDir
+	skillTemplatesEmbedded = map[string][]byte{
+		skillTargetCodex:  append([]byte(nil), defaultCodexSkillTemplate...),
+		skillTargetClaude: append([]byte(nil), defaultClaudeSkillTemplate...),
+		skillTargetGrok:   append([]byte(nil), defaultGrokSkillTemplate...),
+	}
+	skillUserHomeDir   = os.UserHomeDir
+	skillUserConfigDir = os.UserConfigDir
 )
 
 // SetEmbeddedSkillTemplate replaces the embedded skill template.
 // Tests use this to keep install/remove behavior deterministic.
 func SetEmbeddedSkillTemplate(b []byte) {
-	skillTemplateEmbedded = append([]byte(nil), b...)
+	for _, target := range []string{skillTargetCodex, skillTargetClaude, skillTargetGrok} {
+		skillTemplatesEmbedded[target] = append([]byte(nil), b...)
+	}
 }
 
 func newSkillCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
@@ -114,7 +136,7 @@ func newSkillInstallCommand(stderr io.Writer) *cobra.Command {
 			return runSkillInstall(opts, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target: codex or claude")
+	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target: codex, claude, or grok")
 	cmd.Flags().StringVar(&opts.repo, "repo", "", "install inside this repository instead of the user-level agent directory")
 	cmd.Flags().StringVar(&opts.source, "source", "", "local SKILL.md source path")
 	cmd.Flags().BoolVar(&opts.copyMode, "copy", false, "copy SKILL.md instead of symlinking")
@@ -135,7 +157,7 @@ func newSkillRemoveCommand(stderr io.Writer) *cobra.Command {
 			return runSkillRemove(opts, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target: codex or claude")
+	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target: codex, claude, or grok")
 	cmd.Flags().StringVar(&opts.repo, "repo", "", "remove from this repository instead of the user-level agent directory")
 	cmd.Flags().BoolVar(&opts.keepReminder, "keep-reminder", false, "leave the PlanMaxx reminder block in AGENTS.md")
 	for _, name := range []string{"keep-reminder"} {
@@ -172,10 +194,13 @@ func runSkillInstall(opts skillInstallOptions, stderr io.Writer) error {
 	if opts.copyMode && opts.linkMode {
 		return errors.New("--copy and --link cannot be used together")
 	}
-	if target == skillTargetClaude && opts.linkMode {
-		return errors.New("Claude Code skill installs use copy mode; --link is not supported")
+	if (target == skillTargetClaude || target == skillTargetGrok) && opts.linkMode {
+		return fmt.Errorf("%s skill installs use copy mode; --link is not supported", skillTargetDisplayName(target))
 	}
-	sourceBytes, sourcePath, sourceLabel, err := loadSkillSource(opts.source)
+	if (target == skillTargetClaude || target == skillTargetGrok) && strings.TrimSpace(opts.source) != "" {
+		return fmt.Errorf("%s skill installs do not support custom --source files", skillTargetDisplayName(target))
+	}
+	sourceBytes, sourcePath, sourceLabel, err := loadSkillSource(opts.source, target)
 	if err != nil {
 		return err
 	}
@@ -206,11 +231,41 @@ func runSkillInstall(opts skillInstallOptions, stderr io.Writer) error {
 		return err
 	}
 
+	if target == skillTargetClaude {
+		var managedSources []string
+		for _, managedTarget := range []string{skillTargetCodex, skillTargetClaude, skillTargetGrok} {
+			managedSource, err := defaultManagedSkillSourcePath(managedTarget)
+			if err != nil {
+				return err
+			}
+			managedSources = append(managedSources, managedSource)
+		}
+		removed, _, err := removeManagedSkillFile(legacyClaudeSkill, managedSources...)
+		if err != nil {
+			return fmt.Errorf("remove legacy Claude plugin skill %s: %w", legacyClaudeSkill, err)
+		}
+		if removed {
+			fmt.Fprintf(stderr, "Removed legacy Claude plugin skill %s\n", legacyClaudeSkill)
+		}
+		for _, file := range legacyClaudeFiles {
+			removed, _, err := removeManagedFile(file)
+			if err != nil {
+				return fmt.Errorf("remove legacy Claude plugin file %s: %w", file.path, err)
+			}
+			if removed {
+				fmt.Fprintf(stderr, "Removed legacy Claude plugin file %s\n", file.path)
+			}
+			_ = removeEmptyDir(filepath.Dir(file.path))
+		}
+		_ = removeEmptyDir(filepath.Dir(legacyClaudeSkill))
+		_ = removeEmptyDir(filepath.Join(destination, "skills"))
+	}
+
 	linkMode := opts.linkMode
 	if !opts.linkMode && !opts.copyMode {
 		linkMode = runtime.GOOS != "windows"
 	}
-	if opts.copyMode || target == skillTargetClaude {
+	if opts.copyMode || target == skillTargetClaude || target == skillTargetGrok {
 		linkMode = false
 	}
 
@@ -237,32 +292,6 @@ func runSkillInstall(opts skillInstallOptions, stderr io.Writer) error {
 		if changed {
 			fmt.Fprintf(stderr, "Installed %s\n", file.path)
 		}
-	}
-
-	if target == skillTargetClaude {
-		managedSource, err := defaultManagedSkillSourcePath()
-		if err != nil {
-			return err
-		}
-		removed, _, err := removeManagedSkillFile(legacyClaudeSkill, managedSource)
-		if err != nil {
-			return fmt.Errorf("remove legacy Claude plugin skill %s: %w", legacyClaudeSkill, err)
-		}
-		if removed {
-			fmt.Fprintf(stderr, "Removed legacy Claude plugin skill %s\n", legacyClaudeSkill)
-		}
-		for _, file := range legacyClaudeFiles {
-			removed, _, err := removeManagedFile(file)
-			if err != nil {
-				return fmt.Errorf("remove legacy Claude plugin file %s: %w", file.path, err)
-			}
-			if removed {
-				fmt.Fprintf(stderr, "Removed legacy Claude plugin file %s\n", file.path)
-			}
-			_ = removeEmptyDir(filepath.Dir(file.path))
-		}
-		_ = removeEmptyDir(filepath.Dir(legacyClaudeSkill))
-		_ = removeEmptyDir(filepath.Join(destination, "skills"))
 	}
 
 	if reminderFile != "" {
@@ -292,7 +321,7 @@ func runSkillRemove(opts skillRemoveOptions, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	managedSource, err := defaultManagedSkillSourcePath()
+	managedSource, err := defaultManagedSkillSourcePath(target)
 	if err != nil {
 		return err
 	}
@@ -380,12 +409,14 @@ func normalizeSkillTarget(raw string) (string, error) {
 		return skillTargetCodex, nil
 	case skillTargetClaude:
 		return skillTargetClaude, nil
+	case skillTargetGrok:
+		return skillTargetGrok, nil
 	default:
-		return "", fmt.Errorf("target must be codex or claude")
+		return "", fmt.Errorf("target must be codex, claude, or grok")
 	}
 }
 
-func loadSkillSource(sourceRaw string) ([]byte, string, string, error) {
+func loadSkillSource(sourceRaw string, target string) ([]byte, string, string, error) {
 	if strings.TrimSpace(sourceRaw) != "" {
 		path, err := expandHomePath(sourceRaw)
 		if err != nil {
@@ -401,19 +432,20 @@ func loadSkillSource(sourceRaw string) ([]byte, string, string, error) {
 		return b, path, path, nil
 	}
 
-	managedPath, err := defaultManagedSkillSourcePath()
+	managedPath, err := defaultManagedSkillSourcePath(target)
 	if err != nil {
 		return nil, "", "", err
 	}
-	if len(bytes.TrimSpace(skillTemplateEmbedded)) == 0 {
+	template := skillTemplatesEmbedded[target]
+	if len(bytes.TrimSpace(template)) == 0 {
 		return nil, "", "", fmt.Errorf("embedded skill template is empty")
 	}
 	if err := os.MkdirAll(filepath.Dir(managedPath), 0o755); err != nil {
 		return nil, "", "", err
 	}
 
-	existing, readErr := os.ReadFile(managedPath)
-	if readErr == nil && bytes.Equal(bytes.TrimSpace(existing), bytes.TrimSpace(skillTemplateEmbedded)) {
+	existing, readErr := readManagedSkillSource(managedPath)
+	if readErr == nil && bytes.Equal(bytes.TrimSpace(existing), bytes.TrimSpace(template)) {
 		return existing, managedPath, managedPath, nil
 	}
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
@@ -424,13 +456,13 @@ func loadSkillSource(sourceRaw string) ([]byte, string, string, error) {
 	if readErr == nil {
 		status = "updated from embedded template"
 	}
-	if err := os.WriteFile(managedPath, skillTemplateEmbedded, 0o644); err != nil {
+	if err := writeFileAtomic(managedPath, template, 0o644); err != nil {
 		return nil, "", "", err
 	}
-	return skillTemplateEmbedded, managedPath, fmt.Sprintf("%s (%s)", managedPath, status), nil
+	return template, managedPath, fmt.Sprintf("%s (%s)", managedPath, status), nil
 }
 
-func defaultManagedSkillSourcePath() (string, error) {
+func defaultManagedSkillSourcePath(target string) (string, error) {
 	configDir, err := skillUserConfigDir()
 	if err != nil {
 		return "", err
@@ -438,7 +470,10 @@ func defaultManagedSkillSourcePath() (string, error) {
 	if strings.TrimSpace(configDir) == "" {
 		return "", fmt.Errorf("user config directory is empty")
 	}
-	return filepath.Join(configDir, "planmaxx", skillFileName), nil
+	if target == skillTargetCodex {
+		return filepath.Join(configDir, "planmaxx", skillFileName), nil
+	}
+	return filepath.Join(configDir, "planmaxx", "skills", target, skillFileName), nil
 }
 
 func resolveSkillRepoRoot(raw string) (string, error) {
@@ -501,6 +536,29 @@ func resolveClaudeSkillPaths(repoRoot string) (string, error) {
 	return filepath.Join(home, ".claude", "skills", "planmaxx"), nil
 }
 
+func resolveGrokSkillPaths(repoRoot string) (string, error) {
+	if repoRoot != "" {
+		return filepath.Join(repoRoot, ".grok", "skills", "planmaxx"), nil
+	}
+
+	if configured := strings.TrimSpace(os.Getenv("GROK_HOME")); configured != "" {
+		configDir, err := expandHomePath(configured)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(configDir, "skills", "planmaxx"), nil
+	}
+
+	home, err := skillUserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("home directory is empty")
+	}
+	return filepath.Join(home, ".grok", "skills", "planmaxx"), nil
+}
+
 func resolveSkillPaths(target string, repoRoot string) (string, string, []managedSkillFile, error) {
 	switch target {
 	case skillTargetCodex:
@@ -512,8 +570,14 @@ func resolveSkillPaths(target string, repoRoot string) (string, string, []manage
 			return "", "", nil, err
 		}
 		return destination, "", nil, nil
+	case skillTargetGrok:
+		destination, err := resolveGrokSkillPaths(repoRoot)
+		if err != nil {
+			return "", "", nil, err
+		}
+		return destination, "", nil, nil
 	default:
-		return "", "", nil, fmt.Errorf("target must be codex or claude")
+		return "", "", nil, fmt.Errorf("target must be codex, claude, or grok")
 	}
 }
 
@@ -545,12 +609,14 @@ func preflightSkillFile(path string, desired []byte, sourcePath string) error {
 		if err != nil {
 			return err
 		}
-		if sourcePath != "" && isManagedSkillLink(target, sourcePath) {
+		if sourcePath != "" && isManagedSkillLink(target, path, sourcePath) {
 			return nil
 		}
-		managedSource, err := defaultManagedSkillSourcePath()
-		if err == nil && isManagedSkillLink(target, managedSource) {
-			return nil
+		for _, managedTarget := range []string{skillTargetCodex, skillTargetClaude, skillTargetGrok} {
+			managedSource, err := defaultManagedSkillSourcePath(managedTarget)
+			if err == nil && isManagedSkillLink(target, path, managedSource) {
+				return nil
+			}
 		}
 		return fmt.Errorf("refusing to overwrite unmanaged skill: %s", path)
 	}
@@ -641,27 +707,92 @@ func installSkillFile(destinationDir string, sourceBytes []byte, sourcePath stri
 		if err != nil {
 			return "", err
 		}
-		if err := os.Remove(targetFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		tmp, err := os.CreateTemp(destinationDir, ".planmaxx-skill-link-*")
+		if err != nil {
 			return "", err
 		}
-		if err := os.Symlink(absSourcePath, targetFile); err != nil {
+		tmpPath := tmp.Name()
+		if err := tmp.Close(); err != nil {
+			_ = os.Remove(tmpPath)
+			return "", err
+		}
+		if err := os.Remove(tmpPath); err != nil {
+			return "", err
+		}
+		if err := os.Symlink(absSourcePath, tmpPath); err != nil {
+			return "", err
+		}
+		if err := os.Rename(tmpPath, targetFile); err != nil {
+			_ = os.Remove(tmpPath)
 			return "", err
 		}
 		return targetFile, nil
 	}
 
-	tmpFile := targetFile + ".tmp"
-	if err := os.WriteFile(tmpFile, sourceBytes, 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmpFile, targetFile); err != nil {
-		_ = os.Remove(tmpFile)
+	if err := writeFileAtomic(targetFile, sourceBytes, 0o644); err != nil {
 		return "", err
 	}
 	return targetFile, nil
 }
 
-func removeManagedSkillFile(targetFile string, managedSource string) (removed bool, skipped bool, err error) {
+func readManagedSkillSource(path string) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("refusing unmanaged PlanMaxx skill source: %s", path)
+	}
+	file, err := openSkillFileNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("PlanMaxx skill source changed while reading: %s", path)
+	}
+	return io.ReadAll(io.LimitReader(file, 1<<20))
+}
+
+func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	removeTemp := true
+	defer func() {
+		if removeTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	removeTemp = false
+	return nil
+}
+
+func removeManagedSkillFile(targetFile string, managedSources ...string) (removed bool, skipped bool, err error) {
 	info, err := os.Lstat(targetFile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -675,8 +806,10 @@ func removeManagedSkillFile(targetFile string, managedSource string) (removed bo
 		if err != nil {
 			return false, false, err
 		}
-		if isManagedSkillLink(linkTarget, managedSource) {
-			return true, false, os.Remove(targetFile)
+		for _, managedSource := range managedSources {
+			if isManagedSkillLink(linkTarget, targetFile, managedSource) {
+				return true, false, os.Remove(targetFile)
+			}
 		}
 		return false, true, nil
 	}
@@ -691,7 +824,10 @@ func removeManagedSkillFile(targetFile string, managedSource string) (removed bo
 	return false, true, nil
 }
 
-func isManagedSkillLink(linkTarget string, managedSource string) bool {
+func isManagedSkillLink(linkTarget, linkPath, managedSource string) bool {
+	if !filepath.IsAbs(linkTarget) {
+		linkTarget = filepath.Join(filepath.Dir(linkPath), linkTarget)
+	}
 	absTarget, targetErr := filepath.Abs(linkTarget)
 	absManaged, managedErr := filepath.Abs(managedSource)
 	if targetErr != nil || managedErr != nil {
@@ -701,10 +837,25 @@ func isManagedSkillLink(linkTarget string, managedSource string) bool {
 }
 
 func isManagedSkillContent(content []byte) bool {
-	if bytes.Contains(content, []byte(planmaxxManagedSkillMarker)) {
-		return true
+	for _, template := range skillTemplatesEmbedded {
+		if bytes.Equal(bytes.TrimSpace(content), bytes.TrimSpace(template)) {
+			return true
+		}
 	}
-	return bytes.Equal(bytes.TrimSpace(content), bytes.TrimSpace(skillTemplateEmbedded))
+	digest := sha256.Sum256(bytes.TrimSpace(content))
+	_, ok := legacyManagedSkillHashes[hex.EncodeToString(digest[:])]
+	return ok
+}
+
+func skillTargetDisplayName(target string) string {
+	switch target {
+	case skillTargetClaude:
+		return "Claude Code"
+	case skillTargetGrok:
+		return "Grok Build"
+	default:
+		return "Codex"
+	}
 }
 
 func ensurePlanmaxxReminder(path string) (bool, error) {

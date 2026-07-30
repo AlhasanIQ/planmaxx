@@ -49,7 +49,7 @@ func newUpdateCommand(stdout io.Writer) *cobra.Command {
 			}
 			_, err = fmt.Fprintf(
 				stdout,
-				"Updated PlanMaxx from %s to %s.\nIf you use Claude Code, refresh its installed skill with `planmaxx skill install --target claude` for a user install, or rerun it with the original `--repo <path>` for a repository install.\n",
+				"Updated PlanMaxx from %s to %s.\nIf you use a copied agent skill, refresh it with `planmaxx skill install --target claude` or `planmaxx skill install --target grok` for a user install, or rerun the matching command with the original `--repo <path>` for a repository install.\n",
 				status.CurrentVersion,
 				status.LatestVersion,
 			)
@@ -94,7 +94,7 @@ func beginAutomaticUpdateCheck(parent context.Context) <-chan string {
 
 func agentUpdateNotice(status updater.Status) string {
 	return fmt.Sprintf(
-		"Agent maintenance notice:\nA PlanMaxx update is available (%s -> %s). Tell the user briefly that an update exists for PlanMaxx. If they want it installed, run `planmaxx update`.",
+		"PlanMaxx update available:\nA PlanMaxx update is available (%s -> %s). Run `planmaxx update` to install it.",
 		status.CurrentVersion,
 		status.LatestVersion,
 	)

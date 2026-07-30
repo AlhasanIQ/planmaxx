@@ -14,12 +14,16 @@ an agent provider is optional.
    disables assisted actions. It does not substitute a fresh or copied-context
    agent run.
 
-## Initial providers
+## Supported providers
 
 - Codex attaches through `CODEX_THREAD_ID` and `codex app-server`.
 - Local Claude Code's plain PlanMaxx skill substitutes `${CLAUDE_SESSION_ID}`
   into an invocation-only session flag, then uses a safe-mode, tool-disabled,
   non-persistent fork of that exact Claude session.
+- Grok Build's native skill substitutes `${SESSION_ID}` into an invocation-only
+  session flag. Assisted actions use a restricted named fork of that exact
+  session in a temporary copy of the parent workspace and delete the isolated
+  state after every request.
 
 The skill-supplied Claude session ID takes precedence over ambient session
 markers. For useful bare-command detection, PlanMaxx also reads
@@ -29,13 +33,20 @@ Ambient detection does not replace the exact skill handoff: Anthropic
 documents that ID-less `--continue` or `--resume` startup can leave
 `CLAUDE_CODE_SESSION_ID` pointing at the initial startup ID. An executable
 merely being present on `PATH` is not evidence that its context belongs to the
-caller. Reviewers can explicitly select `codex`, `claude`, or `none`.
+caller. The Grok skill likewise supplies its exact session at invocation time;
+automatic selection deliberately ignores the hook-only `GROK_SESSION_ID`
+variable. Reviewers can explicitly select `codex`, `claude`, `grok`, or `none`.
 
 ## Safety and presentation
 
 - Assisted prompts run in validated disposable forks and must not mutate the
   workspace. Codex is read-only and network-disabled; Claude Code disables
-  customizations and built-in tools for the child process.
+  customizations and built-in tools for the child process. Grok Build copies
+  the parent project into an isolated workspace at the same relative CWD,
+  relocates project paths, excludes and validates away executable agent
+  configuration, applies a fail-closed sandbox that denies the original
+  project, disables web, memory, subagents, MCP, shell, and editing tools, and
+  deletes its persisted named child and copied state after the operation.
 - HTML plans remain source-authoritative while Preview is a first-class review
   surface. Rendered text selections and element targets map back to source
   anchors used by comments, side questions, iteration, revisions, and handoff.

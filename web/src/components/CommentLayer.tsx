@@ -14,13 +14,14 @@ export function CommentThreadStack({
   threads, sideAnswersByThread, focusedThreadId, reviewTargetThreadId, onHover, onSetIntent, onReply, onDelete, onEdit,
   onCreateFollowUp, onAskSide, onIterate, onInclude, onKeepPrivate, agentActions, disabled, sideQuestionsEnabled,
   onMarkAddressed,
-  placement, anchorLine, top, hidden, historyOpen,
+  placement, anchorLine, top, hidden, historyOpen, onActivate,
 }: {
   threads: Thread[];
   sideAnswersByThread: Map<string, SideAnswer[]>;
   focusedThreadId: string | null;
   reviewTargetThreadId?: string;
   onHover: (threadId: string | null) => void;
+  onActivate?: (threadId: string) => void;
   onSetIntent: (threadId: string, intent: ThreadIntent) => void | Promise<void>;
   onReply: (threadId: string) => void;
   onDelete: (threadId: string) => void;
@@ -52,6 +53,7 @@ export function CommentThreadStack({
       key={thread.id} thread={thread}
       sideAnswers={sideAnswersByThread.get(thread.id) ?? []} isFocused={focusedThreadId === thread.id} isReviewTarget={reviewTargetThreadId === thread.id}
       onHover={onHover} onSetIntent={onSetIntent} onReply={onReply} onDelete={onDelete} onEdit={onEdit} onMarkAddressed={onMarkAddressed} onCreateFollowUp={onCreateFollowUp}
+      onActivate={onActivate}
       onAskSide={onAskSide} onIterate={onIterate} onInclude={onInclude} onKeepPrivate={onKeepPrivate}
       agentAction={agentActions[thread.id]} disabled={disabled} sideQuestionsEnabled={sideQuestionsEnabled}
       presentation={placement === "inline" ? "inline" : "rail"}
@@ -80,7 +82,11 @@ export function CommentThreadStack({
 }
 
 export function useCommentRailMetrics(
-  articleRef: React.RefObject<HTMLElement>, railRef: React.RefObject<HTMLElement>, commentView: CommentView, lines: number[],
+  articleRef: React.RefObject<HTMLElement>,
+  railRef: React.RefObject<HTMLElement>,
+  commentView: CommentView,
+  lines: number[],
+  layoutIdentity = "",
 ) {
   const [metrics, setMetrics] = useState<Map<number, CommentRailMetric>>(new Map());
   const lineKey = lines.join(",");
@@ -113,7 +119,7 @@ export function useCommentRailMetrics(
     update();
     window.addEventListener("resize", update);
     return () => { cancelAnimationFrame(frame); observer?.disconnect(); window.removeEventListener("resize", update); };
-  }, [articleRef, commentView, lineKey, railRef, lines]);
+  }, [articleRef, commentView, layoutIdentity, lineKey, railRef, lines]);
   return metrics;
 }
 

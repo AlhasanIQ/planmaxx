@@ -49,6 +49,10 @@ func TestFinalizeSimplePlanWritesHandoff(t *testing.T) {
 	if health.Status != "active" || health.SessionID != "session-1" {
 		t.Fatalf("unexpected health response %+v", health)
 	}
+	state := getState(t, review.url)
+	if state.Agent.ID != "none" || state.Agent.Available {
+		t.Fatalf("default auto mode should start a standalone review without agent context: %+v", state.Agent)
+	}
 
 	finalize(t, review.url, digest("Approved simple review", nil, nil))
 	waitSuccess(t, review)
@@ -56,6 +60,54 @@ func TestFinalizeSimplePlanWritesHandoff(t *testing.T) {
 	output := review.stdout.String()
 	assertContains(t, output, "Continue the user's approved plan work.")
 	assertContains(t, output, "Approved simple review")
+}
+
+func TestStandaloneManualReviewNeedsNoAgent(t *testing.T) {
+	review := startReviewWithArgs(
+		t,
+		realisticPlan("Standalone manual review"),
+		[]string{"--agent", "none", "--no-browser"},
+		map[string]string{
+			"PLANMAXX_AGENT":             "codex",
+			"CODEX_THREAD_ID":            "stale-codex-thread",
+			"CLAUDE_CODE_SESSION_ID":     "not-a-session",
+			"PLANMAXX_CLAUDE_SESSION_ID": "not-a-session",
+			"GROK_SESSION_ID":            "not-a-session",
+		},
+	)
+
+	state := getState(t, review.url)
+	if state.Agent.ID != "none" || state.Agent.Available || state.Agent.ContextMode != "unavailable" {
+		t.Fatalf("unexpected standalone agent state: %+v", state.Agent)
+	}
+	if state.Capabilities.CanIterate {
+		t.Fatalf("standalone review advertised agent iteration: %+v", state.Capabilities)
+	}
+
+	thread := createThread(t, review.url, 3, 3, "Review this manually.")
+	state = getState(t, review.url)
+	if len(state.Threads) != 1 {
+		t.Fatalf("expected standalone review thread, got %+v", state.Threads)
+	}
+	if state.Threads[0].Capabilities.CanAsk || state.Threads[0].Capabilities.CanIterate {
+		t.Fatalf("standalone thread advertised assisted actions: %+v", state.Threads[0].Capabilities)
+	}
+	if !state.Threads[0].Capabilities.CanEdit || !state.Threads[0].Capabilities.CanReply {
+		t.Fatalf("standalone thread lost ordinary review actions: %+v", state.Threads[0].Capabilities)
+	}
+
+	payload := fmt.Sprintf(`{"threadID":%q,"question":"Why?","planExcerpt":"manual"}`, thread.ID)
+	postJSON(t, review.url+"/api/side-questions", payload, http.StatusServiceUnavailable)
+	postJSON(t, review.url+"/api/threads/"+thread.ID+"/reply", `{"body":"Manual decision."}`, http.StatusOK)
+
+	draft := draftDigest(t, review.url)
+	if !containsString(draft.ReviewerDecisions, "Review this manually.") ||
+		!containsString(draft.ReviewerDecisions, "Manual decision.") {
+		t.Fatalf("standalone decisions missing from digest: %+v", draft.ReviewerDecisions)
+	}
+	finalize(t, review.url, draft)
+	waitSuccess(t, review)
+	assertContains(t, review.stdout.String(), "Manual decision.")
 }
 
 func TestCancelReviewExitsNonZeroWithoutHandoff(t *testing.T) {
@@ -213,6 +265,123 @@ func TestClaudeCodeSkillInvocationUsesExactActiveSessionFork(t *testing.T) {
 	assertFileContains(t, fake.stdinPath, "Why this order?")
 
 	finalize(t, review.url, digest("Claude review approved", nil, nil))
+	waitSuccess(t, review)
+}
+
+func TestGrokBuildSkillInvocationUsesExactActiveSessionFork(t *testing.T) {
+	const sessionID = "019c0f29-e4f8-7c7b-bb88-b3f7a68e605d"
+	fake := installFakeGrok(t, "Grok answer from the active session.")
+	sourceGrokHome := installFakeGrokSession(t, sessionID, "The source conversation context.")
+	review := startReviewWithArgs(t, realisticPlan("Grok side question"), []string{
+		"--grok-session-id", sessionID,
+	}, map[string]string{
+		"PATH":            fake.pathEnv,
+		"GROK_HOME":       sourceGrokHome,
+		"GROK_SESSION_ID": "36ce14ad-f0b7-4544-97d7-e1097e344268",
+	})
+	state := getState(t, review.url)
+	if state.Agent.ID != "grok" || state.Agent.DisplayName != "Grok Build" || !state.Agent.Available || state.Agent.ContextMode != "current-session-fork" {
+		t.Fatalf("unexpected attached Grok state: %+v", state.Agent)
+	}
+	thread := createThread(t, review.url, 5, 5, "Ask Grok.")
+
+	answer := askSideQuestion(t, review.url, thread.ID, "Why this order?", "1. CLI\n2. UI")
+	if answer.Answer != "Grok answer from the active session." {
+		t.Fatalf("unexpected side answer %q", answer.Answer)
+	}
+	for _, want := range []string{
+		`"command": "fork"`,
+		`"sourceSessionId": "` + sessionID + `"`,
+		`"sessionKind": "fork"`,
+		`"--cwd"`,
+		`"--output-format", "json"`,
+		`"--tools", "read_file,grep,list_dir"`,
+		`"--allow", "Read(`,
+		`"--allow", "Grep(`,
+		`"--deny", "MCPTool"`,
+		`"--permission-mode", "dontAsk"`,
+		`"--sandbox", "planmaxx-isolated"`,
+		`"--no-subagents"`,
+		`"--no-memory"`,
+		`"--disable-web-search"`,
+		`"--no-plan"`,
+		`"--max-turns", "2"`,
+		`"auto_update_disabled": true`,
+		`"isolated_home": true`,
+		`"isolated_grok_home": true`,
+		`"isolated_claude_config": true`,
+		"provided read-only tools",
+		"Do not edit files",
+		"Why this order?",
+		`"command": "delete"`,
+	} {
+		assertFileContains(t, fake.stdinPath, want)
+	}
+	if strings.Contains(readFileString(t, fake.stdinPath), `"--tools", ""`) {
+		t.Fatal("Grok integration must never use an empty tool allowlist")
+	}
+	if strings.Contains(readFileString(t, fake.stdinPath), `"--fork-session"`) {
+		t.Fatal("the relocated ACP child must not be forked a second time")
+	}
+
+	finalize(t, review.url, digest("Grok review approved", nil, nil))
+	waitSuccess(t, review)
+}
+
+func TestGrokBuildSectionAndWholeReviewIterationParseAndApply(t *testing.T) {
+	const sessionID = "019c0f29-e4f8-7c7b-bb88-b3f7a68e605d"
+	fake := installFakeGrok(t, `<planmaxx_proposal version="1" revision="{{REVISION}}"><summary>Added recovery.</summary><replacement target="lines"><expected>1. Verify the CLI contract and localhost server behavior.</expected><content>1. Verify the CLI contract, localhost server behavior, and recovery path.</content></replacement></planmaxx_proposal>`)
+	sourceGrokHome := installFakeGrokSession(t, sessionID, "The source conversation context.")
+	review := startReviewWithArgs(t, realisticPlan("Grok iteration"), []string{
+		"--grok-session-id", sessionID,
+	}, map[string]string{
+		"PATH":      fake.pathEnv,
+		"GROK_HOME": sourceGrokHome,
+	})
+
+	var sectionProposal struct {
+		ID           string `json:"id"`
+		Kind         string `json:"kind"`
+		ProposedPlan string `json:"proposedPlan"`
+	}
+	postJSONInto(
+		t,
+		review.url+"/api/revisions/propose-section",
+		`{"anchor":{"startLine":10,"endLine":10},"instruction":"Add the recovery path."}`,
+		http.StatusOK,
+		&sectionProposal,
+	)
+	if sectionProposal.ID == "" || sectionProposal.Kind != "" ||
+		!strings.Contains(sectionProposal.ProposedPlan, "recovery path") {
+		t.Fatalf("unexpected Grok section proposal: %+v", sectionProposal)
+	}
+	postJSON(t, review.url+"/api/revisions/proposals/"+sectionProposal.ID+"/discard", `{}`, http.StatusOK)
+
+	var reviewProposal struct {
+		ID           string `json:"id"`
+		Kind         string `json:"kind"`
+		ProposedPlan string `json:"proposedPlan"`
+	}
+	postJSONInto(
+		t,
+		review.url+"/api/revisions/propose-review",
+		`{"summary":"Add the recovery path before approval."}`,
+		http.StatusOK,
+		&reviewProposal,
+	)
+	if reviewProposal.ID == "" || reviewProposal.Kind != "review" ||
+		!strings.Contains(reviewProposal.ProposedPlan, "recovery path") {
+		t.Fatalf("unexpected Grok whole-review proposal: %+v", reviewProposal)
+	}
+	postJSON(t, review.url+"/api/revisions/proposals/"+reviewProposal.ID+"/apply", `{}`, http.StatusOK)
+	if state := getState(t, review.url); state.CurrentRevisionID != "rev-2" ||
+		!strings.Contains(state.Plan, "recovery path") {
+		t.Fatalf("Grok whole-review proposal was not applied: %+v", state)
+	}
+	assertFileContains(t, fake.stdinPath, "Add the recovery path.")
+	assertFileContains(t, fake.stdinPath, "Add the recovery path before approval.")
+
+	finalize(t, review.url, digest("Grok iteration approved", nil, nil))
 	waitSuccess(t, review)
 }
 
@@ -496,6 +665,7 @@ func startReviewFull(t *testing.T, plan string, args []string, env map[string]st
 			"PATH":                       basePath,
 			"CODEX_THREAD_ID":            "",
 			"CLAUDE_CODE_SESSION_ID":     "",
+			"GROK_SESSION_ID":            "",
 			"PLANMAXX_AGENT":             "",
 			"PLANMAXX_CLAUDE_SESSION_ID": "",
 		}, env)
@@ -518,6 +688,7 @@ func startReviewFull(t *testing.T, plan string, args []string, env map[string]st
 			"PATH":                       basePath,
 			"CODEX_THREAD_ID":            "",
 			"CLAUDE_CODE_SESSION_ID":     "",
+			"GROK_SESSION_ID":            "",
 			"PLANMAXX_AGENT":             "",
 			"PLANMAXX_CLAUDE_SESSION_ID": "",
 		}, filtered)
@@ -632,7 +803,10 @@ func askSideQuestion(t *testing.T, url string, threadID string, question string,
 type stateResponse struct {
 	Plan              string `json:"plan"`
 	CurrentRevisionID string `json:"currentRevisionId"`
-	Agent             struct {
+	Capabilities      struct {
+		CanIterate bool `json:"canIterate"`
+	} `json:"capabilities"`
+	Agent struct {
 		ID          string `json:"id"`
 		DisplayName string `json:"displayName"`
 		ContextMode string `json:"contextMode"`
@@ -648,6 +822,12 @@ type stateResponse struct {
 			X int `json:"x"`
 			Y int `json:"y"`
 		} `json:"position"`
+		Capabilities struct {
+			CanEdit    bool `json:"canEdit"`
+			CanReply   bool `json:"canReply"`
+			CanAsk     bool `json:"canAsk"`
+			CanIterate bool `json:"canIterate"`
+		} `json:"capabilities"`
 	} `json:"threads"`
 	SideAnswers []sideAnswerResponse `json:"sideAnswers"`
 }
@@ -835,6 +1015,7 @@ func installFakeCodexAppServer(t *testing.T, answer string, slow bool) fakeComma
 	python := `#!/usr/bin/env python3
 import json
 import os
+import re
 import sys
 import time
 
@@ -945,6 +1126,193 @@ PLANMAXX_FAKE_CLAUDE_ANSWER=%q PLANMAXX_FAKE_CLAUDE_TRANSCRIPT=%q exec python3 %
 		t.Fatalf("write fake Claude Code wrapper: %v", err)
 	}
 	return fakeCommand{pathEnv: dir + string(os.PathListSeparator) + os.Getenv("PATH"), stdinPath: stdinPath}
+}
+
+func installFakeGrok(t *testing.T, answer string) fakeCommand {
+	t.Helper()
+	dir := t.TempDir()
+	transcriptPath := filepath.Join(dir, "transcript.jsonl")
+	pythonPath := filepath.Join(dir, "fake-grok.py")
+	python := `#!/usr/bin/env python3
+import json
+import os
+import re
+import shutil
+import sys
+import urllib.parse
+
+args = sys.argv[1:]
+if "--version" in args:
+    print("grok 0.2.114 (test) [stable]")
+    sys.exit(0)
+
+if "--help" in args:
+    print("--cwd --prompt-file --resume --fork-session --session-id --output-format --tools --allow --deny --permission-mode --sandbox --no-subagents --no-memory --disable-web-search --no-plan --max-turns --verbatim")
+    sys.exit(0)
+
+if args == ["agent", "--no-leader", "stdio"]:
+    for line in sys.stdin:
+        request = json.loads(line)
+        request_id = request.get("id")
+        method = request.get("method")
+        if method == "initialize":
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": {"loadSession": True},
+                    "_meta": {"grokShell": True}
+                }
+            }), flush=True)
+        elif method == "_x.ai/session/fork":
+            params = request["params"]
+            source_id = params["sourceSessionId"]
+            child_id = params["newSessionId"]
+            new_cwd = params["newCwd"]
+            source_dir = None
+            sessions_root = os.path.join(os.environ["GROK_HOME"], "sessions")
+            for namespace in os.listdir(sessions_root):
+                candidate = os.path.join(sessions_root, namespace, source_id)
+                if os.path.isdir(candidate):
+                    source_dir = candidate
+                    break
+            if source_dir is None:
+                print(json.dumps({"jsonrpc":"2.0","id":request_id,"error":{"code":-32002,"message":"source not found"}}), flush=True)
+                continue
+            child_dir = os.path.join(
+                sessions_root,
+                urllib.parse.quote(new_cwd, safe=""),
+                child_id
+            )
+            os.makedirs(child_dir, exist_ok=True)
+            with open(os.path.join(source_dir, "summary.json"), "r", encoding="utf-8") as source_summary_file:
+                summary = json.load(source_summary_file)
+            summary["info"]["id"] = child_id
+            summary["info"]["cwd"] = new_cwd
+            with open(os.path.join(child_dir, "summary.json"), "w", encoding="utf-8") as child_summary_file:
+                json.dump(summary, child_summary_file)
+            source_chat = os.path.join(source_dir, "chat_history.jsonl")
+            if os.path.exists(source_chat):
+                shutil.copyfile(source_chat, os.path.join(child_dir, "chat_history.jsonl"))
+            with open(os.environ["PLANMAXX_FAKE_GROK_TRANSCRIPT"], "a", encoding="utf-8") as transcript:
+                transcript.write(json.dumps({"command":"fork","params":params}) + "\n")
+            print(json.dumps({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "newSessionId": child_id,
+                    "chatMessagesCopied": 1,
+                    "updatesCopied": 0,
+                    "planStateCopied": False,
+                    "newCwd": new_cwd,
+                    "parentSessionId": source_id
+                }
+            }), flush=True)
+        else:
+            print(json.dumps({"jsonrpc":"2.0","id":request_id,"error":{"code":-32601,"message":"unsupported"}}), flush=True)
+    sys.exit(0)
+
+if "inspect" in args and "--json" in args:
+    print(json.dumps({
+        "projectInstructions": [],
+        "hooks": [],
+        "skills": [],
+        "plugins": [],
+        "marketplaces": [],
+        "mcpServers": [],
+        "lspServers": [],
+        "agents": [{"source": {"type": "builtin"}}],
+        "permissions": {"managedSettingsActive": False},
+        "configSources": {"layers": []}
+    }))
+    sys.exit(0)
+
+if len(args) >= 3 and args[0:2] == ["sessions", "delete"]:
+    sessions_root = os.path.join(os.environ["GROK_HOME"], "sessions")
+    for namespace in os.listdir(sessions_root):
+        candidate = os.path.join(sessions_root, namespace, args[2])
+        if os.path.isdir(candidate):
+            shutil.rmtree(candidate)
+    with open(os.environ["PLANMAXX_FAKE_GROK_TRANSCRIPT"], "a", encoding="utf-8") as transcript:
+        transcript.write(json.dumps({"command": "delete", "session_id": args[2]}) + "\n")
+    sys.exit(0)
+
+prompt_path = args[args.index("--prompt-file") + 1]
+fork_id = args[args.index("--resume") + 1]
+with open(prompt_path, "r", encoding="utf-8") as prompt_file:
+    prompt = prompt_file.read()
+answer = os.environ["PLANMAXX_FAKE_GROK_ANSWER"]
+if "{{REVISION}}" in answer:
+    match = re.search(r'<planmaxx_iteration\b[^>]*\brevision="([^"]+)"', prompt)
+    if not match:
+        print("missing iteration revision", file=sys.stderr)
+        sys.exit(2)
+    answer = answer.replace("{{REVISION}}", match.group(1))
+with open(os.environ["PLANMAXX_FAKE_GROK_TRANSCRIPT"], "a", encoding="utf-8") as transcript:
+    transcript.write(json.dumps({
+        "command": "prompt",
+        "args": args,
+        "prompt": prompt,
+        "auto_update_disabled": os.environ.get("GROK_DISABLE_AUTOUPDATER") == "1",
+        "isolated_home": "planmaxx-grok-isolation-" in os.environ.get("HOME", ""),
+        "isolated_grok_home": "planmaxx-grok-isolation-" in os.environ.get("GROK_HOME", ""),
+        "isolated_claude_config": "planmaxx-grok-isolation-" in os.environ.get("CLAUDE_CONFIG_DIR", "")
+    }) + "\n")
+
+print(json.dumps({
+    "text": answer,
+    "stopReason": "EndTurn",
+    "sessionId": fork_id
+}))
+`
+	if err := os.WriteFile(pythonPath, []byte(python), 0o700); err != nil {
+		t.Fatalf("write fake Grok Build process: %v", err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+PLANMAXX_FAKE_GROK_ANSWER=%q PLANMAXX_FAKE_GROK_TRANSCRIPT=%q exec python3 %q "$@"
+`, answer, transcriptPath, pythonPath)
+	if err := os.WriteFile(filepath.Join(dir, "grok"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake Grok Build wrapper: %v", err)
+	}
+	return fakeCommand{pathEnv: dir + string(os.PathListSeparator) + os.Getenv("PATH"), stdinPath: transcriptPath}
+}
+
+func installFakeGrokSession(t *testing.T, sessionID string, context string) string {
+	t.Helper()
+	grokHome := t.TempDir()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "service.go"), []byte("package service\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := filepath.Join(grokHome, "sessions", "%2Frepo", sessionID)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	summary := fmt.Sprintf(`{"info":{"id":%q,"cwd":%q},"current_model_id":"grok-4.5"}`, sessionID, workspace)
+	if err := os.WriteFile(filepath.Join(sessionDir, "summary.json"), []byte(summary), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	history, err := json.Marshal(map[string]string{"role": "user", "content": context})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "chat_history.jsonl"), append(history, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(grokHome, "auth.json"), []byte(`{"test":"auth"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return grokHome
+}
+
+func readFileString(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
 }
 
 // prependPath returns a copy of env with `dir` prepended to PATH, so a fake

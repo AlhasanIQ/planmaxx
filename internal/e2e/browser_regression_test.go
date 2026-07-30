@@ -38,6 +38,20 @@ func TestBrowserDiffRegression(t *testing.T) {
 	if os.Getenv("PLANMAXX_BROWSER_E2E") != "1" {
 		t.Skip("set PLANMAXX_BROWSER_E2E=1 to run the Playwright regression")
 	}
+	t.Run("standalone manual review", func(t *testing.T) {
+		before := "# Manual review\n\nKeep this step."
+		after := "# Manual review\n\nKeep this safer step."
+		s := session.New("browser-standalone", before)
+		s.CreateSectionProposal(session.SectionProposalInput{
+			Anchor:          session.Anchor{StartLine: 3, EndLine: 3},
+			OriginalSection: "Keep this step.",
+			ProposedSection: "Keep this safer step.",
+			ProposedPlan:    after,
+			Summary:         "Exercise local proposal controls without an agent.",
+		})
+		runStandaloneBrowserRegression(t, s)
+	})
+
 	t.Run("pending proposal comments and tables", func(t *testing.T) {
 		filler := make([]string, 35)
 		for index := range filler {
@@ -91,7 +105,15 @@ func TestBrowserDiffRegression(t *testing.T) {
 	})
 
 	t.Run("html preview annotations and outline navigation", func(t *testing.T) {
-		plan := `<main>
+		headCSS := strings.Repeat(".planmaxx-scroll-filler { color: inherit; }\n", 48)
+		plan := `<!doctype html>
+<html>
+<head>
+<style>
+` + headCSS + `</style>
+</head>
+<body>
+<main>
 <h1>Launch &amp; rollback plan</h1>
 <p>Owner: <strong>Platform</strong> 🚀</p>
 <section aria-label="Rollout controls">
@@ -128,11 +150,25 @@ func TestBrowserDiffRegression(t *testing.T) {
 </section>
 <pre><code>planmaxx review launch.html</code></pre>
 </section>
-</main>`
+</main>
+</body>
+</html>`
+		lineContaining := func(fragment string) int {
+			for index, line := range strings.Split(plan, "\n") {
+				if strings.Contains(line, fragment) {
+					return index + 1
+				}
+			}
+			t.Fatalf("HTML browser fixture is missing %q", fragment)
+			return 0
+		}
 		s := session.NewWithFormat("browser-html-outline", plan, planformat.HTML)
-		s.AddThread(session.Anchor{StartLine: 5, EndLine: 5}, "Existing heading element comment")
-		s.AddThread(session.Anchor{StartLine: 8, StartChar: 9, EndLine: 8, EndChar: 16}, "Existing list comment")
-		s.AddThread(session.Anchor{StartLine: 13, StartChar: 44, EndLine: 13, EndChar: 52}, "Existing table comment")
+		headingLine := lineContaining("<h2>Safety checks</h2>")
+		listLine := lineContaining("<li>Ship &amp; iterate carefully.</li>")
+		tableLine := lineContaining("<tbody><tr><td>Error budget")
+		s.AddThread(session.Anchor{StartLine: headingLine, EndLine: headingLine}, "Existing heading element comment")
+		s.AddThread(session.Anchor{StartLine: listLine, StartChar: 9, EndLine: listLine, EndChar: 16}, "Existing list comment")
+		s.AddThread(session.Anchor{StartLine: tableLine, StartChar: 44, EndLine: tableLine, EndChar: 52}, "Existing table comment")
 		runBrowserRegression(t, s, "html",
 			`<planmaxx_proposal version="1" revision="rev-1"><summary>Safer rollout wording.</summary><replacement target="selection"><expected>iterate</expected><content>iterate safely</content></replacement></planmaxx_proposal>`,
 			`<planmaxx_proposal version="1" revision="rev-1"><summary>Added rollback emphasis.</summary><replacement target="selection"><expected>iterate safely</expected><content>iterate safely with rollback</content></replacement></planmaxx_proposal>`,
@@ -165,6 +201,29 @@ Owner: **Platform** 🚀
 			`<planmaxx_proposal version="1" revision="rev-1"><summary>Added rollback wording.</summary><replacement target="selection"><expected>Ship with a canary</expected><content>Ship with a canary and rollback gate</content></replacement></planmaxx_proposal>`,
 		)
 	})
+}
+
+func runStandaloneBrowserRegression(t *testing.T, s *session.Session) {
+	t.Helper()
+	reviewServer := review.NewServer(s).WithAgent(review.AgentInfo{
+		ID:                "none",
+		DisplayName:       "Agent",
+		ContextMode:       "unavailable",
+		Available:         false,
+		UnavailableReason: "No supported active agent session was detected.",
+	})
+	server := httptest.NewServer(reviewServer.Handler())
+	defer server.Close()
+	_, source, _, _ := runtime.Caller(0)
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	if _, err := exec.LookPath("bun"); err != nil {
+		t.Fatalf("browser regression requires Bun on PATH: %v", err)
+	}
+	command := exec.Command("bun", filepath.Join(root, "scripts", "e2e-browser.mjs"), server.URL, "standalone")
+	command.Dir = root
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("standalone browser regression failed: %v\n%s", err, output)
+	}
 }
 
 func runBrowserRegression(t *testing.T, s *session.Session, mode string, responses ...string) {

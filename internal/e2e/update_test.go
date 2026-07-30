@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -113,7 +114,7 @@ func TestUpdateCommandEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("update failed: %v\nstderr:\n%s", err, stderr)
 		}
-		if stdout != "Updated PlanMaxx from 1.0.0 to 1.1.0.\nIf you use Claude Code, refresh its installed skill with `planmaxx skill install --target claude` for a user install, or rerun it with the original `--repo <path>` for a repository install.\n" {
+		if stdout != "Updated PlanMaxx from 1.0.0 to 1.1.0.\nIf you use a copied agent skill, refresh it with `planmaxx skill install --target claude` or `planmaxx skill install --target grok` for a user install, or rerun the matching command with the original `--repo <path>` for a repository install.\n" {
 			t.Fatalf("unexpected stdout %q", stdout)
 		}
 		got, err := os.ReadFile(executable)
@@ -259,12 +260,123 @@ func TestUpdateCommandRejectsDevelopmentBuildEndToEnd(t *testing.T) {
 	}
 }
 
+func TestInstallScriptInstallsNativeGrokSkillEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix-like shell")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash is unavailable")
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl is unavailable")
+	}
+
+	built := buildPlanMaxxForUpdateE2E(t, updateTestVersion, "")
+	binary, err := os.ReadFile(built)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := updateReleaseArchive(t, "planmaxx", binary)
+	archiveName := releaseArchiveName("v" + updateTestVersion)
+	checksums := fmt.Sprintf("%x  %s\n", sha256.Sum256(archive), archiveName)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/" + archiveName:
+			_, _ = w.Write(archive)
+		case "/checksums.txt":
+			_, _ = io.WriteString(w, checksums)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	grokHome := filepath.Join(t.TempDir(), "custom-grok-home")
+	installDir := filepath.Join(t.TempDir(), "bin")
+	command := exec.Command(
+		"bash",
+		filepath.Join(repoRoot(t), "install.sh"),
+		"--version", "v"+updateTestVersion,
+		"--install-dir", installDir,
+		"--install-grok-skill",
+	)
+	command.Env = append(os.Environ(),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"GROK_HOME="+grokHome,
+		"PLANMAXX_BASE_URL="+server.URL,
+		"PLANMAXX_NO_UPDATE_CHECK=1",
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install.sh failed: %v\n%s", err, output)
+	}
+	installedBinary := filepath.Join(installDir, "planmaxx")
+	if _, err := os.Stat(installedBinary); err != nil {
+		t.Fatalf("installed binary missing: %v", err)
+	}
+	skillPath := filepath.Join(grokHome, "skills", "planmaxx", "SKILL.md")
+	skill, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("native Grok skill missing: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(skill), "planmaxx review --grok-session-id ${SESSION_ID}") ||
+		strings.Contains(string(skill), "--claude-session-id") {
+		t.Fatalf("installer wrote the wrong Grok skill:\n%s", skill)
+	}
+	if info, err := os.Lstat(skillPath); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("Grok skill must be a regular file: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".grok", "skills", "planmaxx", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("installer ignored GROK_HOME: %v", err)
+	}
+
+	standalone := startBuiltReviewForUpdateE2E(t, installedBinary, map[string]string{
+		"PLANMAXX_NO_UPDATE_CHECK": "1",
+	})
+	state := getState(t, standalone.url)
+	if state.Agent.ID != "none" || state.Agent.Available {
+		t.Fatalf("installed binary did not start in standalone auto mode: %+v", state.Agent)
+	}
+	thread := createThread(t, standalone.url, 3, 3, "Installed standalone review.")
+	postJSON(t, standalone.url+"/api/threads/"+thread.ID+"/reply", `{"body":"Works outside an agent session."}`, http.StatusOK)
+	finalize(t, standalone.url, draftDigest(t, standalone.url))
+	waitSuccess(t, standalone)
+	assertContains(t, standalone.stdout.String(), "Works outside an agent session.")
+}
+
+func TestInstallScriptRejectsInvalidSkillOptionsBeforeWriting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix-like shell")
+	}
+	installDir := filepath.Join(t.TempDir(), "bin")
+	command := exec.Command(
+		"bash",
+		filepath.Join(repoRoot(t), "install.sh"),
+		"--version", "v"+updateTestVersion,
+		"--install-dir", installDir,
+	)
+	command.Env = append(os.Environ(),
+		"PLANMAXX_INSTALL_CLAUDE_SKILL=1",
+		"PLANMAXX_INSTALL_GROK_SKILL=invalid",
+		"PLANMAXX_BASE_URL=http://127.0.0.1:1/must-not-be-contacted",
+	)
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "invalid PLANMAXX_INSTALL_GROK_SKILL") {
+		t.Fatalf("expected early option validation, err=%v output=%s", err, output)
+	}
+	if _, err := os.Stat(installDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid options wrote the install directory: %v", err)
+	}
+}
+
 func TestReviewUpdateCheckEndToEnd(t *testing.T) {
 	fixture := newUpdateReleaseFixture(t)
 	built := buildPlanMaxxForUpdateE2E(t, updateTestVersion, fixture.server.URL+"/latest")
 	validRelease := updateReleaseScenario{latest: "v1.1.0", archive: updateReleaseArchive(t, "planmaxx", []byte("unused"))}
 
-	t.Run("adds an agent notice to the finalized handoff", func(t *testing.T) {
+	t.Run("adds a caller-neutral notice to the finalized handoff", func(t *testing.T) {
 		fixture.set(validRelease)
 		review := startBuiltReviewForUpdateE2E(t, built, nil)
 		finalize(t, review.url, digest("Update notice approved", nil, nil))
@@ -272,8 +384,10 @@ func TestReviewUpdateCheckEndToEnd(t *testing.T) {
 
 		output := review.stdout.String()
 		assertContains(t, output, "A PlanMaxx update is available (1.0.0 -> 1.1.0).")
-		assertContains(t, output, "Tell the user briefly that an update exists for PlanMaxx.")
-		assertContains(t, output, "run `planmaxx update`")
+		assertContains(t, output, "Run `planmaxx update`")
+		if strings.Contains(output, "Tell the user") {
+			t.Fatalf("update notice addressed an assumed calling agent: %q", output)
+		}
 	})
 
 	t.Run("disabled checks make no request and add no notice", func(t *testing.T) {
@@ -282,7 +396,7 @@ func TestReviewUpdateCheckEndToEnd(t *testing.T) {
 		finalize(t, review.url, digest("Disabled update check approved", nil, nil))
 		waitSuccess(t, review)
 
-		if strings.Contains(review.stdout.String(), "Agent maintenance notice") {
+		if strings.Contains(review.stdout.String(), "PlanMaxx update available") {
 			t.Fatalf("disabled update check added a notice: %q", review.stdout.String())
 		}
 		if fixture.hitCount("/latest") != 0 {
@@ -367,12 +481,17 @@ func startBuiltReviewForUpdateE2E(t *testing.T, executable string, env map[strin
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	cmd := exec.CommandContext(ctx, executable, "review", "--no-browser", planPath)
+	cmd.Dir = dir
 	isolatedHome := t.TempDir()
 	cmd.Env = mergeEnv(map[string]string{
-		"HOME":                     isolatedHome,
-		"XDG_CACHE_HOME":           filepath.Join(isolatedHome, "cache"),
-		"CODEX_THREAD_ID":          "",
-		"PLANMAXX_NO_UPDATE_CHECK": "",
+		"HOME":                       isolatedHome,
+		"XDG_CACHE_HOME":             filepath.Join(isolatedHome, "cache"),
+		"CODEX_THREAD_ID":            "",
+		"CLAUDE_CODE_SESSION_ID":     "",
+		"PLANMAXX_CLAUDE_SESSION_ID": "",
+		"GROK_SESSION_ID":            "",
+		"PLANMAXX_AGENT":             "",
+		"PLANMAXX_NO_UPDATE_CHECK":   "",
 	}, env)
 	stdout := &lockedBuffer{}
 	stderr := &lockedBuffer{}

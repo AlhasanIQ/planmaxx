@@ -7,6 +7,7 @@ INSTALL_DIR="${PLANMAXX_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL_OVERRIDE="${PLANMAXX_BASE_URL:-}"
 INSTALL_CODEX_SKILL="${PLANMAXX_INSTALL_CODEX_SKILL:-0}"
 INSTALL_CLAUDE_SKILL="${PLANMAXX_INSTALL_CLAUDE_SKILL:-0}"
+INSTALL_GROK_SKILL="${PLANMAXX_INSTALL_GROK_SKILL:-0}"
 
 log() {
   printf '[planmaxx installer] %s\n' "$*"
@@ -30,6 +31,7 @@ Options:
   --repo <owner/repo>     GitHub repo (default: AlhasanIQ/planmaxx)
   --install-codex-skill   Also install the optional user-level Codex skill under ~/.agents/skills
   --install-claude-skill  Also install the optional user-level Claude Code skill
+  --install-grok-skill    Also install the optional user-level Grok Build skill
   --help                  Show this help
 
 Environment overrides:
@@ -38,6 +40,7 @@ Environment overrides:
   PLANMAXX_INSTALL_DIR
   PLANMAXX_INSTALL_CODEX_SKILL=1
   PLANMAXX_INSTALL_CLAUDE_SKILL=1
+  PLANMAXX_INSTALL_GROK_SKILL=1
   PLANMAXX_BASE_URL        Override release asset base URL for mirrors or tests
 EOF
 }
@@ -161,9 +164,11 @@ install_binary() {
 }
 
 install_codex_skill() {
-  local skill_dir skill_file skill_url
+  local skill_dir skill_file skill_url skill_tmp
 
-  if "$BIN_PATH" skill install; then
+  if "$BIN_PATH" skill install --help >/dev/null 2>&1; then
+    "$BIN_PATH" skill install ||
+      die "the installed PlanMaxx binary could not install the Codex skill"
     return
   fi
 
@@ -175,18 +180,31 @@ install_codex_skill() {
   mkdir -p "$skill_dir"
   download_to_file "$skill_url" "${TMPDIR_PLANMAXX}/SKILL.md"
   verify_checksum "${TMPDIR_PLANMAXX}/SKILL.md" "$CHECKSUMS"
-  if command -v install >/dev/null 2>&1; then
-    install -m 0644 "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_file"
-  else
-    cp "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_file"
-    chmod 0644 "$skill_file"
+  if [[ -L "$skill_file" ]]; then
+    die "refusing to overwrite unmanaged skill: ${skill_file}"
   fi
+  if [[ -e "$skill_file" ]] && ! cmp -s "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_file"; then
+    die "refusing to overwrite unmanaged skill: ${skill_file}"
+  fi
+  skill_tmp="$(mktemp "${skill_dir}/.SKILL.md.tmp.XXXXXX")"
+  if command -v install >/dev/null 2>&1; then
+    install -m 0644 "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_tmp"
+  else
+    cp "${TMPDIR_PLANMAXX}/SKILL.md" "$skill_tmp"
+    chmod 0644 "$skill_tmp"
+  fi
+  mv -f "$skill_tmp" "$skill_file"
   log "Installed ${skill_file}"
 }
 
 install_claude_skill() {
   "$BIN_PATH" skill install --target claude ||
     die "the installed PlanMaxx binary could not install the Claude Code skill"
+}
+
+install_grok_skill() {
+  "$BIN_PATH" skill install --target grok ||
+    die "the installed PlanMaxx binary could not install the Grok Build skill"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -214,6 +232,10 @@ while [[ $# -gt 0 ]]; do
       INSTALL_CLAUDE_SKILL="1"
       shift
       ;;
+    --install-grok-skill)
+      INSTALL_GROK_SKILL="1"
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -223,6 +245,19 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+validate_bool() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    1|true|TRUE|yes|YES|0|false|FALSE|no|NO|"") ;;
+    *) die "invalid ${name} value: ${value} (expected 1/0, true/false, yes/no)" ;;
+  esac
+}
+
+validate_bool "PLANMAXX_INSTALL_CODEX_SKILL" "$INSTALL_CODEX_SKILL"
+validate_bool "PLANMAXX_INSTALL_CLAUDE_SKILL" "$INSTALL_CLAUDE_SKILL"
+validate_bool "PLANMAXX_INSTALL_GROK_SKILL" "$INSTALL_GROK_SKILL"
 
 require_cmd tar
 require_cmd uname
@@ -287,5 +322,23 @@ case "$INSTALL_CLAUDE_SKILL" in
     ;;
   *)
     die "invalid PLANMAXX_INSTALL_CLAUDE_SKILL value: ${INSTALL_CLAUDE_SKILL} (expected 1/0, true/false, yes/no)"
+    ;;
+esac
+
+case "$INSTALL_GROK_SKILL" in
+  1|true|TRUE|yes|YES)
+    log "Installing optional user-level Grok Build skill..."
+    install_grok_skill
+    case ":${PATH}:" in
+      *":${INSTALL_DIR}:"*) ;;
+      *) log "The Grok Build skill requires ${INSTALL_DIR} on PATH to run PlanMaxx." ;;
+    esac
+    log "Grok Build reloads native skills when their files change."
+    ;;
+  0|false|FALSE|no|NO|"")
+    log "Optional Grok Build skill not installed. To enable it later, run: ${BIN_PATH} skill install --target grok"
+    ;;
+  *)
+    die "invalid PLANMAXX_INSTALL_GROK_SKILL value: ${INSTALL_GROK_SKILL} (expected 1/0, true/false, yes/no)"
     ;;
 esac

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## v0.7.0 - 2026-07-30
+
+- Added Grok Build assisted review through exact invocation-time `${SESSION_ID}`
+  skill handoff and restricted forks of the active session. Each fork gets an
+  isolated copy of the parent project at the same relative CWD, without agent
+  hooks/configuration. Grok's ACP fork relocates conversation paths into the
+  copy; the temporary session, home, and workspace are validated and deleted
+  after use.
+- Added native user and repository Grok skill installation, `GROK_HOME`
+  support, automatic provider selection, capability checks for Grok Build
+  0.2.114+, and end-to-end fork, cleanup, cancellation, and installer coverage.
+- Made standalone CLI review a first-class mode: clean `auto` launches without
+  an agent, `--agent none` overrides stale provider markers, local comments,
+  replies, proposal decisions, approval, saving, and handoff remain available,
+  and assisted controls and wording disappear when no session is attached.
+- Added release-installer coverage that runs the installed binary through a
+  complete standalone review from an arbitrary working directory. Startup
+  update notices are now equally useful to manual callers and agents.
+- Anchored rendered-HTML comment cards directly beneath their target in
+  In-place view and beside the target's live iframe position in Alongside view.
+  Inline cards and drafts now scroll within Preview instead of growing or
+  scrolling the outer page.
+- Added two-way navigation feedback for HTML comments: selecting a side card
+  scrolls and pulses its Preview or Source anchor, while selecting highlighted
+  rendered/source content pulses the matching card. Crowded alongside cards
+  avoid overlap and retain an exact connector to the rendered target.
+- Replaced repeated provider documentation with concise feature and install
+  matrices for manual CLI, Codex, Claude Code, and Grok Build.
+
 ## v0.6.0 - 2026-07-30
 
 - Made rendered HTML Preview a complete review surface with source-mapped text

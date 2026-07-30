@@ -9,6 +9,289 @@ import (
 	"testing"
 )
 
+func TestSkillInstallGrokWritesNativeInvocationScopedSkill(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&bytes.Buffer{}, &stderr)
+	cmd.SetArgs([]string{"skill", "install", "--target", "grok"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Grok skill install failed: %v", err)
+	}
+
+	skillPath := filepath.Join(home, ".grok", "skills", "planmaxx", "SKILL.md")
+	got, err := os.ReadFile(skillPath)
+	if err != nil || string(got) != planmaxxSkillTestTemplate() {
+		t.Fatalf("expected native Grok skill: content=%q err=%v", got, err)
+	}
+	if info, err := os.Lstat(skillPath); err != nil {
+		t.Fatal(err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("Grok skill must be installed as a regular file")
+	}
+	if !strings.Contains(stderr.String(), "PlanMaxx grok skill (copy mode") {
+		t.Fatalf("unexpected install status: %s", stderr.String())
+	}
+}
+
+func TestSkillInstallRejectsSymlinkedManagedSourceWithoutTouchingTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly requires elevated privileges on Windows")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("do not overwrite\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managedPath, err := defaultManagedSkillSourcePath(skillTargetGrok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(managedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, managedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "grok"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "unmanaged PlanMaxx skill source") {
+		t.Fatalf("expected symlinked managed-source rejection, got %v", err)
+	}
+	if got, err := os.ReadFile(victim); err != nil || string(got) != "do not overwrite\n" {
+		t.Fatalf("managed-source symlink target changed: content=%q err=%v", got, err)
+	}
+}
+
+func TestSkillCopyIgnoresPredictableTemporarySymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly requires elevated privileges on Windows")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	destination := filepath.Join(home, ".grok", "skills", "planmaxx")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("do not overwrite\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(destination, "SKILL.md.tmp")); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "grok"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(victim); err != nil || string(got) != "do not overwrite\n" {
+		t.Fatalf("predictable temporary symlink target changed: content=%q err=%v", got, err)
+	}
+	target := filepath.Join(destination, skillFileName)
+	if info, err := os.Lstat(target); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("installed Grok skill is not a regular file: info=%v err=%v", info, err)
+	}
+}
+
+func TestSkillInstallGrokRepoScopedAndUsesGrokHome(t *testing.T) {
+	t.Run("repository", func(t *testing.T) {
+		home := t.TempDir()
+		configDir := filepath.Join(t.TempDir(), "config")
+		repoDir := t.TempDir()
+		setSkillTestDirs(t, home, configDir)
+		SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+		cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+		cmd.SetArgs([]string{"skill", "install", "--target", "grok", "--repo", repoDir})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		skillPath := filepath.Join(repoDir, ".grok", "skills", "planmaxx", "SKILL.md")
+		if got, err := os.ReadFile(skillPath); err != nil || string(got) != planmaxxSkillTestTemplate() {
+			t.Fatalf("expected repo Grok skill: content=%q err=%v", got, err)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".grok", "skills", "planmaxx", "SKILL.md")); !os.IsNotExist(err) {
+			t.Fatalf("global Grok skill should remain untouched: %v", err)
+		}
+	})
+
+	t.Run("GROK_HOME", func(t *testing.T) {
+		home := t.TempDir()
+		configDir := filepath.Join(t.TempDir(), "config")
+		grokHome := filepath.Join(t.TempDir(), "custom-grok")
+		setSkillTestDirs(t, home, configDir)
+		t.Setenv("GROK_HOME", grokHome)
+		SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+		cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+		cmd.SetArgs([]string{"skill", "install", "--target", "grok"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(grokHome, "skills", "planmaxx", "SKILL.md")); err != nil {
+			t.Fatalf("expected skill under GROK_HOME: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".grok", "skills", "planmaxx", "SKILL.md")); !os.IsNotExist(err) {
+			t.Fatalf("default Grok home should remain untouched: %v", err)
+		}
+	})
+}
+
+func TestSkillRemoveGrokIsIdempotentAndPreservesUnmanagedFiles(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	install := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	install.SetArgs([]string{"skill", "install", "--target", "grok"})
+	if err := install.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	remove := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	remove.SetArgs([]string{"skill", "remove", "--target", "grok"})
+	if err := remove.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	secondStderr := &bytes.Buffer{}
+	removeAgain := NewRootCommand(&bytes.Buffer{}, secondStderr)
+	removeAgain.SetArgs([]string{"skill", "remove", "--target", "grok"})
+	if err := removeAgain.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(secondStderr.String(), "not found") {
+		t.Fatalf("expected idempotent removal status: %s", secondStderr.String())
+	}
+
+	skillPath := filepath.Join(home, ".grok", "skills", "planmaxx", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("# my custom skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unmanagedStderr := &bytes.Buffer{}
+	removeUnmanaged := NewRootCommand(&bytes.Buffer{}, unmanagedStderr)
+	removeUnmanaged.SetArgs([]string{"skill", "remove", "--target", "grok"})
+	if err := removeUnmanaged.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(skillPath); err != nil || string(got) != "# my custom skill\n" {
+		t.Fatalf("unmanaged skill changed: content=%q err=%v", got, err)
+	}
+	if !strings.Contains(unmanagedStderr.String(), "Skipped unmanaged skill") {
+		t.Fatalf("missing unmanaged warning: %s", unmanagedStderr.String())
+	}
+}
+
+func TestSkillInstallGrokRejectsLinkMode(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "grok", "--link"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "Grok Build skill installs use copy mode") {
+		t.Fatalf("expected Grok link rejection, got %v", err)
+	}
+}
+
+func TestSkillInstallGrokRejectsCustomSource(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	source := filepath.Join(t.TempDir(), "SKILL.md")
+	if err := os.WriteFile(source, []byte(planmaxxSkillTestTemplate()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "grok", "--source", source})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "do not support custom --source") {
+		t.Fatalf("expected custom source rejection, got %v", err)
+	}
+}
+
+func TestSkillInstallAndRemovePreserveCustomizedManagedMarker(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+	skillPath := filepath.Join(home, ".grok", "skills", "planmaxx", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	custom := []byte("---\nname: custom\n---\n\n<!-- planmaxx-managed-skill -->\nCustomized.\n")
+	if err := os.WriteFile(skillPath, custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	install := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	install.SetArgs([]string{"skill", "install", "--target", "grok"})
+	if err := install.Execute(); err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged skill") {
+		t.Fatalf("expected customized marker file to block install, got %v", err)
+	}
+
+	var stderr bytes.Buffer
+	remove := NewRootCommand(&bytes.Buffer{}, &stderr)
+	remove.SetArgs([]string{"skill", "remove", "--target", "grok"})
+	if err := remove.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(skillPath); err != nil || !bytes.Equal(content, custom) {
+		t.Fatalf("customized marker file changed: content=%q err=%v", content, err)
+	}
+	if !strings.Contains(stderr.String(), "Skipped unmanaged skill") {
+		t.Fatalf("expected unmanaged warning, got %s", stderr.String())
+	}
+}
+
+func TestSkillInstallGrokUsesProductionTemplate(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	previous := skillTemplatesEmbedded
+	skillTemplatesEmbedded = map[string][]byte{
+		skillTargetCodex:  append([]byte(nil), defaultCodexSkillTemplate...),
+		skillTargetClaude: append([]byte(nil), defaultClaudeSkillTemplate...),
+		skillTargetGrok:   append([]byte(nil), defaultGrokSkillTemplate...),
+	}
+	t.Cleanup(func() { skillTemplatesEmbedded = previous })
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "grok"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(home, ".grok", "skills", "planmaxx", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(content, defaultGrokSkillTemplate) {
+		t.Fatal("Grok target did not install the production Grok template")
+	}
+	if !strings.Contains(string(content), "planmaxx review --grok-session-id ${SESSION_ID}") ||
+		strings.Contains(string(content), "--claude-session-id") {
+		t.Fatalf("installed production Grok invocation is incorrect:\n%s", content)
+	}
+}
+
 func TestSkillInstallClaudeWritesPlainInvocationScopedSkill(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(t.TempDir(), "config")
@@ -177,6 +460,51 @@ func TestSkillInstallMigratesManagedClaudePluginToPlainSkill(t *testing.T) {
 	}
 	if _, err := os.Stat(installDir); !os.IsNotExist(err) {
 		t.Fatalf("migrated Claude skill should be removed, stat err: %v", err)
+	}
+}
+
+func TestSkillInstallMigratesRelativeLegacyLinkToCodexManagedSource(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation commonly requires elevated privileges on Windows")
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	managedCodex, err := defaultManagedSkillSourcePath(skillTargetCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(managedCodex), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(managedCodex, []byte(planmaxxSkillTestTemplate()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	legacySkill := filepath.Join(installDir, "skills", "planmaxx", skillFileName)
+	if err := os.MkdirAll(filepath.Dir(legacySkill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(filepath.Dir(legacySkill), managedCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relative, legacySkill); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("migrate relative legacy link: %v", err)
+	}
+	if _, err := os.Lstat(legacySkill); !os.IsNotExist(err) {
+		t.Fatalf("relative legacy link remains after migration: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(installDir, skillFileName)); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("plain Claude skill missing after migration: info=%v err=%v", info, err)
 	}
 }
 
@@ -811,7 +1139,7 @@ func TestSkillHelpShowsTargetAndRepositoryScope(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("skill install help: %v", err)
 	}
-	for _, visible := range []string{"--repo", "--target", "codex or claude"} {
+	for _, visible := range []string{"--repo", "--target", "codex, claude, or grok"} {
 		if !strings.Contains(stdout.String(), visible) {
 			t.Fatalf("expected skill help to contain %q, got %q", visible, stdout.String())
 		}
@@ -833,17 +1161,28 @@ func TestREADMEDocumentsSetupAndHowToUseModes(t *testing.T) {
 	quickStart := markdownSection(t, content, "## Quick Start", "## Screenshots")
 
 	for _, want := range []string{
-		"Agent Skills",
+		"## Supported harnesses",
+		"| Manual CLI |",
+		"| Codex |",
+		"| Claude Code |",
+		"| Grok Build |",
+		"Core review",
+		"`/btw`",
+		"Iterate and refine",
 		"--install-codex-skill",
 		"--install-claude-skill",
+		"--install-grok-skill",
 		"planmaxx skill install",
 		"planmaxx skill remove",
 		"~/.agents/skills/planmaxx/",
 		"planmaxx skill install --target claude",
 		"~/.claude/skills/planmaxx/",
+		"planmaxx skill install --target grok",
+		".grok/skills/planmaxx/SKILL.md",
+		"$GROK_HOME/skills/planmaxx/SKILL.md",
 		"skills/planmaxx/SKILL.md",
-		"planmaxx skill install --repo /path/to/repo",
-		"planmaxx skill remove --repo /path/to/repo",
+		"--repo /path/to/repo",
+		"--agent none",
 	} {
 		if !strings.Contains(install, want) {
 			t.Fatalf("expected Install section to mention %q", want)
@@ -877,11 +1216,14 @@ func TestInstallerDocumentsOptionalSkillInstall(t *testing.T) {
 	for _, want := range []string{
 		"--install-codex-skill",
 		"--install-claude-skill",
+		"--install-grok-skill",
 		"~/.agents/skills",
 		"PLANMAXX_INSTALL_CODEX_SKILL",
 		"PLANMAXX_INSTALL_CLAUDE_SKILL",
+		"PLANMAXX_INSTALL_GROK_SKILL",
 		"skill install",
 		"skill install --target claude",
+		"skill install --target grok",
 		"${BASE_URL}/SKILL.md",
 		"verify_checksum \"${TMPDIR_PLANMAXX}/SKILL.md\" \"$CHECKSUMS\"",
 	} {
@@ -909,18 +1251,40 @@ func TestRepoSkillMatchesEmbeddedTemplate(t *testing.T) {
 			t.Fatalf("installed skill must document %q", want)
 		}
 	}
-	for _, want := range []string{
-		"`planmaxx review --claude-session-id ${CLAUDE_SESSION_ID} <plan-file>`",
-		"`planmaxx review <plan-file>`",
-		"invocation-only",
-	} {
-		if !strings.Contains(string(embeddedSkill), want) {
-			t.Fatalf("installed skill must document invocation-only behavior %q", want)
+	if !strings.Contains(string(embeddedSkill), "`planmaxx review <plan-file>`") {
+		t.Fatal("Codex skill must use the provider-neutral invocation")
+	}
+	for _, forbidden := range []string{"--claude-session-id", "--grok-session-id", "${SESSION_ID}", "${CLAUDE_SESSION_ID}"} {
+		if strings.Contains(string(embeddedSkill), forbidden) {
+			t.Fatalf("Codex skill must not contain another provider's invocation marker %q", forbidden)
 		}
 	}
-	for _, forbidden := range []string{"claude-session-hook", "PLANMAXX_CLAUDE_SESSION_ID", "CLAUDE_ENV_FILE", ".claude-plugin"} {
-		if strings.Contains(string(embeddedSkill), forbidden) {
-			t.Fatalf("installed skill must not require legacy Claude setup %q", forbidden)
+
+	claudeSkill, err := os.ReadFile(filepath.Join(root, "internal", "cli", "SKILL.claude.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(claudeSkill), "`planmaxx review --claude-session-id ${CLAUDE_SESSION_ID} <plan-file>`") ||
+		!strings.Contains(string(claudeSkill), "invocation-only") {
+		t.Fatal("Claude skill must use invocation-scoped Claude session substitution")
+	}
+	for _, forbidden := range []string{"--grok-session-id", "PLANMAXX_CLAUDE_SESSION_ID", "CLAUDE_ENV_FILE", ".claude-plugin"} {
+		if strings.Contains(string(claudeSkill), forbidden) {
+			t.Fatalf("Claude skill contains unsafe or cross-provider setup %q", forbidden)
+		}
+	}
+
+	grokSkill, err := os.ReadFile(filepath.Join(root, "internal", "cli", "SKILL.grok.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(grokSkill), "`planmaxx review --grok-session-id ${SESSION_ID} <plan-file>`") ||
+		!strings.Contains(string(grokSkill), "invocation-only") {
+		t.Fatal("Grok skill must use invocation-scoped native session substitution")
+	}
+	for _, forbidden := range []string{"--claude-session-id", "${CLAUDE_SESSION_ID}"} {
+		if strings.Contains(string(grokSkill), forbidden) {
+			t.Fatalf("Grok skill contains cross-provider invocation %q", forbidden)
 		}
 	}
 }
@@ -930,6 +1294,7 @@ func setSkillTestDirs(t *testing.T, home string, configDir string) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("GROK_HOME", "")
 	oldHome := skillUserHomeDir
 	oldConfig := skillUserConfigDir
 	skillUserHomeDir = func() (string, error) { return home, nil }

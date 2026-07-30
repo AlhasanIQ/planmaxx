@@ -8,7 +8,11 @@ description: Use when an agent-written plan, design, or spec needs user review b
 # PlanMaxx
 
 1. Write the plan to a Markdown or HTML file.
-2. Run `planmaxx review <plan-file>`.
+2. Run
+   `planmaxx review --grok-session-id ${SESSION_ID} <plan-file>`.
+   Grok Build substitutes `${SESSION_ID}` with the active session ID when
+   invoking the skill. This is invocation-only: do not install or rely on
+   hooks, `SessionStart`, or persistent environment variables.
    On finalization, PlanMaxx writes the finalized plan back to that source file
    and prints the approved handoff to stdout. Use
    `--save-to-file /tmp/final-plan.md` to write only the finalized plan content
@@ -35,6 +39,10 @@ Useful flags:
   this path instead of the source plan. The handoff still goes to stdout. The
   file is written only after approval; canceling writes no plan file.
 
-When Codex provides its active task identifier, PlanMaxx associates the review
-with that session. Plain review, comments, approval, and handoff remain
-available without host-agent context.
+The invocation associates the review with this active Grok Build session.
+PlanMaxx answers assisted requests in disposable forks with a temporary copy of
+this session's workspace at the same relative working directory. Read-only
+file tools remain available for `/btw` and iteration, while hooks, shell, edits,
+web, memory, subagents, and MCP calls are unavailable. PlanMaxx removes the
+temporary child session, home, and workspace afterward. Plain review, comments,
+approval, and handoff remain available without host-agent context.

@@ -95,6 +95,8 @@ export interface HTMLPreviewAnnotation {
   end: number;
   active?: boolean;
   draft?: boolean;
+  inlineSlot?: boolean;
+  slotHeight?: number;
 }
 
 export function htmlPreviewAnnotation(source: string, anchor: Anchor, id: string): HTMLPreviewAnnotation | null {

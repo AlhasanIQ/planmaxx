@@ -20,6 +20,7 @@ interface ThreadCardProps {
   isFocused: boolean;
   isReviewTarget?: boolean;
   onHover: (id: string | null) => void;
+  onActivate?: (id: string) => void;
   onSetIntent: (id: string, intent: ThreadIntent) => void;
   onReply: (id: string) => void;
   onDelete: (id: string) => void;
@@ -38,7 +39,7 @@ interface ThreadCardProps {
 
 export function ThreadCard(props: ThreadCardProps) {
   const {
-    thread, sideAnswers, isFocused, isReviewTarget, onHover, onSetIntent, onReply, onDelete,
+    thread, sideAnswers, isFocused, isReviewTarget, onHover, onActivate, onSetIntent, onReply, onDelete,
     onEdit, onMarkAddressed, onCreateFollowUp, onAskSide, onIterate, onInclude, onKeepPrivate,
     agentAction, disabled, sideQuestionsEnabled, presentation = "rail",
   } = props;
@@ -55,6 +56,11 @@ export function ThreadCard(props: ThreadCardProps) {
       data-thread-lifecycle={thread.lifecycle}
       onMouseEnter={() => onHover(thread.id)}
       onMouseLeave={() => onHover(null)}
+      onClick={(event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("button,input,textarea,select,a,summary,[contenteditable]")) return;
+        onActivate?.(thread.id);
+      }}
     >
       <header className="thread-card-header">
         <div className="thread-card-heading">

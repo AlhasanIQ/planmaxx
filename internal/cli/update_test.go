@@ -26,7 +26,7 @@ func TestUpdateCommandInstallsLatestRelease(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if got := stdout.String(); got != "Updated PlanMaxx from 0.2.0 to 0.3.0.\nIf you use Claude Code, refresh its installed skill with `planmaxx skill install --target claude` for a user install, or rerun it with the original `--repo <path>` for a repository install.\n" {
+	if got := stdout.String(); got != "Updated PlanMaxx from 0.2.0 to 0.3.0.\nIf you use a copied agent skill, refresh it with `planmaxx skill install --target claude` or `planmaxx skill install --target grok` for a user install, or rerun the matching command with the original `--repo <path>` for a repository install.\n" {
 		t.Fatalf("unexpected update output %q", got)
 	}
 }
@@ -79,16 +79,19 @@ func TestUpdateCommandWrapsFailure(t *testing.T) {
 	}
 }
 
-func TestAgentUpdateNoticeAddressesCallingAgent(t *testing.T) {
+func TestAgentUpdateNoticeWorksForAgentsAndManualCLI(t *testing.T) {
 	notice := agentUpdateNotice(updater.Status{CurrentVersion: "0.2.0", LatestVersion: "0.3.0"})
 	for _, want := range []string{
-		"Agent maintenance notice",
-		"Tell the user",
+		"PlanMaxx update available",
+		"0.2.0 -> 0.3.0",
 		"planmaxx update",
 	} {
 		if !strings.Contains(notice, want) {
 			t.Fatalf("expected notice to contain %q, got %q", want, notice)
 		}
+	}
+	if strings.Contains(notice, "Tell the user") {
+		t.Fatalf("manual CLI update notice must not address a calling agent: %q", notice)
 	}
 }
 

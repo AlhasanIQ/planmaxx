@@ -85,9 +85,11 @@ export function TopBar(props: Props) {
         </button>
         <span
           className="review-in-progress hidden md:inline-flex"
-          title={`${agentDisplayName || "The calling agent"} is waiting for this review`}
+          title={agentAvailable
+            ? `${agentDisplayName || "The calling agent"} is waiting for this review`
+            : agentUnavailableReason || "No agent session is attached to this manual review"}
         >
-          <Pause size={11} /> {agentDisplayName || "Agent"} waiting
+          <Pause size={11} /> {agentAvailable ? `${agentDisplayName || "Agent"} waiting` : "Manual review"}
         </span>
         <span
           className={`hidden rounded-full px-2 py-0.5 text-[11px] font-medium lg:inline-flex ${agentAvailable ? "bg-accent/10 text-accent" : "bg-surface-muted text-foreground-muted"}`}

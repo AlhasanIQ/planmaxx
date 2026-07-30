@@ -170,72 +170,100 @@
 .html-plan-preview {
   display: block;
   width: 100%;
-  min-height: min(72vh, 900px);
+  height: min(72vh, 900px);
+  min-height: 420px;
   border: 0;
   background: var(--color-surface-elevated);
 }
-.html-preview-comments {
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-surface-muted) 28%, var(--color-surface-elevated));
+.html-preview-frame-shell {
+  position: relative;
+  height: min(72vh, 900px);
+  min-height: 420px;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  isolation: isolate;
+  background: var(--color-surface-elevated);
 }
-.html-preview-comments-heading {
-  display: grid;
-  gap: 2px;
-  color: var(--color-foreground);
-  font-size: 12px;
-  font-weight: 700;
+.html-preview-overlay-layer {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
-.html-preview-comments-heading small {
-  color: var(--color-foreground-muted);
-  font-size: 11px;
-  font-weight: 500;
+.html-preview-anchored-overlay {
+  position: absolute;
+  max-width: calc(100% - 24px);
+  pointer-events: auto;
 }
-.html-preview-comments .plan-thread-stack.is-inline {
-  width: auto;
+.html-preview-anchored-overlay .plan-thread-stack.is-inline {
+  width: 100%;
   margin: 0;
 }
-.html-preview-comments .plan-thread-stack.is-inline::before,
-.html-preview-comments .plan-thread-stack.is-inline::after {
+.html-preview-anchored-overlay .plan-thread-stack.is-inline::before,
+.html-preview-anchored-overlay .plan-thread-stack.is-inline::after {
   display: none;
 }
-.html-preview-comment-rail {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  min-height: 0;
-  padding: 12px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-card);
-  background: var(--color-surface-elevated);
-  box-shadow: var(--shadow-soft);
+.html-preview-anchored-overlay .inline-comment-composer {
+  margin: 0;
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop);
 }
-.html-preview-comment-rail .plan-thread-stack.is-alongside {
+.html-preview-comment-rail {
+  display: block;
+  position: relative;
+  min-height: 0;
+  height: min(72vh, 900px);
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.html-preview-rail-comment {
+  position: absolute;
+  right: 0;
+  left: 0;
+  overflow: visible;
+  padding-left: 16px;
+  transition: top 110ms ease-out, opacity 100ms ease-out;
+}
+.html-preview-rail-card-scroll {
+  max-height: min(120px, calc(72vh - 16px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.html-preview-rail-comment.is-hidden,
+.html-preview-rail-comment.is-hidden .plan-thread-stack {
+  visibility: hidden !important;
+  pointer-events: none;
+}
+.html-preview-rail-comment:has(.thread.is-focus) {
+  z-index: 2;
+}
+.html-preview-rail-comment:has(.thread.is-focus) .html-preview-rail-card-scroll {
+  max-height: min(280px, calc(72vh - 16px));
+}
+.html-preview-rail-comment .plan-thread-stack.is-alongside {
   position: static;
   padding-left: 0;
 }
-.html-preview-comment-rail .plan-thread-stack.is-alongside::before,
-.html-preview-comment-rail .plan-thread-stack.is-alongside::after {
-  display: none;
+.html-preview-rail-comment::before {
+  content: "";
+  position: absolute;
+  top: var(--html-comment-anchor-y, 20px);
+  left: 0;
+  width: 16px;
+  border-top: 1px solid color-mix(in srgb, var(--color-accent) 66%, var(--color-border));
 }
-.html-preview-composer-floating {
-  position: fixed;
-  z-index: 45;
-  right: 20px;
-  bottom: 20px;
-  width: min(560px, calc(100vw - 40px));
-  max-height: calc(100vh - 40px);
-  overflow: auto;
-  border-radius: 12px;
-  box-shadow: var(--shadow-pop);
-}
-.html-preview-composer-floating .inline-comment-composer {
-  margin: 0;
-}
-.html-preview-composer-floating .inline-comment-composer > .flex {
-  flex-wrap: wrap;
+.html-preview-rail-comment::after {
+  content: "";
+  position: absolute;
+  top: var(--html-comment-connector-top, 20px);
+  left: 0;
+  height: var(--html-comment-connector-height, 0);
+  border-left: 1px solid color-mix(in srgb, var(--color-accent) 66%, var(--color-border));
 }
 .plan-comparison-banner {
   display: flex;
@@ -1266,6 +1294,27 @@
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent), var(--shadow-soft);
 }
+.thread.is-link-ping {
+  animation: comment-link-ping 720ms cubic-bezier(.2, .8, .2, 1);
+}
+.line-row.is-link-ping {
+  animation: source-link-ping 720ms cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes comment-link-ping {
+  0%, 100% { transform: translateX(0); }
+  28% {
+    transform: translateX(-5px);
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-accent) 24%, transparent), var(--shadow-pop);
+  }
+}
+@keyframes source-link-ping {
+  0%, 100% { background: transparent; }
+  28% {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+    box-shadow: inset 4px 0 var(--color-accent);
+  }
+}
 .thread-card-header {
   display: flex;
   align-items: flex-start;
@@ -1439,6 +1488,9 @@
   padding: 7px 8px;
 }
 @media (max-width: 1180px) {
+  .plan-with-comment-rail.has-html-preview {
+    position: relative;
+  }
   .plan-with-comment-rail.is-alongside {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1460,6 +1512,24 @@
   }
   .plan-row-main {
     min-height: 0 !important;
+  }
+  .plan-comment-rail.html-preview-comment-rail {
+    display: block;
+    position: absolute;
+    z-index: 6;
+    top: 0;
+    right: 8px;
+    width: min(360px, calc(100% - 28px));
+    margin-right: 0;
+    margin-bottom: 0;
+    margin-left: 0;
+    pointer-events: none;
+  }
+  .html-preview-comment-rail .html-preview-rail-comment {
+    pointer-events: auto;
+  }
+  .html-preview-comment-rail .plan-thread-stack.is-alongside {
+    position: static;
   }
 }
 
@@ -1531,6 +1601,22 @@
   .plan-comment-rail .plan-thread-stack.is-alongside {
     margin-right: 0;
     margin-left: 0;
+  }
+  .html-plan-preview,
+  .html-preview-frame-shell,
+  .html-preview-comment-rail {
+    height: min(68vh, 760px);
+    min-height: 360px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thread.is-link-ping,
+  .line-row.is-link-ping {
+    animation-duration: 1ms;
+  }
+  .html-preview-rail-comment {
+    transition: none;
   }
 }
 

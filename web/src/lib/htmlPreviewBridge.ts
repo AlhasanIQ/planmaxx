@@ -17,7 +17,11 @@ export const htmlPreviewBridgeScript = String.raw`
   let overlayRoot = null;
   let renderFrame = 0;
   let positionFrame = 0;
+  let layoutFrame = 0;
   let lastPositionOffset = -1;
+  let pingedAnnotationId = null;
+  let pingTimer = 0;
+  const inlineSlots = new Map();
 
   function sourcePosition(offset) {
     const starts = config.lineStarts || [0];
@@ -123,10 +127,12 @@ export const htmlPreviewBridgeScript = String.raw`
       ".mark{position:fixed;box-sizing:border-box;border-radius:3px;background:rgba(65,105,225,.13);box-shadow:inset 0 -2px rgba(65,105,225,.72)}" +
       ".mark.is-active{background:rgba(65,105,225,.25);box-shadow:inset 0 -3px #4169e1,0 0 0 1px rgba(65,105,225,.24)}" +
       ".mark.is-draft{background:rgba(217,119,6,.2);box-shadow:inset 0 -3px #d97706}" +
+      ".mark.is-ping{animation:planmaxx-target-ping 720ms cubic-bezier(.2,.8,.2,1) both}" +
       ".target{position:fixed;box-sizing:border-box;border:2px solid #60a5fa;border-radius:5px;background:rgba(96,165,250,.08);box-shadow:0 0 0 1px rgba(15,23,42,.28),0 2px 9px rgba(15,23,42,.18)}" +
       ".target.is-existing{border-color:#34d399;background:rgba(52,211,153,.09)}" +
       ".target-label{position:fixed;box-sizing:border-box;max-width:min(240px,calc(100vw - 8px));overflow:hidden;border-radius:5px;padding:3px 7px;background:#172033;color:#f8fafc;box-shadow:0 2px 8px rgba(15,23,42,.3);font:600 11px/1.35 ui-sans-serif,system-ui,sans-serif;letter-spacing:.01em;text-overflow:ellipsis;white-space:nowrap}" +
-      ".target-label.is-existing{background:#065f46}";
+      ".target-label.is-existing{background:#065f46}" +
+      "@keyframes planmaxx-target-ping{0%{transform:scale(1);filter:brightness(1)}28%{transform:scale(1.045);filter:brightness(1.35);box-shadow:inset 0 -3px #4169e1,0 0 0 5px rgba(65,105,225,.28)}100%{transform:scale(1);filter:brightness(1)}}";
     shadow.appendChild(style);
     overlayRoot = document.createElement("div");
     overlayRoot.className = "root";
@@ -264,7 +270,8 @@ export const htmlPreviewBridgeScript = String.raw`
     root.replaceChildren();
     for (const annotation of annotations) {
       const className =
-        "mark" + (annotation.active ? " is-active" : "") + (annotation.draft ? " is-draft" : "");
+        "mark" + (annotation.active ? " is-active" : "") + (annotation.draft ? " is-draft" : "") +
+        (annotation.id === pingedAnnotationId ? " is-ping" : "");
       for (const rect of rectsForSourceSpan(annotation)) appendRect(className, rect);
     }
     if (hoverTarget) appendHoverTarget(hoverTarget);
@@ -275,36 +282,212 @@ export const htmlPreviewBridgeScript = String.raw`
     renderFrame = requestAnimationFrame(renderOverlays);
   }
 
-  function currentSourcePosition() {
-    const threshold = Math.min(120, window.innerHeight * 0.2);
-    const visible = [];
-    for (const element of document.querySelectorAll("[data-planmaxx-source]")) {
-      const span = sourceSpanForElement(element);
-      if (!span) continue;
-      const rect = element.getBoundingClientRect();
-      if (rect.bottom <= 0 || rect.top >= window.innerHeight) continue;
-      visible.push({ span, rect });
+  function slotHostForSourceSpan(span) {
+    const element = elementForSourceSpan(span);
+    if (!element) return null;
+    const table = element.closest("table");
+    if (table) return { element: table, inside: false };
+    const svg = element.closest("svg");
+    if (svg) return { element: svg, inside: false };
+    const details = element.closest("details");
+    if (details) return { element: details, inside: false };
+    const listItem = element.closest("li");
+    if (listItem) return { element: listItem, inside: false };
+    let candidate = element;
+    while (candidate && candidate !== document.body) {
+      const display = getComputedStyle(candidate).display;
+      if (/^(block|flow-root|flex|grid|list-item|table|table-row-group)$/.test(display)) {
+        return { element: candidate, inside: false };
+      }
+      candidate = candidate.parentElement;
     }
-    const afterThreshold = visible
-      .filter((entry) => entry.rect.top >= threshold - 12)
-      .sort((left, right) => left.rect.top - right.rect.top || (left.span.end - left.span.start) - (right.span.end - right.span.start));
-    if (afterThreshold.length > 0) return afterThreshold[0].span.start;
+    return { element: document.body, inside: true };
+  }
+
+  function makeInlineSlot(annotation) {
+    const slot = document.createElement("div");
+    slot.setAttribute("data-planmaxx-review-ui", "");
+    slot.setAttribute("data-planmaxx-inline-slot", annotation.id);
+    slot.setAttribute("aria-hidden", "true");
+    slot.style.setProperty("display", "block", "important");
+    slot.style.setProperty("box-sizing", "border-box", "important");
+    slot.style.setProperty("width", "100%", "important");
+    slot.style.setProperty("min-width", "0", "important");
+    slot.style.setProperty("clear", "both", "important");
+    slot.style.setProperty("pointer-events", "none", "important");
+    return slot;
+  }
+
+  function syncInlineSlots() {
+    const wanted = new Set();
+    for (const annotation of annotations) {
+      if (!annotation.inlineSlot) continue;
+      wanted.add(annotation.id);
+      let slot = inlineSlots.get(annotation.id);
+      let reveal = false;
+      if (!slot || !slot.isConnected) {
+        slot = makeInlineSlot(annotation);
+        inlineSlots.set(annotation.id, slot);
+        reveal = Boolean(annotation.draft);
+      }
+      const height = Math.max(96, Math.ceil(Number(annotation.slotHeight) || 260));
+      slot.style.setProperty("height", height + "px", "important");
+      const host = slotHostForSourceSpan(annotation);
+      if (!host) continue;
+      if (host.inside) {
+        if (slot.parentElement !== host.element) {
+          host.element.appendChild(slot);
+          reveal = reveal || Boolean(annotation.draft);
+        }
+      } else if (slot.previousElementSibling !== host.element) {
+        host.element.insertAdjacentElement("afterend", slot);
+        reveal = reveal || Boolean(annotation.draft);
+      }
+      if (reveal) {
+        requestAnimationFrame(() => {
+          slot.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
+          lastPositionOffset = -1;
+          schedulePosition();
+          scheduleLayout();
+        });
+      }
+    }
+    for (const [id, slot] of inlineSlots) {
+      if (wanted.has(id)) continue;
+      slot.remove();
+      inlineSlots.delete(id);
+    }
+  }
+
+  function unionRect(rects) {
+    const visible = rects.filter((rect) => rect && (rect.width > 0 || rect.height > 0));
+    if (visible.length === 0) return null;
+    const left = Math.min(...visible.map((rect) => rect.left));
+    const top = Math.min(...visible.map((rect) => rect.top));
+    const right = Math.max(...visible.map((rect) => rect.right));
+    const bottom = Math.max(...visible.map((rect) => rect.bottom));
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
+  }
+
+  function serializableRect(rect) {
+    if (!rect) return null;
+    return {
+      left: Math.round(rect.left * 10) / 10,
+      top: Math.round(rect.top * 10) / 10,
+      right: Math.round(rect.right * 10) / 10,
+      bottom: Math.round(rect.bottom * 10) / 10,
+      width: Math.round(rect.width * 10) / 10,
+      height: Math.round(rect.height * 10) / 10,
+    };
+  }
+
+  function publishLayout() {
+    layoutFrame = 0;
+    post("planmaxx:preview-layout", {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      targets: annotations.map((annotation) => ({
+        id: annotation.id,
+        target: serializableRect(unionRect(rectsForSourceSpan(annotation))),
+        slot: serializableRect(inlineSlots.get(annotation.id)?.getBoundingClientRect() || null),
+      })),
+    });
+  }
+
+  function scheduleLayout() {
+    if (layoutFrame) return;
+    layoutFrame = requestAnimationFrame(publishLayout);
+  }
+
+  function pingAnnotation(id) {
+    pingedAnnotationId = id;
+    clearTimeout(pingTimer);
+    scheduleOverlays();
+    pingTimer = setTimeout(() => {
+      pingedAnnotationId = null;
+      scheduleOverlays();
+    }, 760);
+  }
+
+  function firstLayoutRect(element) {
+    if (!element) return null;
+    const style = getComputedStyle(element);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      style.visibility === "collapse" ||
+      Number(style.opacity) === 0
+    ) {
+      return null;
+    }
+    const rects = [...element.getClientRects()];
+    const rect = rects.find((candidate) => candidate.width > 0 || candidate.height > 0) || element.getBoundingClientRect();
+    return rect.width > 0 || rect.height > 0 ? rect : null;
+  }
+
+  function renderedSourceEntries() {
+    const entries = [];
+    const body = document.body;
+    if (!body) return entries;
+    const elements = [];
+    if (body.matches("[data-planmaxx-source]")) elements.push(body);
+    elements.push(...body.querySelectorAll("[data-planmaxx-source]"));
+    for (const element of elements) {
+      const span = sourceSpanForElement(element);
+      const rect = firstLayoutRect(element);
+      if (!span || !rect) continue;
+      entries.push({ element, span, rect });
+    }
+    return entries;
+  }
+
+  function currentSourcePosition() {
+    const threshold = 8;
+    const visible = renderedSourceEntries().filter(
+      (entry) => entry.rect.bottom > threshold && entry.rect.top < window.innerHeight,
+    );
     const crossingThreshold = visible
       .filter((entry) => entry.rect.top < threshold && entry.rect.bottom > threshold)
       .sort((left, right) => (left.span.end - left.span.start) - (right.span.end - right.span.start));
-    return crossingThreshold[0]?.span.start ?? visible[0]?.span.start ?? 0;
+    if (crossingThreshold.length > 0) return crossingThreshold[0].span.start;
+    const afterThreshold = visible
+      .filter((entry) => entry.rect.top >= threshold)
+      .sort((left, right) => left.rect.top - right.rect.top || (left.span.end - left.span.start) - (right.span.end - right.span.start));
+    return afterThreshold[0]?.span.start ?? visible[0]?.span.start ?? null;
+  }
+
+  function distanceFromSourceSpan(target, candidate) {
+    if (candidate.end < target.start) return target.start - candidate.end;
+    if (candidate.start > target.end) return candidate.start - target.end;
+    return 0;
+  }
+
+  function scrollRectForSourceSpan(span) {
+    const entries = renderedSourceEntries();
+    const containing = entries
+      .filter((entry) => entry.span.start <= span.start && entry.span.end >= span.end)
+      .sort((left, right) => (left.span.end - left.span.start) - (right.span.end - right.span.start));
+    if (containing.length > 0) return containing[0].rect;
+    const nearest = entries.sort((left, right) => {
+      const distance = distanceFromSourceSpan(span, left.span) - distanceFromSourceSpan(span, right.span);
+      if (distance !== 0) return distance;
+      const leftIsAfter = left.span.start >= span.end ? 0 : 1;
+      const rightIsAfter = right.span.start >= span.end ? 0 : 1;
+      if (leftIsAfter !== rightIsAfter) return leftIsAfter - rightIsAfter;
+      return (left.span.end - left.span.start) - (right.span.end - right.span.start);
+    })[0];
+    return nearest?.rect ?? null;
   }
 
   function publishScrollPosition() {
     positionFrame = 0;
     const offset = currentSourcePosition();
+    if (offset === null) return;
     if (offset === lastPositionOffset) return;
     lastPositionOffset = offset;
-    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
     post("planmaxx:preview-position", {
       offset,
       line: sourcePosition(offset).line,
-      ratio: maxScroll > 0 ? window.scrollY / maxScroll : 0,
     });
   }
 
@@ -358,6 +541,21 @@ export const htmlPreviewBridgeScript = String.raw`
     return annotations.find(
       (annotation) => !annotation.draft && annotation.start === span.start && annotation.end === span.end,
     );
+  }
+
+  function annotationAtPoint(x, y) {
+    const matches = [];
+    for (const annotation of annotations) {
+      if (annotation.draft) continue;
+      const hit = rectsForSourceSpan(annotation).some(
+        (rect) => x >= rect.left - 2 && x <= rect.right + 2 && y >= rect.top - 2 && y <= rect.bottom + 2,
+      );
+      if (hit) matches.push(annotation);
+    }
+    return matches.sort((left, right) => {
+      if (Boolean(left.active) !== Boolean(right.active)) return left.active ? -1 : 1;
+      return (left.end - left.start) - (right.end - right.start);
+    })[0] || null;
   }
 
   function publishTextSelection(target) {
@@ -441,6 +639,14 @@ export const htmlPreviewBridgeScript = String.raw`
       if (disabled || nativeInteractiveTarget(event.target)) return;
       const selection = document.getSelection();
       if (selection && !selection.isCollapsed) return;
+      const clickedAnnotation = annotationAtPoint(event.clientX, event.clientY);
+      if (clickedAnnotation) {
+        event.preventDefault();
+        event.stopPropagation();
+        pingAnnotation(clickedAnnotation.id);
+        post("planmaxx:preview-focus-thread", { threadId: clickedAnnotation.id });
+        return;
+      }
       const element = closestSourceElement(event.target);
       const span = sourceSpanForElement(element);
       if (!element || !span || span.end <= span.start) return;
@@ -448,6 +654,7 @@ export const htmlPreviewBridgeScript = String.raw`
       event.stopPropagation();
       const existing = matchingAnnotation(span);
       if (existing) {
+        pingAnnotation(existing.id);
         post("planmaxx:preview-focus-thread", { threadId: existing.id });
         return;
       }
@@ -462,6 +669,25 @@ export const htmlPreviewBridgeScript = String.raw`
 
   window.addEventListener("blur", () => setHoverTarget(null));
 
+  function scrollToSourcePosition(message, attempt = 0) {
+    const span = { start: Number(message.start) || 0, end: Number(message.end) || 0 };
+    const rect = scrollRectForSourceSpan(span);
+    if (!rect) {
+      if (attempt < 3) {
+        requestAnimationFrame(() => scrollToSourcePosition(message, attempt + 1));
+      } else {
+        post("planmaxx:preview-scroll-miss");
+      }
+      return;
+    }
+    window.scrollTo({
+      top: Math.max(0, window.scrollY + rect.top - 8),
+      behavior: message.behavior === "smooth" ? "smooth" : "auto",
+    });
+    lastPositionOffset = -1;
+    schedulePosition();
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== parent) return;
     const message = event.data || {};
@@ -469,37 +695,47 @@ export const htmlPreviewBridgeScript = String.raw`
       annotations = Array.isArray(message.annotations) ? message.annotations : [];
       disabled = Boolean(message.disabled);
       if (disabled) setHoverTarget(null);
+      syncInlineSlots();
       scheduleOverlays();
+      scheduleLayout();
     }
     if (message.type === "planmaxx:preview-scroll") {
-      const span = { start: Number(message.start) || 0, end: Number(message.end) || 0 };
-      const rect = rectsForSourceSpan(span).find((candidate) => candidate.width > 0 || candidate.height > 0);
-      if (rect) {
-        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-        const anchorTop = Math.max(0, window.scrollY + rect.top - Math.min(120, window.innerHeight * 0.2));
-        const ratio = Number(message.ratio);
-        const ratioTop = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) * maxScroll : 0;
-        window.scrollTo({
-          top: Number.isFinite(ratio) ? Math.max(anchorTop, ratioTop) : anchorTop,
-          behavior: message.behavior === "smooth" ? "smooth" : "auto",
-        });
-      } else {
-        post("planmaxx:preview-scroll-miss");
-      }
+      scrollToSourcePosition(message);
+    }
+    if (message.type === "planmaxx:preview-scroll-by") {
+      window.scrollBy({ top: Number(message.top) || 0, left: Number(message.left) || 0, behavior: "auto" });
+    }
+    if (message.type === "planmaxx:preview-ping" && message.id) {
+      pingAnnotation(message.id);
     }
   });
 
   window.addEventListener("scroll", () => {
     scheduleOverlays();
     schedulePosition();
+    scheduleLayout();
   }, { passive: true });
   window.addEventListener("resize", () => {
     scheduleOverlays();
     schedulePosition();
+    scheduleLayout();
   }, { passive: true });
+  document.addEventListener("toggle", () => {
+    scheduleOverlays();
+    schedulePosition();
+    scheduleLayout();
+  }, true);
   registerTextSources();
+  if (typeof ResizeObserver !== "undefined" && document.body) {
+    const layoutObserver = new ResizeObserver(() => {
+      scheduleOverlays();
+      scheduleLayout();
+    });
+    layoutObserver.observe(document.body);
+  }
   scheduleOverlays();
   schedulePosition();
+  scheduleLayout();
   post("planmaxx:preview-ready");
 })();
 `;

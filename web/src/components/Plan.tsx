@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { AlertTriangle, Code2, Columns2, Eye, GitCompareArrows, ListTree, Loader2, MessageSquarePlus, Search, Sparkles } from "lucide-react";
 import { renderPlanLines, renderSourceLines } from "../lib/markdown";
 import { htmlPreviewAnnotation, htmlPreviewDocument, sourceOffsetsForAnchor, type HTMLPreviewAnnotation } from "../lib/htmlPreview";
+import { positionHTMLPreviewComments } from "../lib/htmlPreviewLayout";
 import type { Anchor, ChangeView, DocumentSnapshot, PendingProposalSummary, PlanFormat, ReviewStop, RevisionComparison, RevisionFeedback, SideAnswer, Thread, ThreadIntent } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
@@ -45,6 +45,7 @@ interface PlanProps {
   onIterateDraft: (anchor: Anchor, instruction: string, selectedText: string) => Promise<boolean>;
   disabled: boolean;
   proposalDisabled: boolean;
+  proposalRefineDisabled: boolean;
   proposalIterating: boolean;
   onApplyProposal: (proposalId: string) => void;
   onDiscardProposal: (proposalId: string) => void;
@@ -74,6 +75,27 @@ interface CommentDraft {
   intent: ThreadIntent;
 }
 
+interface HTMLPreviewRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+interface HTMLPreviewTargetLayout {
+  id: string;
+  target: HTMLPreviewRect | null;
+  slot: HTMLPreviewRect | null;
+}
+
+interface HTMLPreviewLayout {
+  width: number;
+  height: number;
+  targets: HTMLPreviewTargetLayout[];
+}
+
 export const ReviewDocument = memo(function ReviewDocument({
   plan,
   planFormat,
@@ -98,6 +120,7 @@ export const ReviewDocument = memo(function ReviewDocument({
   onIterateDraft,
   disabled,
   proposalDisabled,
+  proposalRefineDisabled,
   proposalIterating,
   onApplyProposal,
   onDiscardProposal,
@@ -121,10 +144,14 @@ export const ReviewDocument = memo(function ReviewDocument({
   const articleRef = useRef<HTMLElement>(null);
   const commentRailRef = useRef<HTMLElement>(null);
   const htmlPreviewRef = useRef<HTMLIFrameElement>(null);
-  const htmlPositionRef = useRef<{ line: number; offset: number; ratio: number } | null>(null);
+  const htmlPreviewShellRef = useRef<HTMLDivElement>(null);
+  const htmlPositionRef = useRef<{ line: number; offset: number } | null>(null);
   const pendingSourceRestoreRef = useRef(false);
   const pendingPreviewRestoreLineRef = useRef<number | null>(null);
   const [htmlPreviewReady, setHTMLPreviewReady] = useState(0);
+  const [htmlPreviewLayout, setHTMLPreviewLayout] = useState<HTMLPreviewLayout>({ width: 0, height: 0, targets: [] });
+  const [htmlPreviewOverlayHeights, setHTMLPreviewOverlayHeights] = useState<Record<string, number>>({});
+  const [htmlPreviewRailOffset, setHTMLPreviewRailOffset] = useState(0);
   const renderLines = planFormat === "html" ? renderSourceLines : renderPlanLines;
   const lines = useMemo(() => renderLines(plan), [plan, renderLines]);
   const highlightedCode = useHighlightedCode(plan, planFormat, theme);
@@ -199,6 +226,13 @@ export const ReviewDocument = memo(function ReviewDocument({
   const [draft, setDraft] = useState<CommentDraft | null>(null);
   const [submittingDraft, setSubmittingDraft] = useState(false);
   const [draftAgentAction, setDraftAgentAction] = useState<"asking" | "iterating" | null>(null);
+  const retargetDraft = useCallback(({ anchor, selectedText }: Pick<CommentDraft, "anchor" | "selectedText">) => {
+    setDraft((current) =>
+      current
+        ? { ...current, anchor, selectedText }
+        : { anchor, selectedText, body: "", intent: "instruction" },
+    );
+  }, []);
   const [htmlView, setHTMLView] = useState<"preview" | "source">("preview");
   const showHTMLPreview = planFormat === "html" && htmlView === "preview" && !proposal && !comparison;
   const sideAnswersByThread = useMemo(() => groupSideAnswersByThread(sideAnswers), [sideAnswers]);
@@ -207,6 +241,25 @@ export const ReviewDocument = memo(function ReviewDocument({
     [commentFilter, focusedThreadId, sideAnswers, threads],
   );
 	const activeDisplayedThreads = useMemo(() => displayedThreads.filter((thread) => thread.bucket === "active"), [displayedThreads]);
+  const activeDisplayedThreadIDs = useMemo(() => new Set(activeDisplayedThreads.map((thread) => thread.id)), [activeDisplayedThreads]);
+  const htmlPreviewLayoutByID = useMemo(
+    () => new Map(htmlPreviewLayout.targets.map((target) => [target.id, target])),
+    [htmlPreviewLayout.targets],
+  );
+  const htmlAlongsidePositions = useMemo(
+    () => positionHTMLPreviewComments(
+      activeDisplayedThreads.map((thread) => {
+        const target = htmlPreviewLayoutByID.get(thread.id)?.target;
+        return {
+          id: thread.id,
+          targetTop: target && target.bottom > 0 && target.top < htmlPreviewLayout.height ? target.top : undefined,
+          height: htmlPreviewOverlayHeights[thread.id] ?? 190,
+        };
+      }),
+      htmlPreviewLayout.height,
+    ),
+    [activeDisplayedThreads, htmlPreviewLayout.height, htmlPreviewLayoutByID, htmlPreviewOverlayHeights],
+  );
 	const attentionThreads = useMemo(() => displayedThreads.filter((thread) => thread.bucket === "attention"), [displayedThreads]);
 	const historyThreads = useMemo(() => comparison ? [] : displayedThreads.filter((thread) => thread.bucket === "history"), [comparison, displayedThreads]);
 	const [attentionExpanded, setAttentionExpanded] = useState(false);
@@ -219,7 +272,13 @@ export const ReviewDocument = memo(function ReviewDocument({
 	  [activeChange, activeDisplayedThreads],
 	);
 	const commentRailLines = useMemo(() => [...threadsAtPlacement.keys()].sort((a, b) => a - b), [threadsAtPlacement]);
-  const commentRailMetrics = useCommentRailMetrics(articleRef, commentRailRef, commentView, commentRailLines);
+  const commentRailMetrics = useCommentRailMetrics(
+    articleRef,
+    commentRailRef,
+    commentView,
+    commentRailLines,
+    `${planFormat}:${htmlView}:${Boolean(activeChange)}`,
+  );
 
   const hoveredAnchor = useMemo(() => {
     if (!hoveredThreadId) return null;
@@ -279,26 +338,23 @@ export const ReviewDocument = memo(function ReviewDocument({
   }, [threads]);
 
   function openFullLineDraft(lineNumber: number) {
-    if (disabled) return;
+    if (disabled || submittingDraft) return;
     const anchor = { startLine: lineNumber, endLine: lineNumber };
-    setDraft({
+    retargetDraft({
       anchor,
       selectedText: selectedTextForAnchorInArticle(articleRef.current, anchor),
-      body: "",
-      intent: "instruction",
     });
   }
 
   function handlePointerUp(e: React.PointerEvent<HTMLElement>) {
-    if (disabled) return;
+    if (disabled || submittingDraft) return;
     if ((e.target as HTMLElement | null)?.closest(".inline-comment-composer")) return;
     if ((e.target as HTMLElement | null)?.closest(".draft-boundary-handle")) return;
     const selection = window.getSelection();
     const selectionDraft = draftFromSelection(selection);
-    const next = selectionDraft ? { ...selectionDraft, intent: "instruction" as const } : null;
-    if (!next) return;
-    setDraft(next);
-    requestAnimationFrame(() => restoreNativeSelection(articleRef.current, next.anchor));
+    if (!selectionDraft) return;
+    retargetDraft(selectionDraft);
+    requestAnimationFrame(() => restoreNativeSelection(articleRef.current, selectionDraft.anchor));
   }
 
   function currentSelectedText(current: CommentDraft): string {
@@ -383,6 +439,32 @@ export const ReviewDocument = memo(function ReviewDocument({
     }));
   }
 
+  useEffect(() => {
+    if (!showHTMLPreview) return;
+    const article = articleRef.current;
+    const shell = htmlPreviewShellRef.current;
+    if (!article || !shell) return;
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const articleRect = article.getBoundingClientRect();
+        const shellRect = shell.getBoundingClientRect();
+        setHTMLPreviewRailOffset(Math.max(0, Math.round(shellRect.top - articleRect.top)));
+      });
+    };
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(article);
+    observer?.observe(shell);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [showHTMLPreview]);
+
   const htmlPreviewAnnotations = useMemo(() => {
     const annotations: HTMLPreviewAnnotation[] = [];
     for (const thread of threads) {
@@ -392,14 +474,31 @@ export const ReviewDocument = memo(function ReviewDocument({
       annotations.push({
         ...annotation,
         active: thread.id === hoveredThreadId || thread.id === focusedThreadId,
+        inlineSlot: commentView === "inline" && activeDisplayedThreadIDs.has(thread.id),
+        slotHeight: htmlPreviewOverlayHeights[thread.id] ?? 260,
       });
     }
     if (draft) {
       const annotation = htmlPreviewAnnotation(plan, draft.anchor, "draft");
-      if (annotation) annotations.push({ ...annotation, active: true, draft: true });
+      if (annotation) annotations.push({
+        ...annotation,
+        active: true,
+        draft: true,
+        inlineSlot: true,
+        slotHeight: htmlPreviewOverlayHeights.draft ?? 330,
+      });
     }
     return annotations;
-  }, [draft, focusedThreadId, hoveredThreadId, plan, threads]);
+  }, [
+    activeDisplayedThreadIDs,
+    commentView,
+    draft,
+    focusedThreadId,
+    hoveredThreadId,
+    htmlPreviewOverlayHeights,
+    plan,
+    threads,
+  ]);
 
   const postHTMLPreviewAnnotations = useCallback(() => {
     htmlPreviewRef.current?.contentWindow?.postMessage({
@@ -409,15 +508,74 @@ export const ReviewDocument = memo(function ReviewDocument({
     }, "*");
   }, [disabled, htmlPreviewAnnotations]);
 
-  const postHTMLPreviewScroll = useCallback((anchor: Anchor, ratio?: number) => {
+  const postHTMLPreviewScroll = useCallback((anchor: Anchor, behavior?: "auto" | "smooth") => {
     const range = sourceOffsetsForAnchor(plan, anchor);
     htmlPreviewRef.current?.contentWindow?.postMessage({
       type: "planmaxx:preview-scroll",
       ...range,
-      ratio,
-      behavior: reviewScrollBehavior(Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)),
+      behavior: behavior ?? reviewScrollBehavior(Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)),
     }, "*");
   }, [plan]);
+
+  const postHTMLPreviewPing = useCallback((threadId: string) => {
+    htmlPreviewRef.current?.contentWindow?.postMessage({
+      type: "planmaxx:preview-ping",
+      id: threadId,
+    }, "*");
+  }, []);
+
+  const postHTMLPreviewScrollBy = useCallback((top: number, left = 0) => {
+    htmlPreviewRef.current?.contentWindow?.postMessage({
+      type: "planmaxx:preview-scroll-by",
+      top,
+      left,
+    }, "*");
+  }, []);
+
+  const measureHTMLPreviewOverlay = useCallback((id: string, height: number) => {
+    const rounded = Math.max(1, Math.ceil(height));
+    setHTMLPreviewOverlayHeights((current) =>
+      current[id] === rounded ? current : { ...current, [id]: rounded },
+    );
+  }, []);
+
+  const pulseThreadCard = useCallback((threadId: string) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const escaped = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(threadId) : threadId.replace(/["\\]/g, "\\$&");
+      for (const card of document.querySelectorAll<HTMLElement>(`[data-thread-id="${escaped}"]`)) {
+        card.classList.remove("is-link-ping");
+        void card.offsetWidth;
+        card.classList.add("is-link-ping");
+        window.setTimeout(() => card.classList.remove("is-link-ping"), 760);
+      }
+    }));
+  }, []);
+
+  const activateHTMLPreviewThread = useCallback((threadId: string, origin: "card" | "preview") => {
+    onFocusThread(threadId);
+    pulseThreadCard(threadId);
+    const thread = threads.find((candidate) => candidate.id === threadId);
+    if (origin === "card" && thread?.lifecycle === "active" && showHTMLPreview) {
+      postHTMLPreviewScroll(thread.anchor);
+      postHTMLPreviewPing(threadId);
+    } else if (origin === "card" && thread?.lifecycle === "active") {
+      window.requestAnimationFrame(() => {
+        const target = articleRef.current?.querySelector<HTMLElement>(
+          `[data-document-line="${thread.anchor.startLine}"]`,
+        );
+        target?.scrollIntoView({
+          block: "center",
+          behavior: reviewScrollBehavior(Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches)),
+        });
+        if (target) {
+          target.classList.remove("is-link-ping");
+          void target.offsetWidth;
+          target.classList.add("is-link-ping");
+          window.setTimeout(() => target.classList.remove("is-link-ping"), 760);
+        }
+      });
+    }
+  }, [onFocusThread, postHTMLPreviewPing, postHTMLPreviewScroll, pulseThreadCard, showHTMLPreview, threads]);
 
   const captureHTMLSourcePosition = useCallback(() => {
     const line = sourceLineAtViewport(articleRef.current);
@@ -425,7 +583,6 @@ export const ReviewDocument = memo(function ReviewDocument({
     htmlPositionRef.current = {
       line,
       offset: sourceOffsetsForAnchor(plan, { startLine: line, endLine: line }).start,
-      ratio: pageScrollRatio(),
     };
   }, [plan]);
 
@@ -452,11 +609,6 @@ export const ReviewDocument = memo(function ReviewDocument({
       if (target) {
         const top = window.scrollY + target.getBoundingClientRect().top - 72;
         window.scrollTo({ top: Math.max(0, top), behavior: "auto" });
-      }
-      const ratio = htmlPositionRef.current?.ratio;
-      if (ratio !== undefined) {
-        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-        window.scrollTo({ top: ratio * maxScroll, behavior: "auto" });
       }
       pendingSourceRestoreRef.current = false;
       captureHTMLSourcePosition();
@@ -489,6 +641,23 @@ export const ReviewDocument = memo(function ReviewDocument({
   }, [htmlPreviewReady, postHTMLPreviewAnnotations, showHTMLPreview]);
 
   useEffect(() => {
+    if (!showHTMLPreview || htmlPreviewReady === 0) return;
+    const line = pendingPreviewRestoreLineRef.current;
+    if (!line) return;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        pendingPreviewRestoreLineRef.current = null;
+        postHTMLPreviewScroll({ startLine: line, endLine: line }, "auto");
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [htmlPreviewReady, postHTMLPreviewScroll, showHTMLPreview]);
+
+  useEffect(() => {
     if (!showHTMLPreview || htmlPreviewReady === 0 || !focusedAnchor) return;
     postHTMLPreviewScroll(focusedAnchor);
   }, [focusedAnchor, htmlPreviewReady, postHTMLPreviewScroll, showHTMLPreview]);
@@ -496,30 +665,24 @@ export const ReviewDocument = memo(function ReviewDocument({
   const handleHTMLPreviewReady = useCallback(() => {
     setHTMLPreviewReady((value) => value + 1);
     const line = pendingPreviewRestoreLineRef.current ?? htmlPositionRef.current?.line;
-    if (line) postHTMLPreviewScroll({ startLine: line, endLine: line }, htmlPositionRef.current?.ratio);
+    if (line) postHTMLPreviewScroll({ startLine: line, endLine: line }, "auto");
   }, [postHTMLPreviewScroll]);
 
-  const handleHTMLPreviewPosition = useCallback((position: { line: number; offset: number; ratio: number }) => {
+  const handleHTMLPreviewPosition = useCallback((position: { line: number; offset: number }) => {
     if (!showHTMLPreview) return;
-    const pendingLine = pendingPreviewRestoreLineRef.current;
-    const pendingRatio = htmlPositionRef.current?.ratio;
-    if (pendingLine !== null && pendingRatio !== undefined && Math.abs(position.ratio - pendingRatio) > 0.08) {
-      postHTMLPreviewScroll({ startLine: pendingLine, endLine: pendingLine }, pendingRatio);
-      return;
-    }
+    if (pendingPreviewRestoreLineRef.current !== null) return;
     pendingPreviewRestoreLineRef.current = null;
     htmlPositionRef.current = position;
-  }, [postHTMLPreviewScroll, showHTMLPreview]);
+  }, [showHTMLPreview]);
 
   const handleHTMLPreviewSelection = useCallback((selection: { anchor: Anchor; selectedText: string }) => {
-    if (disabled) return;
-    setDraft({
-      anchor: selection.anchor,
-      selectedText: selection.selectedText,
-      body: "",
-      intent: "instruction",
-    });
-  }, [disabled]);
+    if (disabled || submittingDraft) return;
+    retargetDraft(selection);
+  }, [disabled, retargetDraft, submittingDraft]);
+
+  const handleHTMLPreviewLayout = useCallback((layout: HTMLPreviewLayout) => {
+    setHTMLPreviewLayout(layout);
+  }, []);
 
   return (
     <div className={`plan-with-comment-rail is-${commentView === "alongside" && (!showHTMLPreview || activeDisplayedThreads.length > 0) ? "alongside" : "inline"}${showHTMLPreview ? " has-html-preview" : ""}${activeChange ? " has-review-navigation" : ""}`}>
@@ -589,6 +752,7 @@ export const ReviewDocument = memo(function ReviewDocument({
 	    <ProposalActions
 	      proposal={proposal}
 	      disabled={proposalDisabled}
+	      refineDisabled={proposalRefineDisabled}
 	      iterating={proposalIterating}
 	      prominent
 	      onApply={onApplyProposal}
@@ -617,10 +781,11 @@ export const ReviewDocument = memo(function ReviewDocument({
 		<CommentThreadStack
 		  threads={attentionThreads}
 		  sideAnswersByThread={sideAnswersByThread}
-		  focusedThreadId={focusedThreadId}
-		  reviewTargetThreadId={activeReviewStop?.kind === "comment" ? activeReviewStop.threadId : undefined}
-		  onHover={onHoverThread}
-		  onSetIntent={onSetThreadIntent}
+	                    focusedThreadId={focusedThreadId}
+						reviewTargetThreadId={activeReviewStop?.kind === "comment" ? activeReviewStop.threadId : undefined}
+	                    onHover={onHoverThread}
+                        onActivate={(threadId) => activateHTMLPreviewThread(threadId, "card")}
+						onSetIntent={onSetThreadIntent}
 		  onReply={onReplyThread}
 		  onDelete={onDeleteThread}
 		  onEdit={onEditThread}
@@ -670,47 +835,77 @@ export const ReviewDocument = memo(function ReviewDocument({
         </div>
       ) : null}
       <div className="plan-body py-2">
-	        {planFormat === "html" && !activeChange ? (
-	          <div hidden={!showHTMLPreview}>
-            <HTMLPlanPreview
-              frameRef={htmlPreviewRef}
-              source={plan}
-              theme={theme}
-              onReady={handleHTMLPreviewReady}
-              onPosition={handleHTMLPreviewPosition}
-              onSelection={handleHTMLPreviewSelection}
-              onFocusThread={onFocusThread}
-            />
-            {commentView === "inline" && activeDisplayedThreads.length > 0 ? (
-              <section className="html-preview-comments" aria-label="Comments on rendered HTML">
-                <div className="html-preview-comments-heading">
-                  <span>Comments on this preview</span>
-                  <small>Hover or open a thread to highlight its rendered target.</small>
+		        {planFormat === "html" && !activeChange ? (
+		          <div hidden={!showHTMLPreview}>
+                <div ref={htmlPreviewShellRef} className="html-preview-frame-shell">
+	              <HTMLPlanPreview
+	                frameRef={htmlPreviewRef}
+	                source={plan}
+	                theme={theme}
+	                onReady={handleHTMLPreviewReady}
+	                onPosition={handleHTMLPreviewPosition}
+	                onSelection={handleHTMLPreviewSelection}
+	                onFocusThread={(threadId) => activateHTMLPreviewThread(threadId, "preview")}
+                  onLayout={handleHTMLPreviewLayout}
+	              />
+                  <div className="html-preview-overlay-layer" aria-label="Comments in rendered HTML">
+                    {commentView === "inline" ? activeDisplayedThreads.map((thread) => (
+                      <HTMLPreviewAnchoredOverlay
+                        key={thread.id}
+                        id={thread.id}
+                        rect={htmlPreviewLayoutByID.get(thread.id)?.slot ?? null}
+                        onMeasure={measureHTMLPreviewOverlay}
+                        onScrollBy={postHTMLPreviewScrollBy}
+                      >
+                        <CommentThreadStack
+                          threads={[thread]}
+                          sideAnswersByThread={sideAnswersByThread}
+                          focusedThreadId={focusedThreadId}
+                          onHover={onHoverThread}
+                          onActivate={(threadId) => activateHTMLPreviewThread(threadId, "card")}
+                          onSetIntent={onSetThreadIntent}
+                          onReply={onReplyThread}
+                          onDelete={onDeleteThread}
+                          onEdit={onEditThread}
+                          onMarkAddressed={onMarkAddressed}
+                          onCreateFollowUp={onCreateFollowUp}
+                          onAskSide={onAskSide}
+                          onIterate={onIterateThread}
+                          onInclude={onIncludeAnswer}
+                          onKeepPrivate={onKeepAnswerPrivate}
+                          agentActions={threadAgentActions}
+                          disabled={disabled}
+                          sideQuestionsEnabled={sideQuestionsEnabled}
+                          placement="inline"
+                        />
+                      </HTMLPreviewAnchoredOverlay>
+                    )) : null}
+                    {draft ? (
+                      <HTMLPreviewAnchoredOverlay
+                        id="draft"
+                        rect={htmlPreviewLayoutByID.get("draft")?.slot ?? null}
+                        onMeasure={measureHTMLPreviewOverlay}
+                        onScrollBy={postHTMLPreviewScrollBy}
+                      >
+                        <InlineCommentComposer
+                          draft={draft}
+                          spacerLines={0}
+                          submitting={submittingDraft}
+                          agentAction={draftAgentAction}
+                          disabled={disabled}
+                          agentActionsEnabled={sideQuestionsEnabled}
+                          setDraft={setDraft}
+                          onCancel={cancelDraft}
+                          onSubmit={submitDraft}
+                          onAskSide={askSideFromDraft}
+                          onIterate={iterateDraft}
+                        />
+                      </HTMLPreviewAnchoredOverlay>
+                    ) : null}
+                  </div>
                 </div>
-                <CommentThreadStack
-                  threads={activeDisplayedThreads}
-                  sideAnswersByThread={sideAnswersByThread}
-                  focusedThreadId={focusedThreadId}
-                  onHover={onHoverThread}
-                  onSetIntent={onSetThreadIntent}
-                  onReply={onReplyThread}
-                  onDelete={onDeleteThread}
-                  onEdit={onEditThread}
-                  onMarkAddressed={onMarkAddressed}
-                  onCreateFollowUp={onCreateFollowUp}
-                  onAskSide={onAskSide}
-                  onIterate={onIterateThread}
-                  onInclude={onIncludeAnswer}
-                  onKeepPrivate={onKeepAnswerPrivate}
-                  agentActions={threadAgentActions}
-                  disabled={disabled}
-                  sideQuestionsEnabled={sideQuestionsEnabled}
-                  placement="inline"
-                />
-              </section>
-            ) : null}
-	          </div>
-	        ) : null}
+		          </div>
+		        ) : null}
 	        {!showHTMLPreview ? displayRows.map((row, idx) => {
           const lineNumber = row.anchorLineNumber;
           const line = row.line;
@@ -780,7 +975,7 @@ export const ReviewDocument = memo(function ReviewDocument({
                         onMouseDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation();
-                          if (anchoredThreadId) onFocusThread(anchoredThreadId);
+                          if (anchoredThreadId) activateHTMLPreviewThread(anchoredThreadId, "preview");
                           else openFullLineDraft(lineNumber);
                         }}
                         disabled={disabled}
@@ -796,7 +991,7 @@ export const ReviewDocument = memo(function ReviewDocument({
                     sourceIndent={planFormat === "html" ? line.sourceIndent : undefined}
                     anchoredThreadId={anchoredThreadId}
                     codeTokens={isProposedLine || lineNumber === undefined ? undefined : highlightedCode.get(lineNumber)}
-                    onFocusThread={onFocusThread}
+                    onFocusThread={(threadId) => activateHTMLPreviewThread(threadId, "preview")}
                   />
                 </div>
 
@@ -811,6 +1006,7 @@ export const ReviewDocument = memo(function ReviewDocument({
                     submitting={submittingDraft}
                     agentAction={draftAgentAction}
                     disabled={disabled}
+                    agentActionsEnabled={sideQuestionsEnabled}
                     setDraft={setDraft}
                     onCancel={cancelDraft}
                     onSubmit={submitDraft}
@@ -845,6 +1041,7 @@ export const ReviewDocument = memo(function ReviewDocument({
 				  <ProposalActions
                     proposal={proposal}
                     disabled={proposalDisabled}
+                    refineDisabled={proposalRefineDisabled}
                     iterating={proposalIterating}
                     onApply={onApplyProposal}
                     onDiscard={onDiscardProposal}
@@ -863,50 +1060,46 @@ export const ReviewDocument = memo(function ReviewDocument({
           onChange={updateDraftAnchor}
         />
       ) : null}
-      {showHTMLPreview && draft ? createPortal(
-        <aside className="html-preview-composer-floating" aria-label="HTML preview comment">
-          <InlineCommentComposer
-            draft={draft}
-            spacerLines={0}
-            submitting={submittingDraft}
-            agentAction={draftAgentAction}
-            disabled={disabled}
-            setDraft={setDraft}
-            onCancel={cancelDraft}
-            onSubmit={submitDraft}
-            onAskSide={askSideFromDraft}
-            onIterate={iterateDraft}
-          />
-        </aside>,
-        document.body,
-      ) : null}
     </article>
     {commentView === "alongside" && showHTMLPreview && activeDisplayedThreads.length > 0 ? (
-      <aside className="plan-comment-rail html-preview-comment-rail" aria-label="Comments alongside rendered HTML">
-        <div className="html-preview-comments-heading">
-          <span>Preview comments</span>
-          <small>Hover or open a thread to highlight its target.</small>
-        </div>
-        <CommentThreadStack
-          threads={activeDisplayedThreads}
-          sideAnswersByThread={sideAnswersByThread}
-          focusedThreadId={focusedThreadId}
-          onHover={onHoverThread}
-          onSetIntent={onSetThreadIntent}
-          onReply={onReplyThread}
-          onDelete={onDeleteThread}
-          onEdit={onEditThread}
-          onMarkAddressed={onMarkAddressed}
-          onCreateFollowUp={onCreateFollowUp}
-          onAskSide={onAskSide}
-          onIterate={onIterateThread}
-          onInclude={onIncludeAnswer}
-          onKeepPrivate={onKeepAnswerPrivate}
-          agentActions={threadAgentActions}
-          disabled={disabled}
-          sideQuestionsEnabled={sideQuestionsEnabled}
-          placement="alongside"
-        />
+      <aside
+        className="plan-comment-rail html-preview-comment-rail"
+        aria-label="Comments alongside rendered HTML"
+        style={{ marginTop: htmlPreviewRailOffset }}
+      >
+        {activeDisplayedThreads.map((thread) => (
+          <HTMLPreviewRailComment
+            key={thread.id}
+            id={thread.id}
+            top={htmlAlongsidePositions.get(thread.id)}
+            targetTop={htmlPreviewLayoutByID.get(thread.id)?.target?.top}
+            visible={htmlAlongsidePositions.has(thread.id)}
+            onMeasure={measureHTMLPreviewOverlay}
+            onScrollBy={postHTMLPreviewScrollBy}
+          >
+            <CommentThreadStack
+              threads={[thread]}
+              sideAnswersByThread={sideAnswersByThread}
+              focusedThreadId={focusedThreadId}
+              onHover={onHoverThread}
+              onActivate={(threadId) => activateHTMLPreviewThread(threadId, "card")}
+              onSetIntent={onSetThreadIntent}
+              onReply={onReplyThread}
+              onDelete={onDeleteThread}
+              onEdit={onEditThread}
+              onMarkAddressed={onMarkAddressed}
+              onCreateFollowUp={onCreateFollowUp}
+              onAskSide={onAskSide}
+              onIterate={onIterateThread}
+              onInclude={onIncludeAnswer}
+              onKeepPrivate={onKeepAnswerPrivate}
+              agentActions={threadAgentActions}
+              disabled={disabled}
+              sideQuestionsEnabled={sideQuestionsEnabled}
+              placement="alongside"
+            />
+          </HTMLPreviewRailComment>
+        ))}
       </aside>
     ) : commentView === "alongside" ? (
       <aside ref={commentRailRef} className="plan-comment-rail" aria-label="Comments alongside plan lines">
@@ -920,6 +1113,7 @@ export const ReviewDocument = memo(function ReviewDocument({
               focusedThreadId={focusedThreadId}
 			  reviewTargetThreadId={activeReviewStop?.kind === "comment" ? activeReviewStop.threadId : undefined}
               onHover={onHoverThread}
+              onActivate={(threadId) => activateHTMLPreviewThread(threadId, "card")}
 			  onSetIntent={onSetThreadIntent}
               onReply={onReplyThread}
               onDelete={onDeleteThread}
@@ -971,12 +1165,116 @@ function sourceLineAtViewport(article: HTMLElement | null): number | null {
   return Number.isInteger(line) && line > 0 ? line : null;
 }
 
-function pageScrollRatio(): number {
-  const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-  return maxScroll > 0 ? window.scrollY / maxScroll : 0;
+export const Plan = ReviewDocument;
+
+function useMeasuredHTMLPreviewComment<T extends HTMLElement>(
+  id: string,
+  onMeasure: (id: string, height: number) => void,
+  onScrollBy?: (top: number, left?: number) => void,
+) {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const measure = () => onMeasure(id, element.getBoundingClientRect().height);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(element);
+    measure();
+    return () => observer?.disconnect();
+  }, [id, onMeasure]);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || !onScrollBy) return;
+    const forwardWheel = (event: WheelEvent) => {
+      const scrollable = (event.target instanceof Element ? event.target : null)?.closest<HTMLElement>(
+        "textarea,[data-html-preview-card-scroll]",
+      );
+      if (scrollable) {
+        const canScrollUp = event.deltaY < 0 && scrollable.scrollTop > 0;
+        const canScrollDown = event.deltaY > 0 && scrollable.scrollTop + scrollable.clientHeight < scrollable.scrollHeight;
+        if (canScrollUp || canScrollDown) return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      onScrollBy(event.deltaY, event.deltaX);
+    };
+    element.addEventListener("wheel", forwardWheel, { passive: false });
+    return () => element.removeEventListener("wheel", forwardWheel);
+  }, [onScrollBy]);
+  return ref;
 }
 
-export const Plan = ReviewDocument;
+function HTMLPreviewAnchoredOverlay({
+  id,
+  rect,
+  onMeasure,
+  onScrollBy,
+  children,
+}: {
+  id: string;
+  rect: HTMLPreviewRect | null;
+  onMeasure: (id: string, height: number) => void;
+  onScrollBy: (top: number, left?: number) => void;
+  children: React.ReactNode;
+}) {
+  const ref = useMeasuredHTMLPreviewComment<HTMLElement>(id, onMeasure, onScrollBy);
+  return (
+    <aside
+      ref={ref}
+      className="html-preview-anchored-overlay"
+      data-html-preview-overlay={id}
+      aria-label={id === "draft" ? "HTML preview comment" : undefined}
+      style={rect ? {
+        top: rect.top,
+        left: Math.max(12, rect.left),
+        width: Math.max(240, rect.width),
+        visibility: "visible",
+      } : { visibility: "hidden" }}
+    >
+      {children}
+    </aside>
+  );
+}
+
+function HTMLPreviewRailComment({
+  id,
+  top,
+  targetTop,
+  visible,
+  onMeasure,
+  onScrollBy,
+  children,
+}: {
+  id: string;
+  top: number | undefined;
+  targetTop: number | undefined;
+  visible: boolean;
+  onMeasure: (id: string, height: number) => void;
+  onScrollBy: (top: number, left?: number) => void;
+  children: React.ReactNode;
+}) {
+  const ref = useMeasuredHTMLPreviewComment<HTMLDivElement>(id, onMeasure, onScrollBy);
+  const anchorOffset = (targetTop ?? top ?? 0) - (top ?? 0);
+  return (
+    <div
+      ref={ref}
+      className={`html-preview-rail-comment${visible ? "" : " is-hidden"}`}
+      data-html-preview-rail-comment={id}
+      aria-hidden={!visible}
+      style={{
+        top,
+        visibility: visible ? "visible" : "hidden",
+        "--html-comment-anchor-y": `${anchorOffset}px`,
+        "--html-comment-connector-top": `${Math.min(20, anchorOffset)}px`,
+        "--html-comment-connector-height": `${Math.abs(anchorOffset - 20)}px`,
+      } as React.CSSProperties}
+    >
+      <div className="html-preview-rail-card-scroll" data-html-preview-card-scroll="">
+        {children}
+      </div>
+    </div>
+  );
+}
 
 function HTMLPlanPreview({
   frameRef,
@@ -986,14 +1284,16 @@ function HTMLPlanPreview({
   onPosition,
   onSelection,
   onFocusThread,
+  onLayout,
 }: {
   frameRef: React.RefObject<HTMLIFrameElement>;
   source: string;
   theme: "light" | "dark";
   onReady: () => void;
-  onPosition: (position: { line: number; offset: number; ratio: number }) => void;
+  onPosition: (position: { line: number; offset: number }) => void;
   onSelection: (selection: { anchor: Anchor; selectedText: string }) => void;
   onFocusThread: (threadId: string) => void;
+  onLayout: (layout: HTMLPreviewLayout) => void;
 }) {
   const srcDoc = useMemo(() => htmlPreviewDocument(source, theme), [source, theme]);
   useEffect(() => {
@@ -1006,17 +1306,18 @@ function HTMLPlanPreview({
         threadId?: string;
         line?: number;
         offset?: number;
-        ratio?: number;
+        width?: number;
+        height?: number;
+        targets?: HTMLPreviewTargetLayout[];
       };
       if (message.type === "planmaxx:preview-ready") {
         onReady();
       } else if (
         message.type === "planmaxx:preview-position" &&
         Number.isInteger(message.line) &&
-        Number.isFinite(message.offset) &&
-        Number.isFinite(message.ratio)
+        Number.isFinite(message.offset)
       ) {
-        onPosition({ line: message.line!, offset: message.offset!, ratio: message.ratio! });
+        onPosition({ line: message.line!, offset: message.offset! });
       } else if (
         message.type === "planmaxx:preview-selection" &&
         message.anchor &&
@@ -1025,11 +1326,22 @@ function HTMLPlanPreview({
         onSelection({ anchor: message.anchor, selectedText: message.selectedText });
       } else if (message.type === "planmaxx:preview-focus-thread" && message.threadId) {
         onFocusThread(message.threadId);
+      } else if (
+        message.type === "planmaxx:preview-layout" &&
+        Number.isFinite(message.width) &&
+        Number.isFinite(message.height) &&
+        Array.isArray(message.targets)
+      ) {
+        onLayout({
+          width: message.width!,
+          height: message.height!,
+          targets: message.targets,
+        });
       }
     }
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
-  }, [frameRef, onFocusThread, onPosition, onReady, onSelection]);
+  }, [frameRef, onFocusThread, onLayout, onPosition, onReady, onSelection]);
 
   return (
     <iframe
@@ -1068,6 +1380,7 @@ function InlineCommentComposer({
   submitting,
   agentAction,
   disabled,
+  agentActionsEnabled,
   setDraft,
   onCancel,
   onSubmit,
@@ -1079,6 +1392,7 @@ function InlineCommentComposer({
   submitting: boolean;
   agentAction: "asking" | "iterating" | null;
   disabled: boolean;
+  agentActionsEnabled: boolean;
   setDraft: (draft: CommentDraft) => void;
   onCancel: () => void;
   onSubmit: () => void;
@@ -1090,8 +1404,17 @@ function InlineCommentComposer({
   const isEditing = Boolean(draft.threadId);
 
   useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
+    const frame = window.requestAnimationFrame(() => {
+      textareaRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    draft.anchor.endChar,
+    draft.anchor.endLine,
+    draft.anchor.startChar,
+    draft.anchor.startLine,
+    draft.threadId,
+  ]);
 
   function onBodyKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -1148,7 +1471,7 @@ function InlineCommentComposer({
         >
           {submitting ? (agentAction ? "Processing…" : "Saving…") : isEditing ? "Save comment" : "Add comment"}
         </button>
-        {!isEditing ? (
+        {!isEditing && agentActionsEnabled ? (
           <button
             type="button"
             className="btn"
@@ -1159,7 +1482,7 @@ function InlineCommentComposer({
             {agentAction === "asking" ? "Asking…" : "/btw"}
           </button>
         ) : null}
-        {!isEditing ? (
+        {!isEditing && agentActionsEnabled ? (
           <button
             type="button"
             className="btn"

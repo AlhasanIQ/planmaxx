@@ -28,77 +28,76 @@ Update an installed release in place with:
 planmaxx update
 ```
 
-If you use the Claude Code skill, refresh its installed copy after an update
-using the same scope as the original install:
-
-```bash
-# User-wide
-planmaxx skill install --target claude
-
-# Repository-local
-planmaxx skill install --target claude --repo /path/to/repo
-```
+Claude Code and Grok Build skills are copied rather than linked. After an
+update, rerun the matching `planmaxx skill install --target <harness>` command
+with the same user or `--repo` scope.
 
 Released builds check GitHub for updates at review startup at most once every
-24 hours. If one exists, the final handoff tells the calling agent to notify
-you and use the update command. Check failures never block review. Set
+24 hours. If one exists, the final handoff includes a short update notice and
+the update command. Check failures never block review. Set
 `PLANMAXX_NO_UPDATE_CHECK=1` to disable automatic checks.
 
-### Agent Skills
+## Supported harnesses
 
-Install the optional skill for the agent you use:
+Core review means Markdown and HTML preview, anchored comments, private notes,
+revision history, proposal review, approval, plan saving, and the final
+handoff. It works without an agent. Assisted features use a disposable fork of
+the attached active session.
+
+| Harness | Setup and attachment | Core review | `/btw` | Iterate and refine | Assisted file context | Isolation |
+| --- | --- | :---: | :---: | :---: | --- | --- |
+| Manual CLI | `planmaxx review <plan>`; `auto` selects `none` when no session is present | Yes | No | No | Not applicable | Local UI and storage only |
+| Codex | Shared Agent Skill; auto-attaches with `CODEX_THREAD_ID` | Yes | Yes | Yes | Original workspace at the caller's CWD, read-only | Ephemeral active-session fork; approval `never`; read-only sandbox; network off |
+| Claude Code | Native `/planmaxx` skill passes the exact `${CLAUDE_SESSION_ID}` | Yes | Yes | Yes | Session and PlanMaxx request context; child tools are disabled | Safe-mode active-session fork; `dontAsk`; no persistence, hooks, plugins, skills, MCP, or custom instructions |
+| Grok Build | Native `/planmaxx` skill passes the exact `${SESSION_ID}` | Yes | Yes | Yes | Temporary workspace copy at the same relative CWD; `read_file`, `grep`, and `list_dir` only | Restricted active-session fork; no shell, edits, web, MCP, memory, or subagents; temporary session and files are deleted |
+
+Grok assisted features require macOS or Linux; its core review works on
+Windows. Assisted Claude Code requires version 2.1.214 or newer, and Grok Build
+requires version 0.2.114 or newer.
+
+### Install an agent skill
+
+Install after the binary:
 
 ```bash
 # Codex
-bash -c 'set -o pipefail; curl -fsSL https://github.com/AlhasanIQ/planmaxx/releases/latest/download/install.sh | bash -s -- --install-codex-skill'
+planmaxx skill install
 
 # Claude Code
-bash -c 'set -o pipefail; curl -fsSL https://github.com/AlhasanIQ/planmaxx/releases/latest/download/install.sh | bash -s -- --install-claude-skill'
+planmaxx skill install --target claude
+
+# Grok Build
+planmaxx skill install --target grok
 ```
 
-Codex uses the shared Agent Skills location:
+Alternatively, add `--install-codex-skill`, `--install-claude-skill`, or
+`--install-grok-skill` to the release installer command.
 
-- **User-wide (default):** `planmaxx skill install` installs the skill at
-  `~/.agents/skills/planmaxx/`; remove it with `planmaxx skill remove`.
-- **Repository-local:** `planmaxx skill install --repo /path/to/repo` installs
-  it at `/path/to/repo/.agents/skills/planmaxx/`; remove it with
-  `planmaxx skill remove --repo /path/to/repo`.
+These install user-wide by default:
 
-Local Claude Code uses a standard plain skill:
+| Harness | User skill path | Repository skill path |
+| --- | --- | --- |
+| Codex | `~/.agents/skills/planmaxx/` | `.agents/skills/planmaxx/` |
+| Claude Code | `~/.claude/skills/planmaxx/SKILL.md`, or `$CLAUDE_CONFIG_DIR/skills/planmaxx/SKILL.md` | `.claude/skills/planmaxx/SKILL.md` |
+| Grok Build | `~/.grok/skills/planmaxx/SKILL.md`, or `$GROK_HOME/skills/planmaxx/SKILL.md` | `.grok/skills/planmaxx/SKILL.md` |
 
-- **User-wide:** `planmaxx skill install --target claude` installs
-  `~/.claude/skills/planmaxx/SKILL.md` (or
-  `$CLAUDE_CONFIG_DIR/skills/planmaxx/SKILL.md` when configured).
-- **Repository-local:** add `--repo /path/to/repo` to install under that
-  repository's `.claude/skills/planmaxx/SKILL.md`.
+Add `--repo /path/to/repo` for a repository install, and use the matching
+`planmaxx skill remove` command to remove it. Claude Code and Grok Build use
+plain native skills: no hook, session-start setup, plugin, or persistent
+environment change is installed. Re-running an install safely refreshes a
+PlanMaxx-managed copy and refuses to overwrite a customized native skill.
 
-Claude can invoke the skill when its description matches the task, or you can
-invoke it directly with `/planmaxx`. Claude Code substitutes the exact current
-session ID into the skill's command:
+Detection is automatic. `auto` prefers the exact Claude or Grok session ID
+provided only when its skill is invoked, then Claude's ambient subprocess
+marker, then Codex's active thread marker. It deliberately ignores ambient
+`GROK_SESSION_ID` and never selects a harness merely because its executable is
+installed. Use `--agent codex`, `--agent claude`, `--agent grok`, or
+`--agent none` to override detection. If attachment fails, assisted controls
+are disabled while core review remains available.
 
-```text
-planmaxx review --claude-session-id ${CLAUDE_SESSION_ID} <plan-file>
-```
-
-The hidden session flag takes precedence over ambient session markers. It is
-invocation-only: the skill installs no plugin, hook, `SessionStart` setup, or
-persistent environment change. Codex and other callers continue to use the
-bare `planmaxx review <plan-file>` command.
-
-Claude Code also injects `CLAUDE_CODE_SESSION_ID` into Bash and PowerShell tool
-subprocesses, which lets PlanMaxx auto-detect useful bare commands launched
-from Claude. Anthropic notes that after `claude --continue` or `claude
---resume` without an explicit ID, this environment value may still be the
-initial startup ID. Use the installed skill command above when exact
-current-session attachment matters. The `planmaxx` binary must be available on
-the local Claude Code session's `PATH`.
-
-Claude Code detects changes inside an existing top-level skills directory
-without a restart. Restart a running session only when the install created that
-top-level directory after the session started. Removal uses the same scope and
-`--target claude`. Assisted actions require local Claude Code 2.1.214 or newer.
-See Claude Code's official [skills documentation](https://code.claude.com/docs/en/slash-commands)
-and [environment-variable reference](https://code.claude.com/docs/en/env-vars).
+See the detailed [agent integration contract](docs/agent-integrations.md),
+[Claude Code skill documentation](https://code.claude.com/docs/en/slash-commands),
+and [Grok Build skill documentation](https://docs.x.ai/build/features/skills-plugins-marketplaces).
 
 ## Quick Start
 
@@ -156,13 +155,23 @@ handoff preview makes the final agent context inspectable before approval.
   nothing is written beside the plan by default. Pass `--local-bundle` to keep
   `<plan-file>.planmaxx` beside the plan instead.
 
-HTML opens in an isolated, network-blocked Preview. Select rendered text or
-click an element to comment, keep a private note, ask `/btw`, or iterate that
-source-mapped section. Existing comments highlight their rendered targets and
-remain fully editable in the Preview comment list. Authored scripts, event
-handlers, controls, and remote resources are removed; only PlanMaxx's
-nonce-restricted annotation bridge can run. Proposal and revision diffs use
-Source mode so the original HTML remains authoritative.
+### HTML plans
+
+- Preview renders common planning content—including headings, lists, tables,
+  code, SVG diagrams, and collapsible details—in an isolated iframe.
+- Select rendered text for a range comment, or hover and click an element for a
+  whole-element comment. Target borders and existing highlights make anchors
+  visible without interfering with text selection.
+- In-place and alongside threads support comments, private notes, `/btw`, and
+  section iteration through the same source-backed anchors. In-place cards sit
+  directly below their rendered element; alongside cards track the anchor while
+  Preview scrolls. Clicking either side pulses and scrolls to its counterpart.
+- The outline navigates Preview without switching to Source. Preview and Source
+  scroll positions stay synchronized and are preserved when switching views.
+- Source remains authoritative, is structurally indented, and uses Shiki
+  highlighting. Proposal and revision diffs open in Source.
+- Authored scripts, event handlers, controls, and remote resources are removed;
+  only PlanMaxx's nonce-restricted annotation bridge can run.
 
 ## Storage tools
 
@@ -184,34 +193,15 @@ The `export` command is an alias for `snapshot`. Existing destinations require
 automatically. Both storage commands accept `--bundle <path>` when a review was
 created with a non-default bundle location.
 
-## Agent integrations
-
-Normal review, comments, approval, and handoff do not require an agent
-integration. Side questions and section or whole-plan iteration require a
-safely attached active session:
-
-| Agent | Attachment | Assisted-action behavior |
-| --- | --- | --- |
-| Codex | `CODEX_THREAD_ID` | Uses `codex app-server` and an ephemeral thread fork |
-| Claude Code | Skill passes `${CLAUDE_SESSION_ID}` through an invocation-only flag; ambient `CLAUDE_CODE_SESSION_ID` is a fallback | Uses a safe-mode, tool-disabled, non-persistent session fork |
-
-Detection is automatic. Use `planmaxx review --agent codex`,
-`--agent claude`, or `--agent none` to override it. If attachment is missing or
-fails, PlanMaxx disables assisted actions instead of silently sending copied
-context to a fresh agent session. See the
-[agent integration contract](docs/agent-integrations.md) for selection,
-permissions, and adapter requirements.
-
 ## Privacy
 
 The server binds to `127.0.0.1` by default and stores review state locally.
-Agent-assisted actions send their prompt through a fork of the selected active
-agent session. Claude Code forks run in safe mode with built-in tools disabled,
-`dontAsk`, and session persistence off; Codex forks use approval policy `never`
-inside a read-only, network-disabled sandbox. Provider authentication and the
-source session's transcripts remain owned by the locally installed agent.
-Released builds also make a cached request to the public GitHub Releases API at
-review startup; set `PLANMAXX_NO_UPDATE_CHECK=1` to disable it.
+Agent-assisted actions use the selected active-session fork and the restrictions
+shown in the harness table; PlanMaxx never falls back to a copied-context fresh
+session. Provider authentication and source transcripts remain owned by the
+locally installed harness. Released builds also make a cached request to the
+public GitHub Releases API at review startup; set
+`PLANMAXX_NO_UPDATE_CHECK=1` to disable it.
 
 ## Development
 

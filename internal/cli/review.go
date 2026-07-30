@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/AlhasanIQ/planmaxx/internal/appserver"
 	"github.com/AlhasanIQ/planmaxx/internal/browser"
 	"github.com/AlhasanIQ/planmaxx/internal/claudecode"
+	"github.com/AlhasanIQ/planmaxx/internal/grokbuild"
 	"github.com/AlhasanIQ/planmaxx/internal/handoff"
 	"github.com/AlhasanIQ/planmaxx/internal/planfile"
 	"github.com/AlhasanIQ/planmaxx/internal/review"
@@ -42,6 +44,7 @@ type reviewOptions struct {
 	sideQuestionTimeout time.Duration
 	agent               string
 	claudeSessionID     string
+	grokSessionID       string
 	saveToFile          string
 	bundleOut           string
 	localBundle         bool
@@ -57,21 +60,30 @@ var agentLookPath = exec.LookPath
 var newClaudeClient = func(sessionID, cwd string) attachedAgentClient {
 	return claudecode.NewClient(sessionID, cwd)
 }
+var newGrokClient = func(sessionID, cwd string) attachedAgentClient {
+	return grokbuild.NewClient(sessionID, cwd)
+}
 var checkClaudeCapabilities = validateClaudeCapabilities
+var checkGrokCapabilities = validateGrokCapabilities
 
 const defaultAppServerRequestTimeout = 30 * time.Minute
 const claudeCapabilityCheckTimeout = 5 * time.Second
+const grokCapabilityCheckTimeout = 5 * time.Second
 const agentAttachmentProbeTimeout = 5 * time.Second
 const minimumClaudeVersion = "2.1.214"
+const minimumGrokVersion = "0.2.114"
 const claudeCodeSessionIDEnvironment = "CLAUDE_CODE_SESSION_ID"
 const legacyClaudeSessionIDEnvironment = "PLANMAXX_CLAUDE_SESSION_ID"
+const grokSessionIDEnvironment = "GROK_SESSION_ID"
 
 var claudeCodeSessionIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var grokSessionIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 const (
 	agentAuto   = "auto"
 	agentCodex  = "codex"
 	agentClaude = "claude"
+	agentGrok   = "grok"
 	agentNone   = "none"
 )
 
@@ -225,7 +237,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			if err := reviewServer.EnableBundle(bundle); err != nil {
 				return fmt.Errorf("persist review bundle: %w", err)
 			}
-			cleanup, err := tryAttachAgentServices(cmd.Context(), stderr, reviewServer, opts.agent, opts.claudeSessionID)
+			cleanup, err := tryAttachAgentServices(cmd.Context(), stderr, reviewServer, opts.agent, opts.claudeSessionID, opts.grokSessionID)
 			if err != nil {
 				return err
 			}
@@ -294,8 +306,9 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.host, "host", opts.host, "host interface for the local review server")
 	cmd.Flags().IntVar(&opts.port, "port", opts.port, "port for the local review server; 0 chooses a random port")
 	cmd.Flags().BoolVar(&opts.noBrowser, "no-browser", opts.noBrowser, "print the review URL without opening a browser")
-	cmd.Flags().StringVar(&opts.agent, "agent", opts.agent, "agent integration to use: auto, codex, claude, or none")
+	cmd.Flags().StringVar(&opts.agent, "agent", opts.agent, "agent integration to use: auto, codex, claude, grok, or none")
 	cmd.Flags().StringVar(&opts.claudeSessionID, "claude-session-id", "", "Claude Code session identifier supplied by the invoked PlanMaxx skill")
+	cmd.Flags().StringVar(&opts.grokSessionID, "grok-session-id", "", "Grok Build session identifier supplied by the invoked PlanMaxx skill")
 	cmd.Flags().DurationVar(&opts.sideQuestionTimeout, "side-question-timeout", opts.sideQuestionTimeout, "maximum duration for one agent request")
 	cmd.Flags().StringVar(&opts.saveToFile, "save-to-file", opts.saveToFile, "save the finalized plan to this file instead of the source plan")
 	cmd.Flags().BoolVar(&opts.localBundle, "local-bundle", opts.localBundle, "store <plan-file>.planmaxx beside the plan instead of in user state")
@@ -303,7 +316,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.bundleOut, "autosave-out", opts.bundleOut, "deprecated alias for --bundle-out")
 	_ = cmd.Flags().MarkDeprecated("autosave-out", "use --bundle-out")
 	_ = cmd.Flags().MarkHidden("autosave-out")
-	for _, name := range []string{"host", "port", "side-question-timeout", "bundle-out", "claude-session-id"} {
+	for _, name := range []string{"host", "port", "side-question-timeout", "bundle-out", "claude-session-id", "grok-session-id"} {
 		_ = cmd.Flags().MarkHidden(name)
 	}
 	return cmd
@@ -443,7 +456,8 @@ func (c *monitoredAgentClient) unavailableError() error {
 
 func (c *monitoredAgentClient) fail(err error) {
 	if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) &&
-		!errors.Is(err, appserver.ErrClientUnusable) {
+		!errors.Is(err, appserver.ErrClientUnusable) &&
+		!errors.Is(err, grokbuild.ErrClientUnusable) {
 		return
 	}
 	if c.failed.CompareAndSwap(false, true) && c.onFailure != nil {
@@ -473,9 +487,10 @@ type agentSelection struct {
 	sessionID   string
 }
 
-func resolveAgentSelection(requested string, invokedClaudeSessionID string) (agentSelection, error) {
+func resolveAgentSelection(requested string, invokedClaudeSessionID string, invokedGrokSessionID string) (agentSelection, error) {
 	requested = strings.ToLower(strings.TrimSpace(requested))
 	invokedClaudeSessionID = strings.TrimSpace(invokedClaudeSessionID)
+	invokedGrokSessionID = strings.TrimSpace(invokedGrokSessionID)
 	if requested == "" {
 		requested = agentAuto
 	}
@@ -485,7 +500,12 @@ func resolveAgentSelection(requested string, invokedClaudeSessionID string) (age
 		}
 	}
 	if requested == agentAuto {
+		if invokedClaudeSessionID != "" && invokedGrokSessionID != "" {
+			return agentSelection{}, errors.New("--claude-session-id and --grok-session-id cannot be used together")
+		}
 		switch {
+		case invokedGrokSessionID != "":
+			requested = agentGrok
 		case invokedClaudeSessionID != "":
 			requested = agentClaude
 		case strings.TrimSpace(os.Getenv(claudeCodeSessionIDEnvironment)) != "":
@@ -507,10 +527,16 @@ func resolveAgentSelection(requested string, invokedClaudeSessionID string) (age
 			return agentSelection{}, fmt.Errorf("invalid Claude Code session identifier in %s", source)
 		}
 		return agentSelection{id: agentClaude, displayName: "Claude Code", sessionID: sessionID}, nil
+	case agentGrok:
+		sessionID, source := selectedGrokSessionID(invokedGrokSessionID)
+		if sessionID != "" && !grokSessionIDPattern.MatchString(sessionID) {
+			return agentSelection{}, fmt.Errorf("invalid Grok Build session identifier in %s", source)
+		}
+		return agentSelection{id: agentGrok, displayName: "Grok Build", sessionID: sessionID}, nil
 	case agentNone:
 		return agentSelection{id: agentNone, displayName: "Agent"}, nil
 	default:
-		return agentSelection{}, fmt.Errorf("unsupported agent %q; expected auto, codex, claude, or none", requested)
+		return agentSelection{}, fmt.Errorf("unsupported agent %q; expected auto, codex, claude, grok, or none", requested)
 	}
 }
 
@@ -524,26 +550,22 @@ func selectedClaudeSessionID(invokedClaudeSessionID string) (string, string) {
 	return strings.TrimSpace(os.Getenv(legacyClaudeSessionIDEnvironment)), legacyClaudeSessionIDEnvironment
 }
 
+func selectedGrokSessionID(invokedGrokSessionID string) (string, string) {
+	if invokedGrokSessionID != "" {
+		return invokedGrokSessionID, "--grok-session-id"
+	}
+	return strings.TrimSpace(os.Getenv(grokSessionIDEnvironment)), grokSessionIDEnvironment
+}
+
 func tryAttachAgentServices(
 	ctx context.Context,
 	stderr io.Writer,
 	reviewServer *review.Server,
 	requestedAgent string,
 	invokedClaudeSessionID string,
+	invokedGrokSessionID string,
 ) (func(), error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		fmt.Fprintf(stderr, "PlanMaxx side questions unavailable: read current directory: %v\n", err)
-		attachUnavailableAgentServices(reviewServer, review.AgentInfo{
-			ID:                agentNone,
-			DisplayName:       "Agent",
-			ContextMode:       "unavailable",
-			UnavailableReason: "PlanMaxx could not determine the agent working directory.",
-		})
-		return nil, nil
-	}
-
-	selection, err := resolveAgentSelection(requestedAgent, invokedClaudeSessionID)
+	selection, err := resolveAgentSelection(requestedAgent, invokedClaudeSessionID, invokedGrokSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -556,12 +578,26 @@ func tryAttachAgentServices(
 		})
 		return nil, nil
 	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "PlanMaxx side questions unavailable: read current directory: %v\n", err)
+		attachUnavailableAgentServices(reviewServer, review.AgentInfo{
+			ID:                selection.id,
+			DisplayName:       selection.displayName,
+			ContextMode:       "unavailable",
+			UnavailableReason: "PlanMaxx could not determine the agent working directory.",
+		})
+		return nil, nil
+	}
 	if selection.sessionID == "" {
 		reason := "The active agent session identifier is unavailable."
 		if selection.id == agentCodex {
 			reason = "CODEX_THREAD_ID is not set for this review."
 		} else if selection.id == agentClaude {
 			reason = "Claude Code did not provide its active session. Launch the review from the installed skill or another Claude Code tool command."
+		} else if selection.id == agentGrok {
+			reason = "Grok Build did not provide its active session. Launch the review from the installed PlanMaxx skill."
 		}
 		attachUnavailableAgentServices(reviewServer, review.AgentInfo{
 			ID: selection.id, DisplayName: selection.displayName, ContextMode: "unavailable", UnavailableReason: reason,
@@ -570,6 +606,29 @@ func tryAttachAgentServices(
 	}
 
 	switch selection.id {
+	case agentGrok:
+		if _, err := agentLookPath("grok"); err != nil {
+			fmt.Fprintf(stderr, "PlanMaxx assisted actions unavailable: find Grok Build: %v\n", err)
+			attachUnavailableAgentServices(reviewServer, review.AgentInfo{
+				ID: selection.id, DisplayName: selection.displayName, ContextMode: "unavailable",
+				UnavailableReason: "The Grok Build executable is not available on PATH.",
+			})
+			return nil, nil
+		}
+		if err := checkGrokCapabilities(ctx, cwd); err != nil {
+			fmt.Fprintf(stderr, "PlanMaxx assisted actions unavailable: check Grok Build capabilities: %v\n", err)
+			attachUnavailableAgentServices(reviewServer, review.AgentInfo{
+				ID: selection.id, DisplayName: selection.displayName, ContextMode: "unavailable",
+				UnavailableReason: "This Grok Build version does not support PlanMaxx's isolated, disposable session forks.",
+			})
+			return nil, nil
+		}
+		client := monitorAgentClient(newGrokClient(selection.sessionID, cwd), reviewServer, selection.displayName)
+		reviewServer.
+			WithAgent(review.AgentInfo{ID: agentGrok, DisplayName: selection.displayName, ContextMode: "current-session-fork", Available: true}).
+			WithSideQuestions(sidequestions.NewService(selection.sessionID, client)).
+			WithSectionIterations(sectioniter.NewService(selection.sessionID, client))
+		return nil, nil
 	case agentClaude:
 		if _, err := agentLookPath("claude"); err != nil {
 			fmt.Fprintf(stderr, "PlanMaxx assisted actions unavailable: find Claude Code: %v\n", err)
@@ -598,6 +657,116 @@ func tryAttachAgentServices(
 	default:
 		return nil, fmt.Errorf("unsupported resolved agent %q", selection.id)
 	}
+}
+
+func validateGrokCapabilities(parent context.Context, cwd string) error {
+	if !grokSandboxSupported(runtime.GOOS) {
+		return fmt.Errorf("Grok Build isolation is unsupported on %s", runtime.GOOS)
+	}
+	ctx, cancel := context.WithTimeout(parent, grokCapabilityCheckTimeout)
+	defer cancel()
+
+	versionCommand := execCommandContext(ctx, "grok", "--version")
+	versionCommand.Dir = cwd
+	versionCommand.Env = append(versionCommand.Environ(), "GROK_DISABLE_AUTOUPDATER=1")
+	versionOutput, err := versionCommand.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("run grok --version: %w", err)
+	}
+	if err := requireMinimumGrokVersion(strings.TrimSpace(string(versionOutput))); err != nil {
+		return err
+	}
+
+	command := execCommandContext(ctx, "grok", "--help")
+	command.Dir = cwd
+	command.Env = append(command.Environ(), "GROK_DISABLE_AUTOUPDATER=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("run grok --help: %w", err)
+	}
+	help := string(output)
+	for _, flag := range []string{
+		"--cwd",
+		"--prompt-file",
+		"--resume",
+		"--fork-session",
+		"--session-id",
+		"--output-format",
+		"--tools",
+		"--allow",
+		"--deny",
+		"--permission-mode",
+		"--sandbox",
+		"--no-subagents",
+		"--no-memory",
+		"--disable-web-search",
+		"--no-plan",
+		"--max-turns",
+		"--verbatim",
+	} {
+		if !strings.Contains(help, flag) {
+			return fmt.Errorf("grok --help does not advertise required flag %s", flag)
+		}
+	}
+
+	deleteCommand := execCommandContext(ctx, "grok", "sessions", "delete", "--help")
+	deleteCommand.Dir = cwd
+	deleteCommand.Env = append(deleteCommand.Environ(), "GROK_DISABLE_AUTOUPDATER=1")
+	if output, err := deleteCommand.CombinedOutput(); err != nil {
+		return fmt.Errorf("run grok sessions delete --help: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	inspectCommand := execCommandContext(ctx, "grok", "inspect", "--help")
+	inspectCommand.Dir = cwd
+	inspectCommand.Env = append(inspectCommand.Environ(), "GROK_DISABLE_AUTOUPDATER=1")
+	if output, err := inspectCommand.CombinedOutput(); err != nil {
+		return fmt.Errorf("run grok inspect --help: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	acpCommand := execCommandContext(ctx, "grok", "agent", "--no-leader", "stdio", "--help")
+	acpCommand.Dir = cwd
+	acpCommand.Env = append(acpCommand.Environ(), "GROK_DISABLE_AUTOUPDATER=1")
+	if output, err := acpCommand.CombinedOutput(); err != nil {
+		return fmt.Errorf("run grok agent stdio --help: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func grokSandboxSupported(goos string) bool {
+	return goos == "darwin" || goos == "linux"
+}
+
+func requireMinimumGrokVersion(output string) error {
+	fields := strings.Fields(output)
+	for _, field := range fields {
+		version := strings.TrimPrefix(field, "v")
+		parts := strings.SplitN(version, ".", 4)
+		if len(parts) < 3 {
+			continue
+		}
+		numbers := make([]int, 3)
+		valid := true
+		for index := range numbers {
+			number, err := strconv.Atoi(parts[index])
+			if err != nil {
+				valid = false
+				break
+			}
+			numbers[index] = number
+		}
+		if !valid {
+			continue
+		}
+		minimum := [3]int{0, 2, 114}
+		for index, number := range numbers {
+			if number > minimum[index] {
+				return nil
+			}
+			if number < minimum[index] {
+				return fmt.Errorf("Grok Build %s or newer is required; found %s", minimumGrokVersion, version)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("parse Grok Build version %q", output)
 }
 
 func validateClaudeCapabilities(parent context.Context, cwd string) error {
