@@ -113,7 +113,7 @@ func TestUpdateCommandEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("update failed: %v\nstderr:\n%s", err, stderr)
 		}
-		if stdout != "Updated PlanMaxx from 1.0.0 to 1.1.0.\n" {
+		if stdout != "Updated PlanMaxx from 1.0.0 to 1.1.0.\nIf you use Claude Code, refresh its installed skill with `planmaxx skill install --target claude` for a user install, or rerun it with the original `--repo <path>` for a repository install.\n" {
 			t.Fatalf("unexpected stdout %q", stdout)
 		}
 		got, err := os.ReadFile(executable)

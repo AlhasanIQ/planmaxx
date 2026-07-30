@@ -201,7 +201,14 @@ export interface ReviewStop {
 export type RevisionComparison = ChangeView;
 
 export interface Session {
-  schemaVersion: 4;
+  schemaVersion: 5;
+  agent: {
+    id: string;
+    displayName: string;
+    contextMode: "current-session-fork" | "unavailable" | string;
+    available: boolean;
+    unavailableReason?: string;
+  };
   id: string;
   plan: string;
   planPath: string;

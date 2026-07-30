@@ -95,7 +95,7 @@ export function ThreadCard(props: ThreadCardProps) {
               : <span className="pill pill-stay"><EyeOff size={10} /> private</span>}
           </div>
           <p className="thread-agent-question"><span>You asked</span> {answer.question}</p>
-          <div className="thread-agent-answer"><div className="thread-message-meta"><span className="thread-actor is-agent"><Sparkles size={11} /> Codex</span><span className="text-[11px] text-foreground-muted">{relativeTime(answer.createdAt)}</span></div><p className="whitespace-pre-wrap text-foreground-muted">{answer.answer}</p></div>
+          <div className="thread-agent-answer"><div className="thread-message-meta"><span className="thread-actor is-agent"><Sparkles size={11} /> Agent</span><span className="text-[11px] text-foreground-muted">{relativeTime(answer.createdAt)}</span></div><p className="whitespace-pre-wrap text-foreground-muted">{answer.answer}</p></div>
           {answer.capabilities.canInclude || answer.capabilities.canKeepPrivate ? <div className="mt-2 flex justify-end">
             {answer.included ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => onKeepPrivate(answer.id)} disabled={processing}>Keep answer private</button>
               : <button type="button" className="btn btn-sm" onClick={() => onInclude(answer.id)} disabled={processing}><ArrowRight size={12} /> Include answer</button>}
@@ -103,7 +103,7 @@ export function ThreadCard(props: ThreadCardProps) {
         </li>)}
       </ul> : null}
 
-      {agentAction && active ? <div className="btw-thinking mt-3" role="status" aria-live="polite"><Sparkles size={13} /><span>{agentAction === "asking" ? "Codex is considering this /btw…" : "Codex is iterating on this feedback…"}</span></div> : null}
+      {agentAction && active ? <div className="btw-thinking mt-3" role="status" aria-live="polite"><Sparkles size={13} /><span>{agentAction === "asking" ? "The agent is considering this /btw…" : "The agent is iterating on this feedback…"}</span></div> : null}
 
       {active ? <div className="thread-card-actions">
         {thread.capabilities.canReply ? <button type="button" className="btn btn-sm flex-1" onClick={() => onReply(thread.id)} disabled={processing}><Reply size={13} /> {instruction ? "Add iteration feedback" : "Add private note"}</button> : null}
@@ -117,7 +117,7 @@ export function ThreadCard(props: ThreadCardProps) {
 }
 
 function actorLabel(author: string) {
-  return /(?:codex|agent|assistant)/i.test(author) ? "Codex" : "You";
+  return /(?:codex|agent|assistant)/i.test(author) ? "Agent" : "You";
 }
 
 function IntentToggle({ intent, onChange, disabled }: { intent: ThreadIntent; onChange: (intent: ThreadIntent) => void; disabled: boolean }) {

@@ -16,4 +16,7 @@ assignees: ""
 
 - PlanMaxx version:
 - OS:
-- Codex context available (`CODEX_THREAD_ID`): yes/no
+- Agent and agent CLI version:
+- Selected provider (`auto`, `codex`, `claude`, or `none`):
+- Active context marker available (`CODEX_THREAD_ID` or
+  `CLAUDE_CODE_SESSION_ID`; legacy `PLANMAXX_CLAUDE_SESSION_ID`): yes/no

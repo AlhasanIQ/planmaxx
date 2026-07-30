@@ -29,7 +29,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function normalizeSession(raw: Session): Session {
-  if (raw.schemaVersion !== 4) {
+  if (raw.schemaVersion !== 5) {
     throw new Error(`Unsupported PlanMaxx API schema ${String(raw.schemaVersion ?? "missing")}; reload the rebuilt app.`);
   }
   return raw;

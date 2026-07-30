@@ -13,11 +13,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AlhasanIQ/planmaxx/internal/appdata"
 	"github.com/AlhasanIQ/planmaxx/internal/appserver"
 	"github.com/AlhasanIQ/planmaxx/internal/browser"
+	"github.com/AlhasanIQ/planmaxx/internal/claudecode"
 	"github.com/AlhasanIQ/planmaxx/internal/handoff"
 	"github.com/AlhasanIQ/planmaxx/internal/planfile"
 	"github.com/AlhasanIQ/planmaxx/internal/review"
@@ -34,6 +40,8 @@ type reviewOptions struct {
 	port                int
 	noBrowser           bool
 	sideQuestionTimeout time.Duration
+	agent               string
+	claudeSessionID     string
 	saveToFile          string
 	bundleOut           string
 	localBundle         bool
@@ -45,15 +53,34 @@ var userCacheDir = os.UserCacheDir
 var userDataDir = os.UserConfigDir
 var userStateDir = appdata.StateDir
 var writePlanFile = savePlanFile
+var agentLookPath = exec.LookPath
+var newClaudeClient = func(sessionID, cwd string) attachedAgentClient {
+	return claudecode.NewClient(sessionID, cwd)
+}
+var checkClaudeCapabilities = validateClaudeCapabilities
 
 const defaultAppServerRequestTimeout = 30 * time.Minute
+const claudeCapabilityCheckTimeout = 5 * time.Second
+const agentAttachmentProbeTimeout = 5 * time.Second
+const minimumClaudeVersion = "2.1.214"
+const claudeCodeSessionIDEnvironment = "CLAUDE_CODE_SESSION_ID"
+const legacyClaudeSessionIDEnvironment = "PLANMAXX_CLAUDE_SESSION_ID"
+
+var claudeCodeSessionIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+const (
+	agentAuto   = "auto"
+	agentCodex  = "codex"
+	agentClaude = "claude"
+	agentNone   = "none"
+)
 
 func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
-	opts := reviewOptions{host: "127.0.0.1", sideQuestionTimeout: defaultAppServerRequestTimeout}
+	opts := reviewOptions{host: "127.0.0.1", sideQuestionTimeout: defaultAppServerRequestTimeout, agent: agentAuto}
 
 	cmd := &cobra.Command{
 		Use:   "review <plan-file>",
-		Short: "Open a blocking local review session for a Codex plan",
+		Short: "Open a blocking local review session for a coding-agent plan",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			plan, err := planfile.Load(args[0])
@@ -198,7 +225,11 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			if err := reviewServer.EnableBundle(bundle); err != nil {
 				return fmt.Errorf("persist review bundle: %w", err)
 			}
-			if cleanup := tryAttachAppServerServices(cmd.Context(), stderr, reviewServer, os.Getenv("CODEX_THREAD_ID")); cleanup != nil {
+			cleanup, err := tryAttachAgentServices(cmd.Context(), stderr, reviewServer, opts.agent, opts.claudeSessionID)
+			if err != nil {
+				return err
+			}
+			if cleanup != nil {
 				defer cleanup()
 			}
 			if opts.port < 0 || opts.port > 65535 {
@@ -263,14 +294,16 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.host, "host", opts.host, "host interface for the local review server")
 	cmd.Flags().IntVar(&opts.port, "port", opts.port, "port for the local review server; 0 chooses a random port")
 	cmd.Flags().BoolVar(&opts.noBrowser, "no-browser", opts.noBrowser, "print the review URL without opening a browser")
-	cmd.Flags().DurationVar(&opts.sideQuestionTimeout, "side-question-timeout", opts.sideQuestionTimeout, "maximum duration for one Codex app-server request")
+	cmd.Flags().StringVar(&opts.agent, "agent", opts.agent, "agent integration to use: auto, codex, claude, or none")
+	cmd.Flags().StringVar(&opts.claudeSessionID, "claude-session-id", "", "Claude Code session identifier supplied by the invoked PlanMaxx skill")
+	cmd.Flags().DurationVar(&opts.sideQuestionTimeout, "side-question-timeout", opts.sideQuestionTimeout, "maximum duration for one agent request")
 	cmd.Flags().StringVar(&opts.saveToFile, "save-to-file", opts.saveToFile, "save the finalized plan to this file instead of the source plan")
 	cmd.Flags().BoolVar(&opts.localBundle, "local-bundle", opts.localBundle, "store <plan-file>.planmaxx beside the plan instead of in user state")
 	cmd.Flags().StringVar(&opts.bundleOut, "bundle-out", opts.bundleOut, "write the recoverable single-file Git review bundle here")
 	cmd.Flags().StringVar(&opts.bundleOut, "autosave-out", opts.bundleOut, "deprecated alias for --bundle-out")
 	_ = cmd.Flags().MarkDeprecated("autosave-out", "use --bundle-out")
 	_ = cmd.Flags().MarkHidden("autosave-out")
-	for _, name := range []string{"host", "port", "side-question-timeout", "bundle-out"} {
+	for _, name := range []string{"host", "port", "side-question-timeout", "bundle-out", "claude-session-id"} {
 		_ = cmd.Flags().MarkHidden(name)
 	}
 	return cmd
@@ -365,22 +398,273 @@ func loadNewestAutosave(paths []string, document review.Document) (review.Autosa
 	return newest, newestPath, newestPath != "", nil
 }
 
-func tryAttachAppServerServices(ctx context.Context, stderr io.Writer, reviewServer *review.Server, currentThreadID string) func() {
+type attachedAgentClient interface {
+	sidequestions.AskClient
+	sectioniter.PromptClient
+}
+
+type monitoredAgentClient struct {
+	inner     attachedAgentClient
+	failed    atomic.Bool
+	onFailure func()
+}
+
+func (c *monitoredAgentClient) Ask(ctx context.Context, request sidequestions.Request) (string, error) {
+	if err := c.unavailableError(); err != nil {
+		return "", err
+	}
+	answer, err := c.inner.Ask(ctx, request)
+	if err != nil {
+		c.fail(err)
+	}
+	return answer, err
+}
+
+func (c *monitoredAgentClient) AskPrompt(ctx context.Context, prompt string) (string, error) {
+	if err := c.unavailableError(); err != nil {
+		return "", err
+	}
+	answer, err := c.inner.AskPrompt(ctx, prompt)
+	if err != nil {
+		c.fail(err)
+	}
+	return answer, err
+}
+
+func (c *monitoredAgentClient) unavailableError() error {
+	if c == nil || c.inner == nil {
+		return errors.New("agent integration is unavailable")
+	}
+	if c.failed.Load() {
+		return errors.New("agent integration is unavailable after its last request failed")
+	}
+	return nil
+}
+
+func (c *monitoredAgentClient) fail(err error) {
+	if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) &&
+		!errors.Is(err, appserver.ErrClientUnusable) {
+		return
+	}
+	if c.failed.CompareAndSwap(false, true) && c.onFailure != nil {
+		c.onFailure()
+	}
+}
+
+func monitorAgentClient(client attachedAgentClient, reviewServer *review.Server, displayName string, cleanup ...func()) attachedAgentClient {
+	return &monitoredAgentClient{
+		inner: client,
+		onFailure: func() {
+			for _, stop := range cleanup {
+				if stop != nil {
+					stop()
+				}
+			}
+			reviewServer.MarkAgentUnavailable(
+				displayName + " failed its last assisted request. Restart the review after checking the active agent session.",
+			)
+		},
+	}
+}
+
+type agentSelection struct {
+	id          string
+	displayName string
+	sessionID   string
+}
+
+func resolveAgentSelection(requested string, invokedClaudeSessionID string) (agentSelection, error) {
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	invokedClaudeSessionID = strings.TrimSpace(invokedClaudeSessionID)
+	if requested == "" {
+		requested = agentAuto
+	}
+	if requested == agentAuto {
+		if configured := strings.ToLower(strings.TrimSpace(os.Getenv("PLANMAXX_AGENT"))); configured != "" {
+			requested = configured
+		}
+	}
+	if requested == agentAuto {
+		switch {
+		case invokedClaudeSessionID != "":
+			requested = agentClaude
+		case strings.TrimSpace(os.Getenv(claudeCodeSessionIDEnvironment)) != "":
+			requested = agentClaude
+		case strings.TrimSpace(os.Getenv(legacyClaudeSessionIDEnvironment)) != "":
+			requested = agentClaude
+		case os.Getenv("CODEX_THREAD_ID") != "":
+			requested = agentCodex
+		default:
+			requested = agentNone
+		}
+	}
+	switch requested {
+	case agentCodex:
+		return agentSelection{id: agentCodex, displayName: "Codex", sessionID: strings.TrimSpace(os.Getenv("CODEX_THREAD_ID"))}, nil
+	case agentClaude:
+		sessionID, source := selectedClaudeSessionID(invokedClaudeSessionID)
+		if sessionID != "" && !claudeCodeSessionIDPattern.MatchString(sessionID) {
+			return agentSelection{}, fmt.Errorf("invalid Claude Code session identifier in %s", source)
+		}
+		return agentSelection{id: agentClaude, displayName: "Claude Code", sessionID: sessionID}, nil
+	case agentNone:
+		return agentSelection{id: agentNone, displayName: "Agent"}, nil
+	default:
+		return agentSelection{}, fmt.Errorf("unsupported agent %q; expected auto, codex, claude, or none", requested)
+	}
+}
+
+func selectedClaudeSessionID(invokedClaudeSessionID string) (string, string) {
+	if invokedClaudeSessionID != "" {
+		return invokedClaudeSessionID, "--claude-session-id"
+	}
+	if sessionID := strings.TrimSpace(os.Getenv(claudeCodeSessionIDEnvironment)); sessionID != "" {
+		return sessionID, claudeCodeSessionIDEnvironment
+	}
+	return strings.TrimSpace(os.Getenv(legacyClaudeSessionIDEnvironment)), legacyClaudeSessionIDEnvironment
+}
+
+func tryAttachAgentServices(
+	ctx context.Context,
+	stderr io.Writer,
+	reviewServer *review.Server,
+	requestedAgent string,
+	invokedClaudeSessionID string,
+) (func(), error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "PlanMaxx side questions unavailable: read current directory: %v\n", err)
-		return nil
+		attachUnavailableAgentServices(reviewServer, review.AgentInfo{
+			ID:                agentNone,
+			DisplayName:       "Agent",
+			ContextMode:       "unavailable",
+			UnavailableReason: "PlanMaxx could not determine the agent working directory.",
+		})
+		return nil, nil
 	}
 
+	selection, err := resolveAgentSelection(requestedAgent, invokedClaudeSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if selection.id == agentNone {
+		attachUnavailableAgentServices(reviewServer, review.AgentInfo{
+			ID:                agentNone,
+			DisplayName:       "Agent",
+			ContextMode:       "unavailable",
+			UnavailableReason: "No supported active agent session was detected.",
+		})
+		return nil, nil
+	}
+	if selection.sessionID == "" {
+		reason := "The active agent session identifier is unavailable."
+		if selection.id == agentCodex {
+			reason = "CODEX_THREAD_ID is not set for this review."
+		} else if selection.id == agentClaude {
+			reason = "Claude Code did not provide its active session. Launch the review from the installed skill or another Claude Code tool command."
+		}
+		attachUnavailableAgentServices(reviewServer, review.AgentInfo{
+			ID: selection.id, DisplayName: selection.displayName, ContextMode: "unavailable", UnavailableReason: reason,
+		})
+		return nil, nil
+	}
+
+	switch selection.id {
+	case agentClaude:
+		if _, err := agentLookPath("claude"); err != nil {
+			fmt.Fprintf(stderr, "PlanMaxx assisted actions unavailable: find Claude Code: %v\n", err)
+			attachUnavailableAgentServices(reviewServer, review.AgentInfo{
+				ID: selection.id, DisplayName: selection.displayName, ContextMode: "unavailable",
+				UnavailableReason: "The Claude Code executable is not available on PATH.",
+			})
+			return nil, nil
+		}
+		if err := checkClaudeCapabilities(ctx, cwd); err != nil {
+			fmt.Fprintf(stderr, "PlanMaxx assisted actions unavailable: check Claude Code capabilities: %v\n", err)
+			attachUnavailableAgentServices(reviewServer, review.AgentInfo{
+				ID: selection.id, DisplayName: selection.displayName, ContextMode: "unavailable",
+				UnavailableReason: "This Claude Code version does not support PlanMaxx's isolated, non-persistent session forks.",
+			})
+			return nil, nil
+		}
+		client := monitorAgentClient(newClaudeClient(selection.sessionID, cwd), reviewServer, selection.displayName)
+		reviewServer.
+			WithAgent(review.AgentInfo{ID: agentClaude, DisplayName: selection.displayName, ContextMode: "current-session-fork", Available: true}).
+			WithSideQuestions(sidequestions.NewService(selection.sessionID, client)).
+			WithSectionIterations(sectioniter.NewService(selection.sessionID, client))
+		return nil, nil
+	case agentCodex:
+		return attachCodexAppServer(ctx, stderr, reviewServer, selection, cwd), nil
+	default:
+		return nil, fmt.Errorf("unsupported resolved agent %q", selection.id)
+	}
+}
+
+func validateClaudeCapabilities(parent context.Context, cwd string) error {
+	ctx, cancel := context.WithTimeout(parent, claudeCapabilityCheckTimeout)
+	defer cancel()
+
+	versionCommand := execCommandContext(ctx, "claude", "--version")
+	versionCommand.Dir = cwd
+	versionOutput, err := versionCommand.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("run claude --version: %w", err)
+	}
+	if err := requireMinimumClaudeVersion(strings.TrimSpace(string(versionOutput))); err != nil {
+		return err
+	}
+
+	command := execCommandContext(ctx, "claude", "--help")
+	command.Dir = cwd
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("run claude --help: %w", err)
+	}
+	help := string(output)
+	for _, flag := range []string{"--fork-session", "--safe-mode", "--no-session-persistence", "--output-format", "--tools", "--permission-mode"} {
+		if !strings.Contains(help, flag) {
+			return fmt.Errorf("claude --help does not advertise required flag %s", flag)
+		}
+	}
+	return nil
+}
+
+func requireMinimumClaudeVersion(output string) error {
+	fields := strings.Fields(output)
+	if len(fields) == 0 {
+		return errors.New("parse Claude Code version: empty output")
+	}
+	version := strings.TrimPrefix(fields[0], "v")
+	parts := strings.SplitN(version, ".", 4)
+	if len(parts) < 3 {
+		return fmt.Errorf("parse Claude Code version %q", output)
+	}
+	numbers := make([]int, 3)
+	for index := range numbers {
+		number, err := strconv.Atoi(parts[index])
+		if err != nil {
+			return fmt.Errorf("parse Claude Code version %q", output)
+		}
+		numbers[index] = number
+	}
+	minimum := [3]int{2, 1, 214}
+	for index, number := range numbers {
+		if number > minimum[index] {
+			return nil
+		}
+		if number < minimum[index] {
+			return fmt.Errorf("Claude Code %s or newer is required; found %s", minimumClaudeVersion, version)
+		}
+	}
+	return nil
+}
+
+func attachCodexAppServer(ctx context.Context, stderr io.Writer, reviewServer *review.Server, selection agentSelection, cwd string) func() {
+	currentThreadID := selection.sessionID
 	var primary sidequestions.AskClient
 	var promptClient sectioniter.PromptClient
 	var cleanup func()
-	if currentThreadID == "" {
-		reviewServer.WithSideQuestions(sidequestions.NewService(currentThreadID, primary))
-		reviewServer.WithSectionIterations(sectioniter.NewService(currentThreadID, promptClient))
-		return nil
-	}
-
+	unavailableReason := "PlanMaxx could not start the Codex app-server integration."
 	appCmd := execCommandContext(ctx, "codex", "app-server", "--listen", "stdio://")
 	appStdout, err := appCmd.StdoutPipe()
 	if err != nil {
@@ -396,18 +680,48 @@ func tryAttachAppServerServices(ctx context.Context, stderr io.Writer, reviewSer
 			} else {
 				client := appserver.NewClient(bufio.NewReader(appStdout), appStdin)
 				asker := &appserver.SideQuestionAsker{Client: client, CWD: cwd, CurrentThreadID: currentThreadID}
-				primary = asker
-				promptClient = asker
-				cleanup = func() {
-					stopAppServerProcess(appCmd, appStdin)
+				var stopOnce sync.Once
+				stop := func() {
+					stopOnce.Do(func() {
+						stopAppServerProcess(appCmd, appStdin)
+					})
+				}
+				probeCtx, cancel := context.WithTimeout(ctx, agentAttachmentProbeTimeout)
+				probeErr := asker.ValidateAttachment(probeCtx)
+				cancel()
+				if probeErr != nil {
+					fmt.Fprintf(stderr, "PlanMaxx assisted actions unavailable: validate Codex attachment: %v\n", probeErr)
+					unavailableReason = "PlanMaxx could not validate the active Codex thread."
+					stop()
+				} else {
+					cleanup = stop
+					monitored := monitorAgentClient(asker, reviewServer, selection.displayName, cleanup)
+					primary = monitored
+					promptClient = monitored
+					reviewServer.WithAgent(review.AgentInfo{
+						ID: agentCodex, DisplayName: selection.displayName, ContextMode: "current-session-fork", Available: true,
+					})
 				}
 			}
 		}
 	}
 
+	if cleanup == nil {
+		reviewServer.WithAgent(review.AgentInfo{
+			ID: agentCodex, DisplayName: selection.displayName, ContextMode: "unavailable",
+			UnavailableReason: unavailableReason,
+		})
+	}
 	reviewServer.WithSideQuestions(sidequestions.NewService(currentThreadID, primary))
 	reviewServer.WithSectionIterations(sectioniter.NewService(currentThreadID, promptClient))
 	return cleanup
+}
+
+func attachUnavailableAgentServices(reviewServer *review.Server, info review.AgentInfo) {
+	reviewServer.
+		WithAgent(info).
+		WithSideQuestions(sidequestions.NewService("", nil)).
+		WithSectionIterations(sectioniter.NewService("", nil))
 }
 
 func stopAppServerProcess(cmd *exec.Cmd, stdin io.Closer) {

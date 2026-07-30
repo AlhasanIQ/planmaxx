@@ -16,7 +16,7 @@ func Execute(stdout io.Writer, stderr io.Writer) error {
 func NewRootCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "planmaxx",
-		Short:         "Review Codex plans in a local browser workflow",
+		Short:         "Review coding-agent plans in a local browser workflow",
 		Version:       version.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -26,6 +26,7 @@ func NewRootCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.SetErr(stderr)
 	cmd.AddCommand(newReviewCommand(stdout, stderr))
 	cmd.AddCommand(newSkillCommand(stdout, stderr))
+	cmd.AddCommand(newClaudeSessionHookCommand())
 	cmd.AddCommand(newUpdateCommand(stdout))
 	cmd.AddCommand(newDoctorCommand(stdout))
 	cmd.AddCommand(newSnapshotCommand(stdout))

@@ -78,7 +78,13 @@ func TestBrowserDiffRegression(t *testing.T) {
 
 func runBrowserRegression(t *testing.T, s *session.Session, mode string) {
 	t.Helper()
-	server := httptest.NewServer(review.NewServer(s).Handler())
+	// This browser fixture exercises the assisted-action controls but never
+	// submits an agent request. Advertise the same server-authoritative
+	// attachment state that a validated provider would publish in production.
+	reviewServer := review.NewServer(s).WithAgent(review.AgentInfo{
+		ID: "test-agent", DisplayName: "Test Agent", ContextMode: "current-session-fork", Available: true,
+	})
+	server := httptest.NewServer(reviewServer.Handler())
 	defer server.Close()
 	_, source, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))

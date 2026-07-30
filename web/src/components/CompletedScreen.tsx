@@ -26,13 +26,13 @@ export function CompletedScreen({ state }: Props) {
           <p
             className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-accent/10 px-3 py-1 text-xs font-medium text-accent"
           >
-            <ArrowRight size={12} /> Handoff sent to Codex
+            <ArrowRight size={12} /> Handoff ready
           </p>
         ) : null}
         <p className="mt-3 text-sm text-foreground-muted">
           {canceled
             ? "PlanMaxx exited without handing off. You can close this window."
-            : "Codex has resumed with the approved plan and your reviewer items. You can close this window."}
+            : "The approved plan and your reviewer items are ready for the calling agent. You can close this window."}
         </p>
       </div>
     </div>

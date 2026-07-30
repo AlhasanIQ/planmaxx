@@ -50,7 +50,6 @@ function useReviewController() {
   const [dialog, setDialog] = useState<DialogState>(null);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(null);
-  const [sideQuestionsEnabled, setSideQuestionsEnabled] = useState(true);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const theme = useTheme();
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
@@ -58,6 +57,7 @@ function useReviewController() {
   const [iteratingSection, setIteratingSection] = useState(false);
   const iteratingSectionRef = useRef(false);
   const initialComparisonRequestedRef = useRef(false);
+  const sideQuestionsEnabled = session?.agent.available ?? false;
 
   const pushToast = useCallback((kind: Toast["kind"], message: string) => {
     setToasts((prev) => [...prev, { id: Date.now() + Math.random(), kind, message }]);
@@ -85,7 +85,7 @@ function useReviewController() {
       const next = await api.getState();
       setSession(next);
       setLoadError(null);
-      setStatus({ label: "Codex paused — review in progress", kind: "idle" });
+      setStatus({ label: "Review in progress", kind: "idle" });
 	  if (next.pendingProposal) {
 	  suppressRevisionDiff();
 	  }
@@ -152,7 +152,7 @@ function useReviewController() {
     setStatus({ label, kind: "busy" });
     try {
       const result = await fn();
-      setStatus({ label: "Codex paused — review in progress", kind: "idle" });
+      setStatus({ label: "Review in progress", kind: "idle" });
       return result;
     } catch (e) {
       if (isSourceChangeConflict(e)) {
@@ -161,6 +161,9 @@ function useReviewController() {
         setEditingThreadId(null);
         pushToast("error", "The plan changed outside PlanMaxx. Review state was refreshed.");
         return null;
+      }
+      if (isAgentIntegrationFailure(e)) {
+        await refresh();
       }
       const msg = e instanceof Error ? e.message : "Request failed";
       setStatus({ label: msg, kind: "error" });
@@ -293,22 +296,22 @@ function useReviewController() {
     if (operationInFlightRef.current) return false;
     operationInFlightRef.current = true;
     setBusy(true);
-    setStatus({ label: "Asking Codex (ephemeral /btw)…", kind: "busy" });
+    setStatus({ label: "Asking the agent (/btw)…", kind: "busy" });
     setFocusedThreadId(thread.id);
     setThreadAgentActions((prev) => ({ ...prev, [thread.id]: "asking" }));
     try {
 	  await api.sideQuestion(thread.id, question, sideQuestionContext(sourceSession, thread));
 	  await refresh();
       pushToast("success", "/btw answer received (stays here unless you opt in)");
-      setStatus({ label: "Codex paused — review in progress", kind: "idle" });
+      setStatus({ label: "Review in progress", kind: "idle" });
       return true;
     } catch (e) {
+      if (isAgentIntegrationFailure(e)) {
+        await refresh();
+      }
       const msg = e instanceof Error ? e.message : "Side questions unavailable";
       pushToast("error", msg);
       setStatus({ label: msg, kind: "error" });
-      if (e instanceof ApiError && e.status === 503) {
-        setSideQuestionsEnabled(false);
-      }
       return false;
     } finally {
       setThreadAgentActions((prev) => {
@@ -480,6 +483,10 @@ function isSourceChangeConflict(error: unknown): error is ApiError {
   );
 }
 
+function isAgentIntegrationFailure(error: unknown): error is ApiError {
+  return error instanceof ApiError && [502, 503, 504].includes(error.status);
+}
+
 type ReviewController = ReturnType<typeof useReviewController>;
 
 export default function App() {
@@ -594,6 +601,9 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         resolvedTheme={theme.resolved}
         onThemeModeChange={changeThemeMode}
         currentRevisionId={session.currentRevisionId}
+        agentDisplayName={session.agent.displayName}
+        agentAvailable={session.agent.available}
+        agentUnavailableReason={session.agent.unavailableReason}
         onOpenRevisions={() => setDialog({ kind: "revisions" })}
         onCancel={() => setDialog({ kind: "confirmCancel" })}
 		onIterate={openIterate}
@@ -705,11 +715,11 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
       ) : null}
       {dialog?.kind === "ask" && (
         <PromptDialog
-          title="Ask Codex an ephemeral /btw question"
+          title="Ask the agent a side question"
           description={`Anchored to ${anchorLabel(dialog.thread.anchor)}. Pre-filled with the latest comment in this thread; edit if you want to ask something different. Answers stay private unless you include them.`}
           label="Question"
           submitLabel="Ask /btw"
-          placeholder="What should we ask Codex on the side?"
+          placeholder="What should we ask the agent?"
           initialValue={dialog.thread.messages.at(-1)?.body ?? ""}
           onCancel={() => setDialog(null)}
           onSubmit={(value) => handleAsk(dialog.thread, value)}

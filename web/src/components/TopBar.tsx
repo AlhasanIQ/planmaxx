@@ -25,6 +25,9 @@ interface Props {
   resolvedTheme: ResolvedTheme;
   onThemeModeChange: () => void;
   currentRevisionId: string;
+  agentDisplayName: string;
+  agentAvailable: boolean;
+  agentUnavailableReason?: string;
   onOpenRevisions: () => void;
   onCancel: () => void;
   onIterate: () => void;
@@ -45,6 +48,9 @@ export function TopBar(props: Props) {
     resolvedTheme,
     onThemeModeChange,
     currentRevisionId,
+    agentDisplayName,
+    agentAvailable,
+    agentUnavailableReason,
     onOpenRevisions,
     onCancel,
     onIterate,
@@ -78,10 +84,16 @@ export function TopBar(props: Props) {
           <ChevronDown size={12} aria-hidden />
         </button>
         <span
-          className="codex-paused hidden md:inline-flex"
-          title="Your Codex session is blocked on this review"
+          className="review-in-progress hidden md:inline-flex"
+          title={`${agentDisplayName || "The calling agent"} is waiting for this review`}
         >
-          <Pause size={11} /> Codex paused
+          <Pause size={11} /> {agentDisplayName || "Agent"} waiting
+        </span>
+        <span
+          className={`hidden rounded-full px-2 py-0.5 text-[11px] font-medium lg:inline-flex ${agentAvailable ? "bg-accent/10 text-accent" : "bg-surface-muted text-foreground-muted"}`}
+          title={agentAvailable ? `${agentDisplayName} assisted actions use an active-session fork` : agentUnavailableReason}
+        >
+          {agentAvailable ? "Assisted actions on" : "Assisted actions off"}
         </span>
         <div className="ml-2 hidden gap-2 sm:flex">
           <span

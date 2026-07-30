@@ -15,14 +15,68 @@ import (
 )
 
 const (
-	skillTargetCodex = "codex"
-	skillFileName    = "SKILL.md"
+	skillTargetCodex  = "codex"
+	skillTargetClaude = "claude"
+	skillFileName     = "SKILL.md"
 
 	planmaxxReminderStart = "<!-- planmaxx skill reminder:start -->"
 	planmaxxReminderEnd   = "<!-- planmaxx skill reminder:end -->"
 	planmaxxReminderBody  = "## PlanMaxx Skill\nWhen the PlanMaxx skill is installed, use it whenever an agent-written plan is ready for user review. Check the `planmaxx` skill before proceeding from planning to implementation."
 
 	planmaxxManagedSkillMarker = "<!-- planmaxx-managed-skill -->"
+
+	claudePluginManifest = `{
+  "name": "planmaxx",
+  "description": "planmaxx-managed:v1 — Review and refine coding-agent plans before implementation.",
+  "version": "1.0.0",
+  "author": {
+    "name": "PlanMaxx"
+  }
+}
+`
+	claudeHooksConfig = `{
+  "description": "planmaxx-managed:v1 — Expose the active Claude Code session to PlanMaxx.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "planmaxx claude-session-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+`
+	claudeLegacyPluginManifest = `{
+  "name": "planmaxx",
+  "description": "Review and refine coding-agent plans before implementation.",
+  "version": "1.0.0",
+  "author": {
+    "name": "PlanMaxx"
+  }
+}
+`
+	claudeLegacyHooksConfig = `{
+  "description": "Expose the active Claude Code session to PlanMaxx.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "planmaxx claude-session-hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+`
 )
 
 //go:embed SKILL.md
@@ -43,7 +97,7 @@ func SetEmbeddedSkillTemplate(b []byte) {
 func newSkillCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "skill <install|remove>",
-		Short: "Install or remove the optional PlanMaxx Codex skill",
+		Short: "Install or remove an optional PlanMaxx agent skill",
 	}
 	cmd.AddCommand(newSkillInstallCommand(stderr))
 	cmd.AddCommand(newSkillRemoveCommand(stderr))
@@ -54,18 +108,18 @@ func newSkillInstallCommand(stderr io.Writer) *cobra.Command {
 	opts := skillInstallOptions{target: skillTargetCodex}
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Install PlanMaxx as an optional Codex skill",
+		Short: "Install PlanMaxx as an optional agent skill",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSkillInstall(opts, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target; currently codex")
-	cmd.Flags().StringVar(&opts.repo, "repo", "", "install inside this repository instead of the user-level Codex directory")
+	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target: codex or claude")
+	cmd.Flags().StringVar(&opts.repo, "repo", "", "install inside this repository instead of the user-level agent directory")
 	cmd.Flags().StringVar(&opts.source, "source", "", "local SKILL.md source path")
 	cmd.Flags().BoolVar(&opts.copyMode, "copy", false, "copy SKILL.md instead of symlinking")
 	cmd.Flags().BoolVar(&opts.linkMode, "link", false, "symlink SKILL.md instead of copying")
-	for _, name := range []string{"target", "source", "copy", "link"} {
+	for _, name := range []string{"source", "copy", "link"} {
 		_ = cmd.Flags().MarkHidden(name)
 	}
 	return cmd
@@ -75,16 +129,16 @@ func newSkillRemoveCommand(stderr io.Writer) *cobra.Command {
 	opts := skillRemoveOptions{target: skillTargetCodex}
 	cmd := &cobra.Command{
 		Use:   "remove",
-		Short: "Remove a PlanMaxx Codex skill installed by PlanMaxx",
+		Short: "Remove a PlanMaxx agent skill installed by PlanMaxx",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSkillRemove(opts, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target; currently codex")
-	cmd.Flags().StringVar(&opts.repo, "repo", "", "remove from this repository instead of the user-level Codex directory")
+	cmd.Flags().StringVar(&opts.target, "target", opts.target, "skill target: codex or claude")
+	cmd.Flags().StringVar(&opts.repo, "repo", "", "remove from this repository instead of the user-level agent directory")
 	cmd.Flags().BoolVar(&opts.keepReminder, "keep-reminder", false, "leave the PlanMaxx reminder block in AGENTS.md")
-	for _, name := range []string{"target", "keep-reminder"} {
+	for _, name := range []string{"keep-reminder"} {
 		_ = cmd.Flags().MarkHidden(name)
 	}
 	return cmd
@@ -104,9 +158,22 @@ type skillRemoveOptions struct {
 	keepReminder bool
 }
 
+type managedSkillFile struct {
+	path          string
+	content       []byte
+	legacyContent [][]byte
+}
+
 func runSkillInstall(opts skillInstallOptions, stderr io.Writer) error {
-	if err := validateSkillTarget(opts.target); err != nil {
+	target, err := normalizeSkillTarget(opts.target)
+	if err != nil {
 		return err
+	}
+	if opts.copyMode && opts.linkMode {
+		return errors.New("--copy and --link cannot be used together")
+	}
+	if target == skillTargetClaude && opts.linkMode {
+		return errors.New("Claude Code skill installs use copy mode; --link is not supported")
 	}
 	sourceBytes, sourcePath, sourceLabel, err := loadSkillSource(opts.source)
 	if err != nil {
@@ -116,8 +183,26 @@ func runSkillInstall(opts skillInstallOptions, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	destination, reminderFile, err := resolveCodexSkillPaths(repoRoot)
+	destination, reminderFile, extraFiles, err := resolveSkillPaths(target, repoRoot)
 	if err != nil {
+		return err
+	}
+	if err := preflightSkillFile(filepath.Join(destination, skillFileName), sourceBytes, sourcePath); err != nil {
+		return err
+	}
+	var legacyClaudeSkill string
+	var legacyClaudeFiles []managedSkillFile
+	if target == skillTargetClaude {
+		legacyClaudeSkill = filepath.Join(destination, "skills", "planmaxx", skillFileName)
+		if err := preflightSkillFile(legacyClaudeSkill, sourceBytes, sourcePath); err != nil {
+			return err
+		}
+		legacyClaudeFiles = claudeLegacyPluginFiles(destination)
+		if err := preflightManagedFiles(legacyClaudeFiles); err != nil {
+			return err
+		}
+	}
+	if err := preflightManagedFiles(extraFiles); err != nil {
 		return err
 	}
 
@@ -125,7 +210,7 @@ func runSkillInstall(opts skillInstallOptions, stderr io.Writer) error {
 	if !opts.linkMode && !opts.copyMode {
 		linkMode = runtime.GOOS != "windows"
 	}
-	if opts.copyMode {
+	if opts.copyMode || target == skillTargetClaude {
 		linkMode = false
 	}
 
@@ -137,34 +222,73 @@ func runSkillInstall(opts skillInstallOptions, stderr io.Writer) error {
 	if repoRoot != "" {
 		scope = "repo: " + repoRoot
 	}
-	fmt.Fprintf(stderr, "Installing PlanMaxx skill (%s mode, %s) from %s\n", mode, scope, sourceLabel)
+	fmt.Fprintf(stderr, "Installing PlanMaxx %s skill (%s mode, %s) from %s\n", target, mode, scope, sourceLabel)
 	installedPath, err := installSkillFile(destination, sourceBytes, sourcePath, linkMode)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(stderr, "Installed %s\n", installedPath)
 
-	changed, err := ensurePlanmaxxReminder(reminderFile)
-	if err != nil {
-		return fmt.Errorf("update reminder in %s: %w", reminderFile, err)
+	for _, file := range extraFiles {
+		changed, err := writeManagedFile(file)
+		if err != nil {
+			return err
+		}
+		if changed {
+			fmt.Fprintf(stderr, "Installed %s\n", file.path)
+		}
 	}
-	if changed {
-		fmt.Fprintf(stderr, "Updated PlanMaxx reminder in %s\n", reminderFile)
-	} else {
-		fmt.Fprintf(stderr, "PlanMaxx reminder already present in %s\n", reminderFile)
+
+	if target == skillTargetClaude {
+		managedSource, err := defaultManagedSkillSourcePath()
+		if err != nil {
+			return err
+		}
+		removed, _, err := removeManagedSkillFile(legacyClaudeSkill, managedSource)
+		if err != nil {
+			return fmt.Errorf("remove legacy Claude plugin skill %s: %w", legacyClaudeSkill, err)
+		}
+		if removed {
+			fmt.Fprintf(stderr, "Removed legacy Claude plugin skill %s\n", legacyClaudeSkill)
+		}
+		for _, file := range legacyClaudeFiles {
+			removed, _, err := removeManagedFile(file)
+			if err != nil {
+				return fmt.Errorf("remove legacy Claude plugin file %s: %w", file.path, err)
+			}
+			if removed {
+				fmt.Fprintf(stderr, "Removed legacy Claude plugin file %s\n", file.path)
+			}
+			_ = removeEmptyDir(filepath.Dir(file.path))
+		}
+		_ = removeEmptyDir(filepath.Dir(legacyClaudeSkill))
+		_ = removeEmptyDir(filepath.Join(destination, "skills"))
+	}
+
+	if reminderFile != "" {
+		changed, err := ensurePlanmaxxReminder(reminderFile)
+		if err != nil {
+			return fmt.Errorf("update reminder in %s: %w", reminderFile, err)
+		}
+		if changed {
+			fmt.Fprintf(stderr, "Updated PlanMaxx reminder in %s\n", reminderFile)
+		} else {
+			fmt.Fprintf(stderr, "PlanMaxx reminder already present in %s\n", reminderFile)
+		}
 	}
 	return nil
 }
 
 func runSkillRemove(opts skillRemoveOptions, stderr io.Writer) error {
-	if err := validateSkillTarget(opts.target); err != nil {
+	target, err := normalizeSkillTarget(opts.target)
+	if err != nil {
 		return err
 	}
 	repoRoot, err := resolveSkillRepoRoot(opts.repo)
 	if err != nil {
 		return err
 	}
-	destination, reminderFile, err := resolveCodexSkillPaths(repoRoot)
+	destination, reminderFile, extraFiles, err := resolveSkillPaths(target, repoRoot)
 	if err != nil {
 		return err
 	}
@@ -186,9 +310,53 @@ func runSkillRemove(opts skillRemoveOptions, stderr io.Writer) error {
 	default:
 		fmt.Fprintf(stderr, "PlanMaxx skill not found at %s\n", targetFile)
 	}
+	if target == skillTargetClaude {
+		legacyPath := filepath.Join(destination, "skills", "planmaxx", skillFileName)
+		legacyRemoved, legacySkipped, err := removeManagedSkillFile(legacyPath, managedSource)
+		if err != nil {
+			return err
+		}
+		switch {
+		case legacyRemoved:
+			fmt.Fprintf(stderr, "Removed legacy Claude plugin skill %s\n", legacyPath)
+		case legacySkipped:
+			fmt.Fprintf(stderr, "Skipped unmanaged skill at %s\n", legacyPath)
+		}
+		for _, file := range claudeLegacyPluginFiles(destination) {
+			extraRemoved, extraSkipped, err := removeManagedFile(file)
+			if err != nil {
+				return err
+			}
+			switch {
+			case extraRemoved:
+				fmt.Fprintf(stderr, "Removed legacy Claude plugin file %s\n", file.path)
+			case extraSkipped:
+				fmt.Fprintf(stderr, "Skipped unmanaged file at %s\n", file.path)
+			}
+			_ = removeEmptyDir(filepath.Dir(file.path))
+		}
+	}
+
+	for _, file := range extraFiles {
+		extraRemoved, extraSkipped, err := removeManagedFile(file)
+		if err != nil {
+			return err
+		}
+		switch {
+		case extraRemoved:
+			fmt.Fprintf(stderr, "Removed %s\n", file.path)
+		case extraSkipped:
+			fmt.Fprintf(stderr, "Skipped unmanaged file at %s\n", file.path)
+		}
+		_ = removeEmptyDir(filepath.Dir(file.path))
+	}
+	if target == skillTargetClaude {
+		_ = removeEmptyDir(filepath.Join(destination, "skills", "planmaxx"))
+		_ = removeEmptyDir(filepath.Join(destination, "skills"))
+	}
 	_ = removeEmptyDir(destination)
 
-	if !opts.keepReminder {
+	if !opts.keepReminder && reminderFile != "" {
 		changed, err := removePlanmaxxReminder(reminderFile)
 		if err != nil {
 			return fmt.Errorf("remove reminder from %s: %w", reminderFile, err)
@@ -201,11 +369,20 @@ func runSkillRemove(opts skillRemoveOptions, stderr io.Writer) error {
 }
 
 func validateSkillTarget(raw string) error {
+	_, err := normalizeSkillTarget(raw)
+	return err
+}
+
+func normalizeSkillTarget(raw string) (string, error) {
 	target := strings.ToLower(strings.TrimSpace(raw))
-	if target == "" || target == skillTargetCodex {
-		return nil
+	switch target {
+	case "", skillTargetCodex:
+		return skillTargetCodex, nil
+	case skillTargetClaude:
+		return skillTargetClaude, nil
+	default:
+		return "", fmt.Errorf("target must be codex or claude")
 	}
-	return fmt.Errorf("target must be codex")
 }
 
 func loadSkillSource(sourceRaw string) ([]byte, string, string, error) {
@@ -299,6 +476,159 @@ func resolveCodexSkillPaths(repoRoot string) (string, string, error) {
 	return filepath.Join(home, ".agents", "skills", "planmaxx"),
 		filepath.Join(home, ".codex", "AGENTS.md"),
 		nil
+}
+
+func resolveClaudeSkillPaths(repoRoot string) (string, error) {
+	if repoRoot != "" {
+		return filepath.Join(repoRoot, ".claude", "skills", "planmaxx"), nil
+	}
+
+	if configured := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); configured != "" {
+		configDir, err := expandHomePath(configured)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(configDir, "skills", "planmaxx"), nil
+	}
+
+	home, err := skillUserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("home directory is empty")
+	}
+	return filepath.Join(home, ".claude", "skills", "planmaxx"), nil
+}
+
+func resolveSkillPaths(target string, repoRoot string) (string, string, []managedSkillFile, error) {
+	switch target {
+	case skillTargetCodex:
+		destination, reminderFile, err := resolveCodexSkillPaths(repoRoot)
+		return destination, reminderFile, nil, err
+	case skillTargetClaude:
+		destination, err := resolveClaudeSkillPaths(repoRoot)
+		if err != nil {
+			return "", "", nil, err
+		}
+		return destination, "", nil, nil
+	default:
+		return "", "", nil, fmt.Errorf("target must be codex or claude")
+	}
+}
+
+func claudeLegacyPluginFiles(destination string) []managedSkillFile {
+	return []managedSkillFile{
+		{
+			path:          filepath.Join(destination, ".claude-plugin", "plugin.json"),
+			content:       []byte(claudePluginManifest),
+			legacyContent: [][]byte{[]byte(claudeLegacyPluginManifest)},
+		},
+		{
+			path:          filepath.Join(destination, "hooks", "hooks.json"),
+			content:       []byte(claudeHooksConfig),
+			legacyContent: [][]byte{[]byte(claudeLegacyHooksConfig)},
+		},
+	}
+}
+
+func preflightSkillFile(path string, desired []byte, sourcePath string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		if sourcePath != "" && isManagedSkillLink(target, sourcePath) {
+			return nil
+		}
+		managedSource, err := defaultManagedSkillSourcePath()
+		if err == nil && isManagedSkillLink(target, managedSource) {
+			return nil
+		}
+		return fmt.Errorf("refusing to overwrite unmanaged skill: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to overwrite unmanaged skill: %s", path)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if isManagedSkillContent(current) || bytes.Equal(current, desired) {
+		return nil
+	}
+	return fmt.Errorf("refusing to overwrite unmanaged skill: %s", path)
+}
+
+func preflightManagedFiles(files []managedSkillFile) error {
+	for _, file := range files {
+		info, err := os.Lstat(file.path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to overwrite unmanaged file: %s", file.path)
+		}
+		current, err := os.ReadFile(file.path)
+		if err != nil {
+			return err
+		}
+		if !isManagedAuxiliaryContent(file, current) {
+			return fmt.Errorf("refusing to overwrite unmanaged file: %s", file.path)
+		}
+	}
+	return nil
+}
+
+func writeManagedFile(file managedSkillFile) (bool, error) {
+	changed, err := writeFileIfChanged(file.path, file.content)
+	if err != nil {
+		return false, fmt.Errorf("install managed file %s: %w", file.path, err)
+	}
+	return changed, nil
+}
+
+func removeManagedFile(file managedSkillFile) (removed bool, skipped bool, err error) {
+	info, err := os.Lstat(file.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, true, nil
+	}
+	current, err := os.ReadFile(file.path)
+	if err != nil {
+		return false, false, err
+	}
+	if !isManagedAuxiliaryContent(file, current) {
+		return false, true, nil
+	}
+	return true, false, os.Remove(file.path)
+}
+
+func isManagedAuxiliaryContent(file managedSkillFile, current []byte) bool {
+	if bytes.Equal(current, file.content) {
+		return true
+	}
+	for _, legacy := range file.legacyContent {
+		if bytes.Equal(current, legacy) {
+			return true
+		}
+	}
+	return false
 }
 
 func installSkillFile(destinationDir string, sourceBytes []byte, sourcePath string, linkMode bool) (string, error) {
@@ -454,24 +784,59 @@ func writeFileIfChanged(path string, content []byte) (bool, error) {
 }
 
 func writeFilePreservingMode(path string, content []byte) (bool, error) {
+	writePath, err := resolveFileWritePath(path)
+	if err != nil {
+		return false, err
+	}
 	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
+	if info, err := os.Stat(writePath); err == nil {
 		mode = info.Mode().Perm()
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(writePath), 0o755); err != nil {
 		return false, err
 	}
-	tmp := path + ".tmp"
+	tmp := writePath + ".tmp"
 	if err := os.WriteFile(tmp, content, mode); err != nil {
 		return false, err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := os.Rename(tmp, writePath); err != nil {
 		_ = os.Remove(tmp)
 		return false, err
 	}
 	return true, nil
+}
+
+func resolveFileWritePath(path string) (string, error) {
+	current := filepath.Clean(path)
+	seen := make(map[string]struct{})
+	for {
+		if _, exists := seen[current]; exists {
+			return "", fmt.Errorf("symlink cycle while resolving %s", path)
+		}
+		seen[current] = struct{}{}
+
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return current, nil
+			}
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return current, nil
+		}
+
+		target, err := os.Readlink(current)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(current), target)
+		}
+		current = filepath.Clean(target)
+	}
 }
 
 func removeEmptyDir(path string) error {

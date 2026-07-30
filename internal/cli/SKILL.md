@@ -8,10 +8,19 @@ description: Use when an agent-written plan, design, or spec needs user review b
 # PlanMaxx
 
 1. Write the plan to a Markdown or HTML file.
-2. Run `planmaxx review <plan-file>`. On finalization, PlanMaxx writes the
-   finalized plan back to that source file and prints the approved handoff to
-   stdout. Use `--save-to-file /tmp/final-plan.md` to write only the finalized
-   plan content to a different file instead.
+2. Invoke PlanMaxx for the current agent:
+   - From Claude Code, run
+     `planmaxx review --claude-session-id ${CLAUDE_SESSION_ID} <plan-file>`.
+     Claude substitutes `${CLAUDE_SESSION_ID}` with the active session ID when
+     invoking the command.
+   - From Codex or another supported agent, run
+     `planmaxx review <plan-file>`.
+   The Claude flow is invocation-only. Do not install or rely on hooks,
+   `SessionStart`, persistent environment variables, or plugins.
+   On finalization, PlanMaxx writes the finalized plan back to that source file
+   and prints the approved handoff to stdout. Use
+   `--save-to-file /tmp/final-plan.md` to write only the finalized plan content
+   to a different file instead.
 3. Wait for the command to finish.
 4. Treat stderr as status output and stdout as the user's next instruction.
 
@@ -34,5 +43,6 @@ Useful flags:
   this path instead of the source plan. The handoff still goes to stdout. The
   file is written only after approval; canceling writes no plan file.
 
-PlanMaxx uses Codex app-server for side questions and iteration only when the
-environment already provides `CODEX_THREAD_ID`.
+The Claude invocation associates the review with that active session. Plain
+review, comments, approval, and handoff remain available without host-agent
+context.

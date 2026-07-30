@@ -6,6 +6,7 @@ VERSION="${PLANMAXX_VERSION:-latest}"
 INSTALL_DIR="${PLANMAXX_INSTALL_DIR:-$HOME/.local/bin}"
 BASE_URL_OVERRIDE="${PLANMAXX_BASE_URL:-}"
 INSTALL_CODEX_SKILL="${PLANMAXX_INSTALL_CODEX_SKILL:-0}"
+INSTALL_CLAUDE_SKILL="${PLANMAXX_INSTALL_CLAUDE_SKILL:-0}"
 
 log() {
   printf '[planmaxx installer] %s\n' "$*"
@@ -28,6 +29,7 @@ Options:
   --install-dir <path>    Binary install directory (default: ~/.local/bin)
   --repo <owner/repo>     GitHub repo (default: AlhasanIQ/planmaxx)
   --install-codex-skill   Also install the optional user-level Codex skill under ~/.agents/skills
+  --install-claude-skill  Also install the optional user-level Claude Code skill
   --help                  Show this help
 
 Environment overrides:
@@ -35,6 +37,7 @@ Environment overrides:
   PLANMAXX_VERSION
   PLANMAXX_INSTALL_DIR
   PLANMAXX_INSTALL_CODEX_SKILL=1
+  PLANMAXX_INSTALL_CLAUDE_SKILL=1
   PLANMAXX_BASE_URL        Override release asset base URL for mirrors or tests
 EOF
 }
@@ -181,6 +184,11 @@ install_codex_skill() {
   log "Installed ${skill_file}"
 }
 
+install_claude_skill() {
+  "$BIN_PATH" skill install --target claude ||
+    die "the installed PlanMaxx binary could not install the Claude Code skill"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version)
@@ -200,6 +208,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --install-codex-skill)
       INSTALL_CODEX_SKILL="1"
+      shift
+      ;;
+    --install-claude-skill)
+      INSTALL_CLAUDE_SKILL="1"
       shift
       ;;
     --help|-h)
@@ -257,5 +269,23 @@ case "$INSTALL_CODEX_SKILL" in
     ;;
   *)
     die "invalid PLANMAXX_INSTALL_CODEX_SKILL value: ${INSTALL_CODEX_SKILL} (expected 1/0, true/false, yes/no)"
+    ;;
+esac
+
+case "$INSTALL_CLAUDE_SKILL" in
+  1|true|TRUE|yes|YES)
+    log "Installing optional user-level Claude Code skill..."
+    install_claude_skill
+    case ":${PATH}:" in
+      *":${INSTALL_DIR}:"*) ;;
+      *) log "The Claude Code skill requires ${INSTALL_DIR} on PATH to run PlanMaxx." ;;
+    esac
+    log "Restart a running Claude Code session only if this install created its top-level skills directory after that session started."
+    ;;
+  0|false|FALSE|no|NO|"")
+    log "Optional Claude Code skill not installed. To enable it later, run: ${BIN_PATH} skill install --target claude"
+    ;;
+  *)
+    die "invalid PLANMAXX_INSTALL_CLAUDE_SKILL value: ${INSTALL_CLAUDE_SKILL} (expected 1/0, true/false, yes/no)"
     ;;
 esac

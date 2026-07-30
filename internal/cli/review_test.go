@@ -1740,7 +1740,12 @@ func TestFakeAppServerProcess(t *testing.T) {
 		case "thread/read":
 			writeFakeResponse(encoder, id, map[string]any{"thread": map[string]any{"id": "current-thread", "status": map[string]any{"type": "idle"}}})
 		case "thread/fork":
-			writeFakeResponse(encoder, id, map[string]any{"thread": map[string]any{"id": "fork-1", "forkedFromId": "current-thread", "ephemeral": true, "cwd": "/repo", "status": map[string]any{"type": "idle"}}, "cwd": "/repo"})
+			writeFakeResponse(encoder, id, map[string]any{
+				"thread":         map[string]any{"id": "fork-1", "forkedFromId": "current-thread", "ephemeral": true, "cwd": "/repo", "status": map[string]any{"type": "idle"}},
+				"cwd":            "/repo",
+				"approvalPolicy": "never",
+				"sandbox":        map[string]any{"type": "readOnly"},
+			})
 		case "turn/start":
 			if os.Getenv("PLANMAXX_FAKE_APP_SERVER_SLOW_TURN") == "1" {
 				time.Sleep(2 * time.Second)

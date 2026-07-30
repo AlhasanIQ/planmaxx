@@ -190,6 +190,32 @@ func TestAppServerSideQuestionCanBePromotedIntoHandoff(t *testing.T) {
 	assertFileContains(t, fake.stdinPath, "Why this order?")
 }
 
+func TestClaudeCodeSkillInvocationUsesExactActiveSessionFork(t *testing.T) {
+	const sessionID = "6211ea92-c582-4a27-b067-8ed5ba92348d"
+	fake := installFakeClaude(t, "Claude answer from the active session.")
+	review := startReviewWithArgs(t, realisticPlan("Claude side question"), []string{
+		"--claude-session-id", sessionID,
+	}, map[string]string{
+		"PATH":                   fake.pathEnv,
+		"CLAUDE_CODE_SESSION_ID": "9c6954d4-9180-4876-bbfe-8592bad9a6d8",
+	})
+	state := getState(t, review.url)
+	if state.Agent.ID != "claude" || state.Agent.DisplayName != "Claude Code" || !state.Agent.Available || state.Agent.ContextMode != "current-session-fork" {
+		t.Fatalf("unexpected attached Claude state: %+v", state.Agent)
+	}
+	thread := createThread(t, review.url, 5, 5, "Ask Claude.")
+
+	answer := askSideQuestion(t, review.url, thread.ID, "Why this order?", "1. CLI\n2. UI")
+	if answer.Answer != "Claude answer from the active session." {
+		t.Fatalf("unexpected side answer %q", answer.Answer)
+	}
+	assertFileContains(t, fake.stdinPath, `"args": ["-p", "--resume", "`+sessionID+`", "--fork-session", "--safe-mode", "--no-session-persistence", "--output-format", "json", "--tools", "", "--permission-mode", "dontAsk"]`)
+	assertFileContains(t, fake.stdinPath, "Why this order?")
+
+	finalize(t, review.url, digest("Claude review approved", nil, nil))
+	waitSuccess(t, review)
+}
+
 func TestUnpromotedSideAnswerStaysOutOfHandoff(t *testing.T) {
 	fake := installFakeCodex(t, "Temporary answer.")
 	review := startReview(t, realisticPlan("Unpromote side answer"), map[string]string{
@@ -467,8 +493,11 @@ func startReviewFull(t *testing.T, plan string, args []string, env map[string]st
 		fakeOpen := installFakeOpen(t, 0)
 		basePath = fakeOpen.pathEnv
 		cmd.Env = mergeEnv(map[string]string{
-			"PATH":            basePath,
-			"CODEX_THREAD_ID": "",
+			"PATH":                       basePath,
+			"CODEX_THREAD_ID":            "",
+			"CLAUDE_CODE_SESSION_ID":     "",
+			"PLANMAXX_AGENT":             "",
+			"PLANMAXX_CLAUDE_SESSION_ID": "",
 		}, env)
 		// Guard against env overrides (e.g. tests that supply a fake-codex
 		// PATH) silently displacing the fake-open dir and letting the real
@@ -486,8 +515,11 @@ func startReviewFull(t *testing.T, plan string, args []string, env map[string]st
 			}
 		}
 		cmd.Env = mergeEnv(map[string]string{
-			"PATH":            basePath,
-			"CODEX_THREAD_ID": "",
+			"PATH":                       basePath,
+			"CODEX_THREAD_ID":            "",
+			"CLAUDE_CODE_SESSION_ID":     "",
+			"PLANMAXX_AGENT":             "",
+			"PLANMAXX_CLAUDE_SESSION_ID": "",
 		}, filtered)
 	}
 
@@ -600,7 +632,13 @@ func askSideQuestion(t *testing.T, url string, threadID string, question string,
 type stateResponse struct {
 	Plan              string `json:"plan"`
 	CurrentRevisionID string `json:"currentRevisionId"`
-	Threads           []struct {
+	Agent             struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"displayName"`
+		ContextMode string `json:"contextMode"`
+		Available   bool   `json:"available"`
+	} `json:"agent"`
+	Threads []struct {
 		ID     string `json:"id"`
 		Anchor struct {
 			StartLine int `json:"startLine"`
@@ -827,7 +865,7 @@ if sys.argv[1:] == ["app-server", "--listen", "stdio://"]:
         elif method == "thread/read":
             send({"id": request_id, "result": {"thread": {"id": "current-thread", "status": {"type": "idle"}}}})
         elif method == "thread/fork":
-            send({"id": request_id, "result": {"thread": {"id": "fork-1", "forkedFromId": "current-thread", "ephemeral": True, "cwd": "/repo", "status": {"type": "idle"}}, "cwd": "/repo"}})
+            send({"id": request_id, "result": {"thread": {"id": "fork-1", "forkedFromId": "current-thread", "ephemeral": True, "cwd": "/repo", "status": {"type": "idle"}}, "cwd": "/repo", "approvalPolicy": "never", "sandbox": {"type": "readOnly"}}})
         elif method == "turn/start":
             if slow:
                 time.sleep(2)
@@ -863,6 +901,48 @@ PLANMAXX_FAKE_CODEX_ANSWER=%q PLANMAXX_FAKE_CODEX_TRANSCRIPT=%q PLANMAXX_FAKE_CO
 `, answer, stdinPath, slowValue, pythonPath)
 	if err := os.WriteFile(filepath.Join(dir, "codex"), []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake codex wrapper: %v", err)
+	}
+	return fakeCommand{pathEnv: dir + string(os.PathListSeparator) + os.Getenv("PATH"), stdinPath: stdinPath}
+}
+
+func installFakeClaude(t *testing.T, answer string) fakeCommand {
+	t.Helper()
+	dir := t.TempDir()
+	stdinPath := filepath.Join(dir, "stdin.txt")
+	pythonPath := filepath.Join(dir, "fake-claude.py")
+	python := `#!/usr/bin/env python3
+import json
+import os
+import sys
+
+if "--version" in sys.argv[1:]:
+    print("2.1.215 (Claude Code)")
+    sys.exit(0)
+
+if "--help" in sys.argv[1:]:
+    print("--fork-session --safe-mode --no-session-persistence --output-format --tools --permission-mode")
+    sys.exit(0)
+
+prompt = sys.stdin.read()
+with open(os.environ["PLANMAXX_FAKE_CLAUDE_TRANSCRIPT"], "w", encoding="utf-8") as transcript:
+    json.dump({"args": sys.argv[1:], "prompt": prompt}, transcript)
+
+print(json.dumps({
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "result": os.environ["PLANMAXX_FAKE_CLAUDE_ANSWER"],
+    "session_id": "forked-claude-session"
+}))
+`
+	if err := os.WriteFile(pythonPath, []byte(python), 0o700); err != nil {
+		t.Fatalf("write fake Claude Code process: %v", err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+PLANMAXX_FAKE_CLAUDE_ANSWER=%q PLANMAXX_FAKE_CLAUDE_TRANSCRIPT=%q exec python3 %q "$@"
+`, answer, stdinPath, pythonPath)
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake Claude Code wrapper: %v", err)
 	}
 	return fakeCommand{pathEnv: dir + string(os.PathListSeparator) + os.Getenv("PATH"), stdinPath: stdinPath}
 }

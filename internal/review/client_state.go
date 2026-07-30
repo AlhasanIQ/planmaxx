@@ -8,7 +8,18 @@ import (
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 )
 
-const clientSchemaVersion = 4
+const clientSchemaVersion = 5
+
+// AgentInfo describes the coding-agent context available to the review
+// session. Availability is server-authoritative: the browser must not infer it
+// from review lifecycle state or wait for an operation to fail.
+type AgentInfo struct {
+	ID                string `json:"id"`
+	DisplayName       string `json:"displayName"`
+	ContextMode       string `json:"contextMode"`
+	Available         bool   `json:"available"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
+}
 
 type clientCapabilities struct {
 	CanFinalize        bool `json:"canFinalize"`
@@ -85,6 +96,7 @@ type pendingProposalSummary struct {
 
 type clientState struct {
 	SchemaVersion     int                     `json:"schemaVersion"`
+	Agent             AgentInfo               `json:"agent"`
 	ID                string                  `json:"id"`
 	Plan              string                  `json:"plan"`
 	PlanPath          string                  `json:"planPath"`
@@ -101,26 +113,38 @@ type clientState struct {
 	ActiveChange      *reviewmodel.ChangeView `json:"activeChange"`
 }
 
-func buildClientState(source session.Session, finished bool) clientState {
+func buildClientState(source session.Session, finished bool, attachedAgent ...AgentInfo) clientState {
 	revisions := append([]session.Revision{}, source.Revisions...)
 	for index := range revisions {
 		revisions[index].Plan = ""
 		revisions[index].Feedback = nil
 	}
 	locked := finished || source.PendingProposal != nil
-	threads, counts := buildThreadViews(source, locked)
+	agent := AgentInfo{
+		ID:          "unspecified",
+		DisplayName: "Agent",
+		ContextMode: "unspecified",
+		Available:   true,
+	}
+	agentAvailable := true
+	if len(attachedAgent) > 0 {
+		agent = attachedAgent[0]
+		agentAvailable = agent.Available
+	}
+	threads, counts := buildThreadViews(source, locked, agentAvailable)
 	sideAnswers := buildSideAnswerViews(source, locked, &counts)
 	digest := source.Digest
 	digest.ReviewerDecisions = nonNilStrings(source.Digest.ReviewerDecisions)
 	digest.PromotedSideAnswers = nonNilStrings(source.Digest.PromotedSideAnswers)
 	state := clientState{
 		SchemaVersion: clientSchemaVersion,
+		Agent:         agent,
 		ID:            source.ID, Plan: source.Plan, PlanPath: source.PlanPath, PlanFormat: source.PlanFormat,
 		CurrentRevisionID: source.CurrentRevisionID,
 		Revisions:         nonNilRevisions(revisions), Threads: threads,
 		SideAnswers: sideAnswers, Counts: counts, Digest: digest,
 		Phase:        "active",
-		Capabilities: clientCapabilities{CanFinalize: !locked, CanIterate: !locked, CanEditFeedback: !locked, CanRestoreRevision: !locked},
+		Capabilities: clientCapabilities{CanFinalize: !locked, CanIterate: !locked && agentAvailable, CanEditFeedback: !locked, CanRestoreRevision: !locked},
 	}
 	if finished {
 		state.Phase = "terminal"
@@ -144,7 +168,11 @@ func buildClientState(source session.Session, finished bool) clientState {
 	return state
 }
 
-func buildThreadViews(source session.Session, locked bool) ([]threadView, reviewCounts) {
+func buildThreadViews(source session.Session, locked bool, attachedAgentAvailable ...bool) ([]threadView, reviewCounts) {
+	agentAvailable := true
+	if len(attachedAgentAvailable) > 0 {
+		agentAvailable = attachedAgentAvailable[0]
+	}
 	addressedByThread := map[string]string{}
 	for _, revision := range source.Revisions {
 		for _, feedback := range revision.Feedback {
@@ -167,7 +195,7 @@ func buildThreadViews(source session.Session, locked bool) ([]threadView, review
 				counts.ActivePrivateNotes++
 			}
 			if !locked {
-				capabilities = threadCapabilities{CanEdit: true, CanReply: true, CanChangeIntent: true, CanAsk: true, CanIterate: true, CanDelete: true}
+				capabilities = threadCapabilities{CanEdit: true, CanReply: true, CanChangeIntent: true, CanAsk: agentAvailable, CanIterate: agentAvailable, CanDelete: true}
 			}
 		case session.ThreadLifecycleDetached:
 			bucket, delivery = "attention", "none"
@@ -217,8 +245,8 @@ func buildSideAnswerViews(source session.Session, locked bool, counts *reviewCou
 	return views
 }
 
-func projectThread(source session.Session, finished bool, threadID string) (threadView, bool) {
-	views, _ := buildThreadViews(source, finished || source.PendingProposal != nil)
+func projectThread(source session.Session, finished bool, threadID string, attachedAgentAvailable ...bool) (threadView, bool) {
+	views, _ := buildThreadViews(source, finished || source.PendingProposal != nil, attachedAgentAvailable...)
 	for _, view := range views {
 		if view.ID == threadID {
 			return view, true

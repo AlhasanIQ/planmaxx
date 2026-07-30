@@ -29,7 +29,13 @@ describe("sideQuestionContext", () => {
 
 function sessionFixture(thread: Thread): Session {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
+    agent: {
+      id: "codex",
+      displayName: "Codex",
+      contextMode: "current-session-fork",
+      available: true,
+    },
     id: "session-1",
     plan: "# Plan\nSelect a specific word here.",
     planPath: "/repo/plan.md",
@@ -81,6 +87,7 @@ function threadFixture(overrides: Partial<Thread>): Thread {
       canAsk: true,
       canIterate: true,
       canReanchor: false,
+      canMarkAddressed: false,
       canDelete: true,
       canCreateFollowUp: false,
     },

@@ -23,7 +23,7 @@ export function SubmissionReviewDialog({ mode, initial, detachedCount, onCancel,
     <Modal
       title={iterate ? "Review iteration" : "Review approval"}
       description={iterate
-        ? "Review the feedback Codex will use. Your current revision stays unchanged until you apply the proposal."
+        ? "Review the feedback the agent will use. Your current revision stays unchanged until you apply the proposal."
         : "Quickly review the context submitted with the approved plan."}
       size="lg"
       onClose={onCancel}
@@ -59,7 +59,7 @@ export function SubmissionReviewDialog({ mode, initial, detachedCount, onCancel,
 
         <DigestSection
           icon={<ListChecks size={14} />}
-          title="Feedback for Codex"
+          title="Feedback for the agent"
           items={initial.reviewerDecisions}
           empty="No active iteration feedback."
         />

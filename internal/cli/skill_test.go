@@ -9,6 +9,530 @@ import (
 	"testing"
 )
 
+func TestSkillInstallClaudeWritesPlainInvocationScopedSkill(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Claude skill install failed: %v", err)
+	}
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	skillPath := filepath.Join(installDir, "SKILL.md")
+	skillBytes, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read Claude skill: %v", err)
+	}
+	if string(skillBytes) != planmaxxSkillTestTemplate() {
+		t.Fatalf("installed Claude skill did not match template")
+	}
+	skillInfo, err := os.Lstat(skillPath)
+	if err != nil {
+		t.Fatalf("lstat Claude skill: %v", err)
+	}
+	if skillInfo.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("Claude skill must be installed as a regular file")
+	}
+
+	for _, relative := range []string{
+		filepath.Join(".claude-plugin", "plugin.json"),
+		filepath.Join("hooks", "hooks.json"),
+		filepath.Join("skills", "planmaxx", "SKILL.md"),
+	} {
+		if _, err := os.Lstat(filepath.Join(installDir, relative)); !os.IsNotExist(err) {
+			t.Fatalf("plain Claude skill unexpectedly installed plugin component %s: %v", relative, err)
+		}
+	}
+}
+
+func TestSkillInstallClaudeRepoScoped(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	repoDir := t.TempDir()
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude", "--repo", repoDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("repo Claude skill install failed: %v", err)
+	}
+
+	repoInstallDir := filepath.Join(repoDir, ".claude", "skills", "planmaxx")
+	repoSkill := filepath.Join(repoInstallDir, "SKILL.md")
+	if got, err := os.ReadFile(repoSkill); err != nil || string(got) != planmaxxSkillTestTemplate() {
+		t.Fatalf("expected repo Claude skill at documented path: content=%q err=%v", got, err)
+	}
+	if info, err := os.Lstat(repoSkill); err != nil {
+		t.Fatalf("lstat repo Claude skill: %v", err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("repo Claude skill must be a regular file")
+	}
+	for _, relativePath := range []string{
+		filepath.Join(".claude-plugin", "plugin.json"),
+		filepath.Join("hooks", "hooks.json"),
+		filepath.Join("skills", "planmaxx", "SKILL.md"),
+	} {
+		if _, err := os.Lstat(filepath.Join(repoInstallDir, relativePath)); !os.IsNotExist(err) {
+			t.Fatalf("repo Claude install unexpectedly created %s: %v", relativePath, err)
+		}
+	}
+	globalSkill := filepath.Join(home, ".claude", "skills", "planmaxx", "SKILL.md")
+	if _, err := os.Stat(globalSkill); !os.IsNotExist(err) {
+		t.Fatalf("did not expect global Claude install for repo-scoped command, stat err: %v", err)
+	}
+}
+
+func TestSkillInstallClaudeUsesConfiguredClaudeDirectory(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	claudeConfigDir := filepath.Join(t.TempDir(), "claude-config")
+	setSkillTestDirs(t, home, configDir)
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeConfigDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Claude skill install failed: %v", err)
+	}
+
+	configuredSkill := filepath.Join(claudeConfigDir, "skills", "planmaxx", "SKILL.md")
+	if _, err := os.Stat(configuredSkill); err != nil {
+		t.Fatalf("expected skill under CLAUDE_CONFIG_DIR: %v", err)
+	}
+	if info, err := os.Lstat(configuredSkill); err != nil {
+		t.Fatalf("lstat configured Claude skill: %v", err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("configured Claude skill must be a regular file")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "planmaxx", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("default Claude directory should remain untouched, stat err: %v", err)
+	}
+}
+
+func TestSkillInstallMigratesManagedClaudePluginToPlainSkill(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	legacySkill := filepath.Join(installDir, "skills", "planmaxx", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(legacySkill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(installDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(installDir, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacySkill, []byte(planmaxxSkillTestTemplate()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, ".claude-plugin", "plugin.json"), []byte(claudePluginManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "hooks", "hooks.json"), []byte(claudeHooksConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installCmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	installCmd.SetArgs([]string{"skill", "install", "--target", "claude", "--copy"})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("upgrade previous Claude plugin: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(installDir, "SKILL.md")); err != nil || string(got) != planmaxxSkillTestTemplate() {
+		t.Fatalf("plain Claude skill was not installed: content=%q err=%v", got, err)
+	}
+	for _, legacyPath := range []string{
+		legacySkill,
+		filepath.Join(installDir, ".claude-plugin", "plugin.json"),
+		filepath.Join(installDir, "hooks", "hooks.json"),
+	} {
+		if _, err := os.Lstat(legacyPath); !os.IsNotExist(err) {
+			t.Fatalf("managed legacy plugin artifact should be removed: %s: %v", legacyPath, err)
+		}
+	}
+
+	// Re-running after migration must be idempotent.
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("repeat plain Claude install: %v", err)
+	}
+	removeCmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	removeCmd.SetArgs([]string{"skill", "remove", "--target", "claude"})
+	if err := removeCmd.Execute(); err != nil {
+		t.Fatalf("remove migrated Claude skill: %v", err)
+	}
+	if _, err := os.Stat(installDir); !os.IsNotExist(err) {
+		t.Fatalf("migrated Claude skill should be removed, stat err: %v", err)
+	}
+}
+
+func TestSkillInstallMigratesLegacyRootPluginSchema(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	for _, dir := range []string{filepath.Join(installDir, ".claude-plugin"), filepath.Join(installDir, "hooks")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "SKILL.md"), []byte(planmaxxSkillTestTemplate()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, ".claude-plugin", "plugin.json"), []byte(claudeLegacyPluginManifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "hooks", "hooks.json"), []byte(claudeLegacyHooksConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("migrate legacy root plugin: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(installDir, "SKILL.md")); err != nil || string(got) != planmaxxSkillTestTemplate() {
+		t.Fatalf("plain skill changed unexpectedly: content=%q err=%v", got, err)
+	}
+	for _, relative := range []string{filepath.Join(".claude-plugin", "plugin.json"), filepath.Join("hooks", "hooks.json")} {
+		if _, err := os.Lstat(filepath.Join(installDir, relative)); !os.IsNotExist(err) {
+			t.Fatalf("legacy root plugin artifact should be removed: %s: %v", relative, err)
+		}
+	}
+}
+
+func TestSkillInstallClaudeRecoversInterruptedMigration(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	paths := map[string]string{
+		filepath.Join(installDir, "SKILL.md"):                       planmaxxSkillTestTemplate(),
+		filepath.Join(installDir, "skills", "planmaxx", "SKILL.md"): planmaxxSkillTestTemplate(),
+		filepath.Join(installDir, ".claude-plugin", "plugin.json"):  claudePluginManifest,
+		filepath.Join(installDir, "hooks", "hooks.json"):            claudeHooksConfig,
+	}
+	for path, content := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("recover interrupted Claude migration: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(installDir, "SKILL.md")); err != nil || string(got) != planmaxxSkillTestTemplate() {
+		t.Fatalf("plain skill not preserved: content=%q err=%v", got, err)
+	}
+	for path := range paths {
+		if path == filepath.Join(installDir, "SKILL.md") {
+			continue
+		}
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale managed artifact should be removed: %s: %v", path, err)
+		}
+	}
+}
+
+func TestSkillRemoveClaudeDeletesManagedPlainSkill(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	installCmd := NewRootCommand(&stdout, &stderr)
+	installCmd.SetArgs([]string{"skill", "install", "--target", "claude", "--copy"})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("Claude skill install failed: %v", err)
+	}
+
+	removeCmd := NewRootCommand(&stdout, &stderr)
+	removeCmd.SetArgs([]string{"skill", "remove", "--target", "claude"})
+	if err := removeCmd.Execute(); err != nil {
+		t.Fatalf("Claude skill remove failed: %v", err)
+	}
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	if _, err := os.Lstat(installDir); !os.IsNotExist(err) {
+		t.Fatalf("expected managed Claude skill directory to be removed, stat err: %v", err)
+	}
+}
+
+func TestSkillRemoveClaudePreservesUnmanagedLegacyHook(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	installCmd := NewRootCommand(&stdout, &stderr)
+	installCmd.SetArgs([]string{"skill", "install", "--target", "claude", "--copy"})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("Claude skill install failed: %v", err)
+	}
+
+	hookPath := filepath.Join(home, ".claude", "skills", "planmaxx", "hooks", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatalf("create legacy hook directory: %v", err)
+	}
+	customHook := []byte("{\"custom\":true}\n")
+	if err := os.WriteFile(hookPath, customHook, 0o644); err != nil {
+		t.Fatalf("modify Claude hook: %v", err)
+	}
+
+	removeCmd := NewRootCommand(&stdout, &stderr)
+	removeCmd.SetArgs([]string{"skill", "remove", "--target", "claude"})
+	if err := removeCmd.Execute(); err != nil {
+		t.Fatalf("Claude skill remove failed: %v", err)
+	}
+
+	kept, err := os.ReadFile(hookPath)
+	if err != nil {
+		t.Fatalf("modified Claude hook should remain: %v", err)
+	}
+	if !bytes.Equal(kept, customHook) {
+		t.Fatalf("modified Claude hook changed unexpectedly: %q", kept)
+	}
+	if !strings.Contains(stderr.String(), "Skipped unmanaged file") {
+		t.Fatalf("expected unmanaged hook skip note, got %q", stderr.String())
+	}
+}
+
+func TestSkillRemoveClaudePreservesCustomizedManagedLegacyHook(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	hookPath := filepath.Join(installDir, "hooks", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	customized := []byte(strings.Replace(claudeHooksConfig, `"matcher": "startup|resume|clear|compact|fork"`, `"matcher": "startup"`, 1))
+	if err := os.WriteFile(hookPath, customized, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	removeCmd := NewRootCommand(&bytes.Buffer{}, &stderr)
+	removeCmd.SetArgs([]string{"skill", "remove", "--target", "claude"})
+	if err := removeCmd.Execute(); err != nil {
+		t.Fatalf("Claude skill remove failed: %v", err)
+	}
+	if got, err := os.ReadFile(hookPath); err != nil || !bytes.Equal(got, customized) {
+		t.Fatalf("customized managed hook changed: content=%q err=%v", got, err)
+	}
+	if !strings.Contains(stderr.String(), "Skipped unmanaged file") {
+		t.Fatalf("expected customized hook skip note, got %q", stderr.String())
+	}
+}
+
+func TestSkillRemoveClaudeKeepsModifiedPlainSkillAndRemovesManagedLegacyArtifacts(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	var stderr bytes.Buffer
+	installCmd := NewRootCommand(&bytes.Buffer{}, &stderr)
+	installCmd.SetArgs([]string{"skill", "install", "--target", "claude", "--copy"})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("Claude skill install failed: %v", err)
+	}
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	skillPath := filepath.Join(installDir, "SKILL.md")
+	const customSkill = "# Customized PlanMaxx workflow\n"
+	if err := os.WriteFile(skillPath, []byte(customSkill), 0o644); err != nil {
+		t.Fatalf("modify Claude skill: %v", err)
+	}
+	legacySkill := filepath.Join(installDir, "skills", "planmaxx", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(legacySkill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacySkill, []byte(planmaxxSkillTestTemplate()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		filepath.Join(installDir, ".claude-plugin", "plugin.json"): claudePluginManifest,
+		filepath.Join(installDir, "hooks", "hooks.json"):           claudeHooksConfig,
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removeCmd := NewRootCommand(&bytes.Buffer{}, &stderr)
+	removeCmd.SetArgs([]string{"skill", "remove", "--target", "claude"})
+	if err := removeCmd.Execute(); err != nil {
+		t.Fatalf("Claude skill remove failed: %v", err)
+	}
+
+	if got, err := os.ReadFile(skillPath); err != nil || string(got) != customSkill {
+		t.Fatalf("modified skill changed: content=%q err=%v", got, err)
+	}
+	for _, relative := range []string{filepath.Join(".claude-plugin", "plugin.json"), filepath.Join("hooks", "hooks.json")} {
+		if _, err := os.Stat(filepath.Join(installDir, relative)); !os.IsNotExist(err) {
+			t.Fatalf("managed plugin file %s should be removed, stat err: %v", relative, err)
+		}
+	}
+	if _, err := os.Stat(legacySkill); !os.IsNotExist(err) {
+		t.Fatalf("managed nested legacy skill should be removed, stat err: %v", err)
+	}
+}
+
+func TestSkillInstallClaudeRefusesToOverwriteUnmanagedPluginFile(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	hookPath := filepath.Join(installDir, "hooks", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		t.Fatalf("mkdir Claude hooks: %v", err)
+	}
+	if err := os.WriteFile(hookPath, []byte("{\"custom\":true}\n"), 0o644); err != nil {
+		t.Fatalf("write custom Claude hook: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude", "--copy"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged file") {
+		t.Fatalf("expected unmanaged plugin file error, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(installDir, "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("preflight should prevent a partial skill install, stat err: %v", err)
+	}
+}
+
+func TestSkillInstallClaudeRefusesUnmanagedNestedLegacySkillWithoutPartialInstall(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	legacySkill := filepath.Join(installDir, "skills", "planmaxx", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(legacySkill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const custom = "# Custom nested skill\n"
+	if err := os.WriteFile(legacySkill, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged skill") {
+		t.Fatalf("expected unmanaged nested skill error, got %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(installDir, "SKILL.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("preflight should prevent a partial plain skill install: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(legacySkill); readErr != nil || string(got) != custom {
+		t.Fatalf("custom nested skill changed: content=%q err=%v", got, readErr)
+	}
+}
+
+func TestSkillInstallClaudeRejectsSymlinkMode(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude", "--link"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "use copy mode") {
+		t.Fatalf("expected Claude symlink mode rejection, got %v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(home, ".claude", "skills", "planmaxx")); !os.IsNotExist(statErr) {
+		t.Fatalf("rejected Claude install created files: %v", statErr)
+	}
+}
+
+func TestSkillInstallRejectsConflictingModes(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	cmd := NewRootCommand(&bytes.Buffer{}, &bytes.Buffer{})
+	cmd.SetArgs([]string{"skill", "install", "--copy", "--link"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("expected conflicting mode rejection, got %v", err)
+	}
+}
+
+func TestSkillInstallRefusesToOverwriteUnmanagedSkill(t *testing.T) {
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	installDir := filepath.Join(home, ".claude", "skills", "planmaxx")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(installDir, "SKILL.md")
+	const custom = "# My custom PlanMaxx workflow\n"
+	if err := os.WriteFile(skillPath, []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&bytes.Buffer{}, &stderr)
+	cmd.SetArgs([]string{"skill", "install", "--target", "claude", "--copy"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged skill") {
+		t.Fatalf("expected unmanaged skill error, got %v", err)
+	}
+	if got, readErr := os.ReadFile(skillPath); readErr != nil || string(got) != custom {
+		t.Fatalf("custom skill changed: content=%q err=%v", got, readErr)
+	}
+	for _, relative := range []string{filepath.Join(".claude-plugin", "plugin.json"), filepath.Join("hooks", "hooks.json")} {
+		if _, statErr := os.Stat(filepath.Join(installDir, relative)); !os.IsNotExist(statErr) {
+			t.Fatalf("partial plugin file %s was created: %v", relative, statErr)
+		}
+	}
+}
+
 func TestSkillInstallCodexDefaultWritesManagedSkillAndReminder(t *testing.T) {
 	home := t.TempDir()
 	configDir := filepath.Join(t.TempDir(), "config")
@@ -193,6 +717,77 @@ func TestSkillInstallRepoScoped(t *testing.T) {
 	}
 }
 
+func TestSkillReminderUpdatesSymlinkTargetWithoutReplacingSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behavior is platform-dependent on Windows")
+	}
+
+	home := t.TempDir()
+	configDir := filepath.Join(t.TempDir(), "config")
+	repoDir := t.TempDir()
+	setSkillTestDirs(t, home, configDir)
+	SetEmbeddedSkillTemplate([]byte(planmaxxSkillTestTemplate()))
+
+	claudePath := filepath.Join(repoDir, "CLAUDE.md")
+	if err := os.WriteFile(claudePath, []byte("# Repository guidance\n"), 0o640); err != nil {
+		t.Fatalf("write CLAUDE.md: %v", err)
+	}
+	agentsPath := filepath.Join(repoDir, "AGENTS.md")
+	if err := os.Symlink("CLAUDE.md", agentsPath); err != nil {
+		t.Fatalf("symlink AGENTS.md: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	installCmd := NewRootCommand(&stdout, &stderr)
+	installCmd.SetArgs([]string{"skill", "install", "--target", "codex", "--repo", repoDir, "--copy"})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("repo skill install failed: %v", err)
+	}
+
+	assertSymlink := func() {
+		t.Helper()
+		info, err := os.Lstat(agentsPath)
+		if err != nil {
+			t.Fatalf("lstat AGENTS.md: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("AGENTS.md symlink was replaced")
+		}
+	}
+	assertSymlink()
+	claudeBytes, err := os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatalf("read CLAUDE.md after install: %v", err)
+	}
+	if !strings.Contains(string(claudeBytes), planmaxxReminderStart) {
+		t.Fatalf("expected reminder in symlink target, got %q", claudeBytes)
+	}
+	if info, err := os.Stat(claudePath); err != nil {
+		t.Fatalf("stat CLAUDE.md: %v", err)
+	} else if info.Mode().Perm() != 0o640 {
+		t.Fatalf("expected reminder update to preserve mode 0640, got %o", info.Mode().Perm())
+	}
+
+	removeCmd := NewRootCommand(&stdout, &stderr)
+	removeCmd.SetArgs([]string{"skill", "remove", "--target", "codex", "--repo", repoDir})
+	if err := removeCmd.Execute(); err != nil {
+		t.Fatalf("repo skill remove failed: %v", err)
+	}
+
+	assertSymlink()
+	claudeBytes, err = os.ReadFile(claudePath)
+	if err != nil {
+		t.Fatalf("read CLAUDE.md after remove: %v", err)
+	}
+	if strings.Contains(string(claudeBytes), planmaxxReminderStart) {
+		t.Fatalf("expected reminder removed from symlink target, got %q", claudeBytes)
+	}
+	if !strings.Contains(string(claudeBytes), "# Repository guidance") {
+		t.Fatalf("expected existing symlink target content to remain, got %q", claudeBytes)
+	}
+}
+
 func TestSkillCommandIsListedInRootHelp(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -207,7 +802,7 @@ func TestSkillCommandIsListedInRootHelp(t *testing.T) {
 	}
 }
 
-func TestSkillHelpKeepsOnlyRepositoryScopeVisible(t *testing.T) {
+func TestSkillHelpShowsTargetAndRepositoryScope(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd := NewRootCommand(&stdout, &stderr)
@@ -216,10 +811,12 @@ func TestSkillHelpKeepsOnlyRepositoryScopeVisible(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("skill install help: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "--repo") {
-		t.Fatalf("expected skill help to contain --repo, got %q", stdout.String())
+	for _, visible := range []string{"--repo", "--target", "codex or claude"} {
+		if !strings.Contains(stdout.String(), visible) {
+			t.Fatalf("expected skill help to contain %q, got %q", visible, stdout.String())
+		}
 	}
-	for _, hidden := range []string{"--target", "--source", "--copy", "--link"} {
+	for _, hidden := range []string{"--source", "--copy", "--link"} {
 		if strings.Contains(stdout.String(), hidden) {
 			t.Fatalf("expected skill help to hide %q, got %q", hidden, stdout.String())
 		}
@@ -236,11 +833,15 @@ func TestREADMEDocumentsSetupAndHowToUseModes(t *testing.T) {
 	quickStart := markdownSection(t, content, "## Quick Start", "## Screenshots")
 
 	for _, want := range []string{
-		"Automatic Codex Skill",
+		"Agent Skills",
 		"--install-codex-skill",
+		"--install-claude-skill",
 		"planmaxx skill install",
 		"planmaxx skill remove",
 		"~/.agents/skills/planmaxx/",
+		"planmaxx skill install --target claude",
+		"~/.claude/skills/planmaxx/",
+		"skills/planmaxx/SKILL.md",
 		"planmaxx skill install --repo /path/to/repo",
 		"planmaxx skill remove --repo /path/to/repo",
 	} {
@@ -275,9 +876,12 @@ func TestInstallerDocumentsOptionalSkillInstall(t *testing.T) {
 	content := string(installer)
 	for _, want := range []string{
 		"--install-codex-skill",
+		"--install-claude-skill",
 		"~/.agents/skills",
 		"PLANMAXX_INSTALL_CODEX_SKILL",
+		"PLANMAXX_INSTALL_CLAUDE_SKILL",
 		"skill install",
+		"skill install --target claude",
 		"${BASE_URL}/SKILL.md",
 		"verify_checksum \"${TMPDIR_PLANMAXX}/SKILL.md\" \"$CHECKSUMS\"",
 	} {
@@ -305,12 +909,27 @@ func TestRepoSkillMatchesEmbeddedTemplate(t *testing.T) {
 			t.Fatalf("installed skill must document %q", want)
 		}
 	}
+	for _, want := range []string{
+		"`planmaxx review --claude-session-id ${CLAUDE_SESSION_ID} <plan-file>`",
+		"`planmaxx review <plan-file>`",
+		"invocation-only",
+	} {
+		if !strings.Contains(string(embeddedSkill), want) {
+			t.Fatalf("installed skill must document invocation-only behavior %q", want)
+		}
+	}
+	for _, forbidden := range []string{"claude-session-hook", "PLANMAXX_CLAUDE_SESSION_ID", "CLAUDE_ENV_FILE", ".claude-plugin"} {
+		if strings.Contains(string(embeddedSkill), forbidden) {
+			t.Fatalf("installed skill must not require legacy Claude setup %q", forbidden)
+		}
+	}
 }
 
 func setSkillTestDirs(t *testing.T, home string, configDir string) {
 	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	oldHome := skillUserHomeDir
 	oldConfig := skillUserConfigDir
 	skillUserHomeDir = func() (string, error) { return home, nil }

@@ -26,7 +26,7 @@ func TestUpdateCommandInstallsLatestRelease(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if got := stdout.String(); got != "Updated PlanMaxx from 0.2.0 to 0.3.0.\n" {
+	if got := stdout.String(); got != "Updated PlanMaxx from 0.2.0 to 0.3.0.\nIf you use Claude Code, refresh its installed skill with `planmaxx skill install --target claude` for a user install, or rerun it with the original `--repo <path>` for a repository install.\n" {
 		t.Fatalf("unexpected update output %q", got)
 	}
 }

@@ -47,7 +47,12 @@ func newUpdateCommand(stdout io.Writer) *cobra.Command {
 				_, err = fmt.Fprintf(stdout, "PlanMaxx %s is already up to date.\n", status.CurrentVersion)
 				return err
 			}
-			_, err = fmt.Fprintf(stdout, "Updated PlanMaxx from %s to %s.\n", status.CurrentVersion, status.LatestVersion)
+			_, err = fmt.Fprintf(
+				stdout,
+				"Updated PlanMaxx from %s to %s.\nIf you use Claude Code, refresh its installed skill with `planmaxx skill install --target claude` for a user install, or rerun it with the original `--repo <path>` for a repository install.\n",
+				status.CurrentVersion,
+				status.LatestVersion,
+			)
 			return err
 		},
 	}

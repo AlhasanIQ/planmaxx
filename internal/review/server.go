@@ -47,6 +47,7 @@ type Server struct {
 	sideQuestions       sidequestions.Service
 	sideQuestionTimeout time.Duration
 	sectionIterations   sectioniter.Service
+	agent               AgentInfo
 	revisionStore       *revisions.Store
 	revisionPlanID      string
 	bundleStore         *BundleStore
@@ -62,6 +63,12 @@ func NewServer(s *session.Session) *Server {
 	return &Server{
 		session: s,
 		done:    make(chan Result, 1),
+		agent: AgentInfo{
+			ID:                "none",
+			DisplayName:       "Agent",
+			ContextMode:       "unavailable",
+			UnavailableReason: "No supported active agent session was detected.",
+		},
 	}
 }
 
@@ -93,6 +100,22 @@ func (s *Server) WithSideQuestions(service sidequestions.Service) *Server {
 func (s *Server) WithSectionIterations(service sectioniter.Service) *Server {
 	s.sectionIterations = service
 	return s
+}
+
+func (s *Server) WithAgent(info AgentInfo) *Server {
+	s.agent = info
+	return s
+}
+
+// MarkAgentUnavailable fails assisted actions closed after an attached
+// provider reports a runtime or protocol failure. Ordinary review remains
+// available and the next state refresh explains why assisted actions stopped.
+func (s *Server) MarkAgentUnavailable(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agent.Available = false
+	s.agent.ContextMode = "unavailable"
+	s.agent.UnavailableReason = strings.TrimSpace(reason)
 }
 
 func (s *Server) WithRevisionStore(store *revisions.Store, planID string) *Server {
@@ -334,7 +357,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, buildClientState(*s.session, s.finished))
+	writeJSON(w, buildClientState(*s.session, s.finished, s.agent))
 }
 
 func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
@@ -413,7 +436,7 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	view, _ := projectThread(*s.session, s.finished, thread.ID)
+	view, _ := projectThread(*s.session, s.finished, thread.ID, s.agent.Available)
 	s.mu.Unlock()
 	writeJSON(w, view)
 }
@@ -833,7 +856,7 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, threadID string) {
 		if err != nil {
 			return nil, transitionResponseError(err)
 		}
-		view, _ := projectThread(*s.session, s.finished, thread.ID)
+		view, _ := projectThread(*s.session, s.finished, thread.ID, s.agent.Available)
 		return view, nil
 	})
 }

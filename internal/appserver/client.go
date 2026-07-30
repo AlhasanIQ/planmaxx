@@ -10,10 +10,16 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/AlhasanIQ/planmaxx/internal/prompts"
 	"github.com/AlhasanIQ/planmaxx/internal/sidequestions"
+	"github.com/AlhasanIQ/planmaxx/internal/version"
 )
+
+const turnInterruptTimeout = 2 * time.Second
+
+var ErrClientUnusable = errors.New("app-server client is unusable")
 
 type Client struct {
 	reader *bufio.Reader
@@ -26,6 +32,7 @@ type Client struct {
 	lines        chan lineResult
 	startReader  sync.Once
 	nextID       atomic.Int64
+	unusable     atomic.Bool
 }
 
 type InitializeResponse struct {
@@ -41,6 +48,11 @@ type ThreadResponse struct {
 	Model                 string   `json:"model"`
 	ModelProvider         string   `json:"modelProvider"`
 	RuntimeWorkspaceRoots []string `json:"runtimeWorkspaceRoots"`
+	ApprovalPolicy        string   `json:"approvalPolicy"`
+	Sandbox               struct {
+		Type          string `json:"type"`
+		NetworkAccess bool   `json:"networkAccess"`
+	} `json:"sandbox"`
 }
 
 type Thread struct {
@@ -81,7 +93,7 @@ func (c *Client) Initialize(ctx context.Context) (InitializeResponse, error) {
 	err := c.call(ctx, "initialize", initializeParams{
 		ClientInfo: clientInfo{
 			Name:    "planmaxx",
-			Version: "0.0.0",
+			Version: version.Version,
 		},
 		Capabilities: capabilities{
 			ExperimentalAPI:           true,
@@ -121,13 +133,32 @@ func (c *Client) ReadThread(ctx context.Context, threadID string) (ThreadRespons
 func (c *Client) ForkThread(ctx context.Context, threadID string, cwd string) (ThreadResponse, error) {
 	var result ThreadResponse
 	err := c.call(ctx, "thread/fork", forkThreadParams{
-		ThreadID:               threadID,
-		CWD:                    cwd,
-		Ephemeral:              true,
-		ExcludeTurns:           true,
-		ApprovalPolicy:         "never",
-		PersistExtendedHistory: false,
+		ThreadID:       threadID,
+		CWD:            cwd,
+		Ephemeral:      true,
+		ExcludeTurns:   true,
+		ApprovalPolicy: "never",
+		Sandbox:        "read-only",
 	}, &result)
+	if err != nil {
+		return result, err
+	}
+	switch {
+	case result.Thread.ID == "":
+		err = errors.New("app-server fork response is missing a thread id")
+	case result.Thread.ID == threadID:
+		err = errors.New("app-server reused the source thread instead of creating a disposable fork")
+	case result.Thread.ForkedFromID != threadID:
+		err = fmt.Errorf("app-server fork response has source %q, expected %q", result.Thread.ForkedFromID, threadID)
+	case !result.Thread.Ephemeral:
+		err = errors.New("app-server fork response is not ephemeral")
+	case result.ApprovalPolicy != "never":
+		err = fmt.Errorf("app-server fork response has approval policy %q, expected %q", result.ApprovalPolicy, "never")
+	case result.Sandbox.Type != "readOnly":
+		err = fmt.Errorf("app-server fork response has sandbox %q, expected %q", result.Sandbox.Type, "readOnly")
+	case result.Sandbox.NetworkAccess:
+		err = errors.New("app-server read-only fork unexpectedly allows network access")
+	}
 	return result, err
 }
 
@@ -152,6 +183,9 @@ func (c *Client) StartTurnAndWait(ctx context.Context, threadID string, prompt s
 	}
 	defer release()
 
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	var result TurnResponse
 	if err := c.callLocked(ctx, "turn/start", startTurnParams{
 		ThreadID:       threadID,
@@ -162,9 +196,101 @@ func (c *Client) StartTurnAndWait(ctx context.Context, threadID string, prompt s
 			TextElements: []any{},
 		}},
 	}, &result); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			c.unusable.Store(true)
+			return "", fmt.Errorf("%w: turn/start was canceled before its turn id could be recovered: %w", ErrClientUnusable, ctxErr)
+		}
 		return "", err
 	}
-	return c.waitForTurnAnswerLocked(ctx, threadID, result.Turn.ID)
+	if strings.TrimSpace(result.Turn.ID) == "" {
+		c.unusable.Store(true)
+		return "", fmt.Errorf("%w: turn/start response is missing a turn id", ErrClientUnusable)
+	}
+	answer, err := c.waitForTurnAnswerLocked(ctx, threadID, result.Turn.ID)
+	if err == nil {
+		return answer, nil
+	}
+	if ctx.Err() == nil {
+		return "", err
+	}
+
+	// The request context is already canceled, so cleanup must use an
+	// independent bounded context while this operation still owns the protocol
+	// stream. Drain both the interrupt response and the terminal notification
+	// before another operation can use the connection.
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), turnInterruptTimeout)
+	defer cancel()
+	if cleanupErr := c.interruptTurnAndDrainLocked(cleanupCtx, threadID, result.Turn.ID); cleanupErr != nil {
+		c.unusable.Store(true)
+		return "", fmt.Errorf("%w: clean up canceled app-server turn after %v: %w", ErrClientUnusable, ctx.Err(), cleanupErr)
+	}
+	return "", ctx.Err()
+}
+
+func (c *Client) interruptTurnAndDrainLocked(ctx context.Context, threadID string, turnID string) error {
+	id := c.nextID.Add(1) - 1
+	request := rpcRequest{
+		ID:     id,
+		Method: "turn/interrupt",
+		Params: turnInterruptParams{ThreadID: threadID, TurnID: turnID},
+	}
+	if err := json.NewEncoder(c.writer).Encode(request); err != nil {
+		return fmt.Errorf("write app-server turn/interrupt request: %w", err)
+	}
+
+	var responseReceived bool
+	var completionReceived bool
+	for !responseReceived || !completionReceived {
+		line, err := c.nextLine(ctx)
+		if err != nil {
+			return fmt.Errorf("read app-server turn/interrupt cleanup: %w", err)
+		}
+
+		var response rpcResponse
+		if err := json.Unmarshal(line, &response); err != nil {
+			return fmt.Errorf("decode app-server turn/interrupt cleanup: %w", err)
+		}
+		matches, err := responseIDMatches(response.ID, id)
+		if err != nil {
+			return fmt.Errorf("decode app-server turn/interrupt response id: %w", err)
+		}
+		if matches {
+			if response.Error != nil {
+				return fmt.Errorf("app-server turn/interrupt error %d: %s", response.Error.Code, response.Error.Message)
+			}
+			if len(response.Result) == 0 {
+				return errors.New("decode app-server turn/interrupt result: missing result")
+			}
+			responseReceived = true
+		}
+
+		var notification rpcNotificationEnvelope
+		if err := json.Unmarshal(line, &notification); err != nil {
+			return fmt.Errorf("decode app-server turn/interrupt notification: %w", err)
+		}
+		if notification.Method == "turn/completed" &&
+			notification.Params.ThreadID == threadID &&
+			notification.Params.Turn.ID == turnID {
+			if !isTerminalTurnStatus(notification.Params.Turn.Status) {
+				status := notification.Params.Turn.Status
+				if status == "" {
+					status = "missing"
+				}
+				return fmt.Errorf("app-server turn/completed cleanup has nonterminal status %q", status)
+			}
+			completionReceived = true
+		}
+	}
+	return nil
+}
+
+func isTerminalTurnStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "interrupted":
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) call(ctx context.Context, method string, params any, result any) error {
@@ -230,6 +356,10 @@ func (c *Client) acquireOperation(ctx context.Context) (func(), error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-c.operationSem:
+		if c.unusable.Load() {
+			c.operationSem <- struct{}{}
+			return nil, ErrClientUnusable
+		}
 		return func() {
 			c.operationSem <- struct{}{}
 		}, nil
@@ -330,6 +460,28 @@ func (a *SideQuestionAsker) Ask(ctx context.Context, req sidequestions.Request) 
 
 func (a *SideQuestionAsker) AskPrompt(ctx context.Context, prompt string) (string, error) {
 	return a.askPromptInFork(ctx, a.CurrentThreadID, prompt)
+}
+
+// ValidateAttachment completes the app-server handshake and proves the source
+// thread is readable before PlanMaxx advertises assisted actions.
+func (a *SideQuestionAsker) ValidateAttachment(ctx context.Context) error {
+	if a == nil || a.Client == nil {
+		return errors.New("app-server client is nil")
+	}
+	if strings.TrimSpace(a.CurrentThreadID) == "" {
+		return errors.New("app-server thread id is required")
+	}
+	if err := a.ensureInitialized(ctx); err != nil {
+		return err
+	}
+	source, err := a.Client.ReadThread(ctx, a.CurrentThreadID)
+	if err != nil {
+		return err
+	}
+	if source.Thread.ID != a.CurrentThreadID {
+		return fmt.Errorf("app-server read thread %q, expected %q", source.Thread.ID, a.CurrentThreadID)
+	}
+	return nil
 }
 
 func (a *SideQuestionAsker) askPromptInFork(ctx context.Context, threadID string, prompt string) (string, error) {
@@ -433,18 +585,23 @@ type readThreadParams struct {
 }
 
 type forkThreadParams struct {
-	ThreadID               string `json:"threadId"`
-	CWD                    string `json:"cwd"`
-	Ephemeral              bool   `json:"ephemeral"`
-	ExcludeTurns           bool   `json:"excludeTurns"`
-	ApprovalPolicy         string `json:"approvalPolicy"`
-	PersistExtendedHistory bool   `json:"persistExtendedHistory"`
+	ThreadID       string `json:"threadId"`
+	CWD            string `json:"cwd"`
+	Ephemeral      bool   `json:"ephemeral"`
+	ExcludeTurns   bool   `json:"excludeTurns"`
+	ApprovalPolicy string `json:"approvalPolicy"`
+	Sandbox        string `json:"sandbox"`
 }
 
 type startTurnParams struct {
 	ThreadID       string      `json:"threadId"`
 	ApprovalPolicy string      `json:"approvalPolicy"`
 	Input          []turnInput `json:"input"`
+}
+
+type turnInterruptParams struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId"`
 }
 
 type turnInput struct {

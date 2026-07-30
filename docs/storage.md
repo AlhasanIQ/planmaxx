@@ -107,7 +107,7 @@ exists and are hydrated from commits on load.
 | Anchor mapping across revisions | Hand-rolled conservative mapping; Git line numbers are not durable identity |
 | Concurrent writers | OS file lock, Git ref OID compare-and-swap, atomic bundle replacement |
 | Markdown/HTML source and safe preview | Parser/rendering libraries plus sandbox policy |
-| Side questions and iteration generation | Codex app-server client plus PlanMaxx prompt/domain adapters |
+| Side questions and iteration generation | Provider-specific active-session adapters plus shared PlanMaxx prompt/domain protocols |
 | Browser preferences | Browser local storage only; never review authority |
 
 Git deliberately does not decide whether feedback is addressed, whether an

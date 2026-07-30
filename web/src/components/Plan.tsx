@@ -824,7 +824,7 @@ function InlineCommentComposer({
       {agentAction ? (
         <div className="btw-thinking mt-2" role="status" aria-live="polite">
           <Sparkles size={13} />
-          <span>{agentAction === "asking" ? "Codex is thinking about this /btw…" : "Codex is iterating on this selection…"}</span>
+          <span>{agentAction === "asking" ? "The agent is thinking about this /btw…" : "The agent is iterating on this selection…"}</span>
         </div>
       ) : null}
 	  {!isEditing ? <fieldset className="composer-intent" aria-label="Comment intent">
@@ -850,7 +850,7 @@ function InlineCommentComposer({
             className="btn"
             onClick={onAskSide}
             disabled={!canSubmit || submitting || disabled}
-            title="Save this comment and ask Codex about the selected text on the side"
+            title="Save this comment and ask the agent about the selected text"
           >
             {agentAction === "asking" ? "Asking…" : "/btw"}
           </button>
@@ -861,7 +861,7 @@ function InlineCommentComposer({
             className="btn"
             onClick={onIterate}
             disabled={!canSubmit || submitting || disabled}
-            title="Ask Codex to rewrite only the selected section"
+            title="Ask the agent to rewrite only the selected section"
           >
             <Sparkles size={13} /> {agentAction === "iterating" ? "Iterating…" : "Iterate section"}
           </button>

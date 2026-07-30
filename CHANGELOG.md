@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.5.0 - 2026-07-30
+
+- Added Claude Code side questions and iteration through context-preserving
+  session forks. The plain Claude Code skill now passes its exact
+  `${CLAUDE_SESSION_ID}` through an invocation-only flag; ambient
+  `CLAUDE_CODE_SESSION_ID` remains available for bare-command auto-detection.
+- Added explicit agent selection, server-authoritative assisted-action
+  capabilities, provider-neutral UI language, and safer symlink-aware skill
+  installation.
+- Isolated Claude child runs with safe mode, disabled tools, and no transcript
+  persistence; added Claude version/capability checks and managed skill
+  upgrades. Claude installs now use the standard
+  `.claude/skills/planmaxx/SKILL.md` layout and remove PlanMaxx-managed legacy
+  plugin and hook components during migration.
+- Updated the Codex app-server request to match the current generated schema,
+  require a read-only network-disabled ephemeral fork, and interrupt/drain
+  canceled turns before reusing the protocol stream, including terminal-status
+  validation during cancellation cleanup.
+
 ## v0.4.0 - 2026-07-18
 
 - Added a document outline for Markdown and HTML plans, with heading-aware

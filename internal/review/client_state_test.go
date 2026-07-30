@@ -15,13 +15,58 @@ func TestBuildClientStateHasVersionedNonNullContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, expected := range []string{`"schemaVersion":4`, `"revisions":[`, `"threads":[]`, `"sideAnswers":[]`, `"reviewerDecisions":[]`, `"promotedSideAnswers":[]`, `"counts":{`, `"canIterate":true`, `"phase":"active"`} {
+	for _, expected := range []string{`"schemaVersion":5`, `"agent":{`, `"revisions":[`, `"threads":[]`, `"sideAnswers":[]`, `"reviewerDecisions":[]`, `"promotedSideAnswers":[]`, `"counts":{`, `"canIterate":true`, `"phase":"active"`} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("client state missing %s: %s", expected, text)
 		}
 	}
 	if !state.Capabilities.CanFinalize || !state.Capabilities.CanEditFeedback || state.Capabilities.CanApplyProposal {
 		t.Fatalf("unexpected active capabilities %+v", state.Capabilities)
+	}
+}
+
+func TestBuildClientStateDisablesAgentActionsWhenProviderUnavailable(t *testing.T) {
+	s := session.New("plan-1", "# Plan")
+	thread := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "improve this")
+	agent := AgentInfo{
+		ID:                "claude",
+		DisplayName:       "Claude Code",
+		ContextMode:       "unavailable",
+		UnavailableReason: "Run PlanMaxx from a Claude Code tool command so the active session is available.",
+	}
+
+	state := buildClientState(*s, false, agent)
+
+	if state.Agent.ID != "claude" || state.Agent.Available {
+		t.Fatalf("unexpected agent state: %+v", state.Agent)
+	}
+	if state.Capabilities.CanIterate {
+		t.Fatalf("iteration should be disabled without an attached agent: %+v", state.Capabilities)
+	}
+	if len(state.Threads) != 1 || state.Threads[0].ID != thread.ID {
+		t.Fatalf("unexpected thread projection: %+v", state.Threads)
+	}
+	if state.Threads[0].Capabilities.CanAsk || state.Threads[0].Capabilities.CanIterate {
+		t.Fatalf("agent actions should be disabled: %+v", state.Threads[0].Capabilities)
+	}
+	if !state.Threads[0].Capabilities.CanEdit || !state.Threads[0].Capabilities.CanReply {
+		t.Fatalf("local review actions should remain enabled: %+v", state.Threads[0].Capabilities)
+	}
+}
+
+func TestProjectThreadUsesAuthoritativeAgentAvailability(t *testing.T) {
+	s := session.New("plan-1", "# Plan")
+	thread := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "improve this")
+
+	view, ok := projectThread(*s, false, thread.ID, false)
+	if !ok {
+		t.Fatal("thread projection missing")
+	}
+	if view.Capabilities.CanAsk || view.Capabilities.CanIterate {
+		t.Fatalf("mutation response advertised unavailable agent actions: %+v", view.Capabilities)
+	}
+	if !view.Capabilities.CanEdit || !view.Capabilities.CanReply {
+		t.Fatalf("mutation response disabled local review actions: %+v", view.Capabilities)
 	}
 }
 

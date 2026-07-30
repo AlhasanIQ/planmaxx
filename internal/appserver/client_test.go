@@ -57,7 +57,7 @@ func TestInitializeWritesExperimentalCapabilities(t *testing.T) {
 
 func TestForkThreadSendsEphemeralRequest(t *testing.T) {
 	var writes bytes.Buffer
-	client := NewClient(bufio.NewReader(strings.NewReader(`{"id":1,"result":{"thread":{"id":"fork-1","sessionId":"s","forkedFromId":"parent","preview":"","ephemeral":true,"modelProvider":"openai","createdAt":1,"updatedAt":1,"status":{"type":"idle"},"path":null,"cwd":"/repo","cliVersion":"0.133.0","source":"vscode","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":null,"name":null,"turns":[]},"model":"gpt-5","modelProvider":"openai","serviceTier":null,"cwd":"/repo","runtimeWorkspaceRoots":["/repo"],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"mode":"read-only"},"activePermissionProfile":null,"reasoningEffort":null}}`+"\n")), &writes)
+	client := NewClient(bufio.NewReader(strings.NewReader(`{"id":1,"result":{"thread":{"id":"fork-1","sessionId":"s","forkedFromId":"parent","preview":"","ephemeral":true,"modelProvider":"openai","createdAt":1,"updatedAt":1,"status":{"type":"idle"},"path":null,"cwd":"/repo","cliVersion":"0.133.0","source":"vscode","threadSource":null,"agentNickname":null,"agentRole":null,"gitInfo":null,"name":null,"turns":[]},"model":"gpt-5","modelProvider":"openai","serviceTier":null,"cwd":"/repo","runtimeWorkspaceRoots":["/repo"],"instructionSources":[],"approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"activePermissionProfile":null,"reasoningEffort":null}}`+"\n")), &writes)
 
 	res, err := client.ForkThread(context.Background(), "parent", "/repo")
 	if err != nil {
@@ -89,7 +89,74 @@ func TestForkThreadSendsEphemeralRequest(t *testing.T) {
 	assertParam(t, params, "ephemeral", true)
 	assertParam(t, params, "excludeTurns", true)
 	assertParam(t, params, "approvalPolicy", "never")
-	assertParam(t, params, "persistExtendedHistory", false)
+	assertParam(t, params, "sandbox", "read-only")
+	if _, ok := params["persistExtendedHistory"]; ok {
+		t.Fatalf("thread/fork should not send removed persistExtendedHistory field: %#v", params)
+	}
+}
+
+func TestForkThreadRejectsUnsafeOrMismatchedForks(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		wantErr  string
+	}{
+		{
+			name:     "missing fork id",
+			response: `{"id":1,"result":{"thread":{"forkedFromId":"parent","ephemeral":true},"approvalPolicy":"never","sandbox":{"type":"readOnly"}}}`,
+			wantErr:  "missing a thread id",
+		},
+		{
+			name:     "source thread reused",
+			response: `{"id":1,"result":{"thread":{"id":"parent","forkedFromId":"parent","ephemeral":true},"approvalPolicy":"never","sandbox":{"type":"readOnly"}}}`,
+			wantErr:  "reused the source thread",
+		},
+		{
+			name:     "wrong parent",
+			response: `{"id":1,"result":{"thread":{"id":"fork-1","forkedFromId":"other","ephemeral":true},"approvalPolicy":"never","sandbox":{"type":"readOnly"}}}`,
+			wantErr:  "has source",
+		},
+		{
+			name:     "persistent fork",
+			response: `{"id":1,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":false},"approvalPolicy":"never","sandbox":{"type":"readOnly"}}}`,
+			wantErr:  "not ephemeral",
+		},
+		{
+			name:     "interactive approvals",
+			response: `{"id":1,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":true},"approvalPolicy":"on-request","sandbox":{"type":"readOnly"}}}`,
+			wantErr:  "approval policy",
+		},
+		{
+			name:     "missing approval policy",
+			response: `{"id":1,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":true},"sandbox":{"type":"readOnly"}}}`,
+			wantErr:  "approval policy",
+		},
+		{
+			name:     "writable sandbox",
+			response: `{"id":1,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":true},"approvalPolicy":"never","sandbox":{"type":"workspaceWrite"}}}`,
+			wantErr:  "sandbox",
+		},
+		{
+			name:     "missing sandbox",
+			response: `{"id":1,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":true},"approvalPolicy":"never"}}`,
+			wantErr:  "sandbox",
+		},
+		{
+			name:     "networked read-only sandbox",
+			response: `{"id":1,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":true},"approvalPolicy":"never","sandbox":{"type":"readOnly","networkAccess":true}}}`,
+			wantErr:  "network access",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClient(bufio.NewReader(strings.NewReader(test.response+"\n")), &bytes.Buffer{})
+			_, err := client.ForkThread(context.Background(), "parent", "/repo")
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", test.wantErr, err)
+			}
+		})
+	}
 }
 
 func TestReadThreadRequestShape(t *testing.T) {
@@ -176,7 +243,7 @@ func TestSideQuestionAskerAskPromptUsesCurrentThreadFork(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"id":1,"result":{"userAgent":"Codex","codexHome":"/tmp/codex","platformFamily":"unix","platformOs":"macos"}}`,
 		`{"id":2,"result":{"thread":{"id":"parent","ephemeral":false,"cwd":"/repo","status":{"type":"idle"}}}}`,
-		`{"id":3,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":true,"cwd":"/repo","status":{"type":"idle"}},"cwd":"/repo"}}`,
+		`{"id":3,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":true,"cwd":"/repo","status":{"type":"idle"}},"cwd":"/repo","approvalPolicy":"never","sandbox":{"type":"readOnly"}}}`,
 		`{"id":4,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}`,
 		`{"method":"item/completed","params":{"threadId":"fork-1","turnId":"turn-1","item":{"type":"agentMessage","text":"SECTION_OK"}}}`,
 		`{"method":"turn/completed","params":{"threadId":"fork-1","turn":{"id":"turn-1","status":"completed"}}}`,
@@ -202,6 +269,41 @@ func TestSideQuestionAskerAskPromptUsesCurrentThreadFork(t *testing.T) {
 	input := params["input"].([]any)[0].(map[string]any)
 	if input["text"] != "Rewrite this section" {
 		t.Fatalf("expected raw prompt to be sent, got %v", input["text"])
+	}
+}
+
+func TestSideQuestionAskerValidateAttachmentRejectsWrongSourceThread(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"id":1,"result":{"userAgent":"Codex","codexHome":"/tmp/codex"}}`,
+		`{"id":2,"result":{"thread":{"id":"different-thread","status":{"type":"idle"}}}}`,
+		"",
+	}, "\n")
+	client := NewClient(bufio.NewReader(strings.NewReader(stream)), &bytes.Buffer{})
+	asker := &SideQuestionAsker{Client: client, CurrentThreadID: "expected-thread"}
+
+	err := asker.ValidateAttachment(context.Background())
+	if err == nil || !strings.Contains(err.Error(), `read thread "different-thread", expected "expected-thread"`) {
+		t.Fatalf("expected source-thread mismatch, got %v", err)
+	}
+}
+
+func TestSideQuestionAskerRejectsUnsafeForkBeforeStartingTurn(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"id":1,"result":{"userAgent":"Codex","codexHome":"/tmp/codex"}}`,
+		`{"id":2,"result":{"thread":{"id":"parent","ephemeral":false,"status":{"type":"idle"}}}}`,
+		`{"id":3,"result":{"thread":{"id":"fork-1","forkedFromId":"parent","ephemeral":false},"approvalPolicy":"never","sandbox":{"type":"readOnly"}}}`,
+		"",
+	}, "\n")
+	var writes bytes.Buffer
+	client := NewClient(bufio.NewReader(strings.NewReader(stream)), &writes)
+	asker := &SideQuestionAsker{Client: client, CWD: "/repo", CurrentThreadID: "parent"}
+
+	_, err := asker.AskPrompt(context.Background(), "prompt")
+	if err == nil || !strings.Contains(err.Error(), "not ephemeral") {
+		t.Fatalf("expected unsafe fork rejection, got %v", err)
+	}
+	if methods := strings.Join(requestMethods(decodeRequests(t, writes.Bytes())), ","); methods != "initialize,initialized,thread/read,thread/fork" {
+		t.Fatalf("unsafe fork reached a later protocol step: %s", methods)
 	}
 }
 
@@ -281,6 +383,24 @@ func TestStartTurnAndWaitErrorsWhenTurnDoesNotCompleteSuccessfully(t *testing.T)
 	}
 }
 
+func TestStartTurnAndWaitRejectsMissingTurnIDAndPoisonsClient(t *testing.T) {
+	var writes bytes.Buffer
+	client := NewClient(
+		bufio.NewReader(strings.NewReader(`{"id":1,"result":{"turn":{"status":"inProgress"}}}`+"\n")),
+		&writes,
+	)
+
+	if _, err := client.StartTurnAndWait(context.Background(), "fork-1", "question"); !errors.Is(err, ErrClientUnusable) {
+		t.Fatalf("expected unusable client error, got %v", err)
+	}
+	if _, err := client.ReadThread(context.Background(), "thread-1"); !errors.Is(err, ErrClientUnusable) {
+		t.Fatalf("expected missing turn id to prevent reuse, got %v", err)
+	}
+	if requests := decodeRequests(t, writes.Bytes()); len(requests) != 1 {
+		t.Fatalf("poisoned client wrote additional requests: %+v", requests)
+	}
+}
+
 func TestStartTurnAndWaitCancellationReturnsWhenResponseStalls(t *testing.T) {
 	reader, responseWriter := io.Pipe()
 	t.Cleanup(func() {
@@ -310,7 +430,21 @@ func TestStartTurnAndWaitCancellationReturnsWhenResponseStalls(t *testing.T) {
 	}
 }
 
-func TestStartTurnAndWaitCancellationReturnsWhenCompletionStalls(t *testing.T) {
+func TestStartTurnAndWaitAlreadyCanceledDoesNotWriteRequest(t *testing.T) {
+	var writes bytes.Buffer
+	client := NewClient(bufio.NewReader(strings.NewReader("")), &writes)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := client.StartTurnAndWait(ctx, "fork-1", "question"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled context, got %v", err)
+	}
+	if writes.Len() != 0 {
+		t.Fatalf("already-canceled request wrote to app-server: %s", writes.String())
+	}
+}
+
+func TestStartTurnAndWaitCancellationInterruptsAndDrainsTurn(t *testing.T) {
 	reader, responseWriter := io.Pipe()
 	t.Cleanup(func() {
 		_ = responseWriter.Close()
@@ -329,14 +463,128 @@ func TestStartTurnAndWaitCancellationReturnsWhenCompletionStalls(t *testing.T) {
 
 	writes.waitForWrites(t, 1)
 	writeLine(t, responseWriter, `{"id":1,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}`)
+	writes.waitForWrites(t, 2)
 
+	requests := decodeRequests(t, writes.bytes())
+	if requests[1]["method"] != "turn/interrupt" {
+		t.Fatalf("expected turn/interrupt cleanup, got %+v", requests[1])
+	}
+	params := requests[1]["params"].(map[string]any)
+	assertParam(t, params, "threadId", "fork-1")
+	assertParam(t, params, "turnId", "turn-1")
+
+	// A terminal notification can arrive before the matching interrupt
+	// response. Cleanup must drain both before releasing the operation slot.
+	writeLine(t, responseWriter, `{"method":"turn/completed","params":{"threadId":"fork-1","turn":{"id":"turn-1","status":"interrupted"}}}`)
+	writeLine(t, responseWriter, `{"id":2,"result":{}}`)
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("expected deadline exceeded, got %v", err)
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for stalled turn completion cancellation")
+		t.Fatal("timed out waiting for interrupted turn cleanup")
+	}
+}
+
+func TestStartTurnAndWaitCancellationHoldsSlotUntilInterruptResponseAndCompletion(t *testing.T) {
+	reader, responseWriter := io.Pipe()
+	t.Cleanup(func() {
+		_ = responseWriter.Close()
+	})
+	writes := &recordingWriter{}
+	client := NewClient(bufio.NewReader(reader), writes)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := client.StartTurnAndWait(ctx, "fork-1", "question")
+		errCh <- err
+	}()
+
+	writes.waitForWrites(t, 1)
+	writeLine(t, responseWriter, `{"id":1,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}`)
+	cancel()
+	writes.waitForWrites(t, 2)
+
+	readResult := make(chan error, 1)
+	go func() {
+		result, err := client.ReadThread(context.Background(), "source-thread")
+		if err == nil && result.Thread.ID != "source-thread" {
+			err = errString("unexpected source thread " + result.Thread.ID)
+		}
+		readResult <- err
+	}()
+
+	// The interrupt acknowledgement alone is insufficient: the canceled turn
+	// still owns the stream until its terminal notification arrives.
+	writeLine(t, responseWriter, `{"id":2,"result":{}}`)
+	writes.assertWriteCountStays(t, 2, 50*time.Millisecond)
+	select {
+	case err := <-errCh:
+		t.Fatalf("canceled call returned before terminal notification: %v", err)
+	default:
+	}
+
+	writeLine(t, responseWriter, `{"method":"turn/completed","params":{"threadId":"fork-1","turn":{"id":"turn-1","status":"interrupted"}}}`)
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected canceled request, got %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for canceled turn cleanup")
+	}
+
+	writes.waitForWrites(t, 3)
+	writeLine(t, responseWriter, `{"id":3,"result":{"thread":{"id":"source-thread","status":{"type":"idle"}}}}`)
+	select {
+	case err := <-readResult:
+		if err != nil {
+			t.Fatalf("client was not reusable after complete cleanup: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for queued request after cleanup")
+	}
+}
+
+func TestStartTurnAndWaitCancellationRejectsNonterminalCompletionAndPoisonsClient(t *testing.T) {
+	for _, status := range []string{"", "inProgress", "mystery"} {
+		t.Run("status_"+status, func(t *testing.T) {
+			reader, responseWriter := io.Pipe()
+			t.Cleanup(func() {
+				_ = responseWriter.Close()
+			})
+			writes := &recordingWriter{}
+			client := NewClient(bufio.NewReader(reader), writes)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			errCh := make(chan error, 1)
+			go func() {
+				_, err := client.StartTurnAndWait(ctx, "fork-1", "question")
+				errCh <- err
+			}()
+
+			writes.waitForWrites(t, 1)
+			writeLine(t, responseWriter, `{"id":1,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}`)
+			cancel()
+			writes.waitForWrites(t, 2)
+			writeLine(t, responseWriter, `{"id":2,"result":{}}`)
+			writeLine(t, responseWriter, `{"method":"turn/completed","params":{"threadId":"fork-1","turn":{"id":"turn-1","status":"`+status+`"}}}`)
+
+			select {
+			case err := <-errCh:
+				if !errors.Is(err, ErrClientUnusable) || !strings.Contains(err.Error(), "nonterminal status") {
+					t.Fatalf("expected unusable client after invalid completion %q, got %v", status, err)
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("timed out waiting for invalid cleanup result")
+			}
+			if _, err := client.ReadThread(context.Background(), "source-thread"); !errors.Is(err, ErrClientUnusable) {
+				t.Fatalf("client accepted reuse after invalid completion %q: %v", status, err)
+			}
+			writes.assertWriteCountStays(t, 2, 50*time.Millisecond)
+		})
 	}
 }
 
@@ -387,7 +635,7 @@ func TestCallCancellationReturnsWhileWaitingForOperationSlot(t *testing.T) {
 	}
 }
 
-func TestStartTurnAndWaitCancellationDoesNotWedgeFollowingRequest(t *testing.T) {
+func TestStartTurnAndWaitCancellationBeforeTurnIDPoisonsClient(t *testing.T) {
 	reader, responseWriter := io.Pipe()
 	t.Cleanup(func() {
 		_ = responseWriter.Close()
@@ -410,37 +658,24 @@ func TestStartTurnAndWaitCancellationDoesNotWedgeFollowingRequest(t *testing.T) 
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("expected deadline exceeded, got %v", err)
 		}
+		if !errors.Is(err, ErrClientUnusable) {
+			t.Fatalf("expected unrecoverable protocol state, got %v", err)
+		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("timed out waiting for first StartTurnAndWait cancellation")
 	}
 
-	readErrCh := make(chan error, 1)
-	go func() {
-		res, err := client.ReadThread(context.Background(), "thread-1")
-		if err == nil && res.Thread.ID != "thread-1" {
-			err = errString("unexpected thread response " + res.Thread.ID)
-		}
-		readErrCh <- err
-	}()
-
-	writes.waitForWrites(t, 2)
-	writeLine(t, responseWriter, `{"id":2,"result":{"thread":{"id":"thread-1","status":{"type":"idle"}}}}`)
-
-	select {
-	case err := <-readErrCh:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for request after canceled StartTurnAndWait")
+	if _, err := client.ReadThread(context.Background(), "thread-1"); !errors.Is(err, ErrClientUnusable) {
+		t.Fatalf("expected poisoned client to reject reuse, got %v", err)
 	}
+	writes.assertWriteCountStays(t, 1, 50*time.Millisecond)
 }
 
 func TestSideQuestionAskerInitializesReadsForksAndStartsTurn(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"id":1,"result":{"userAgent":"Codex","codexHome":"/tmp/codex"}}`,
 		`{"id":2,"result":{"thread":{"id":"current-thread","ephemeral":false,"cwd":"/repo","status":{"type":"idle"}}}}`,
-		`{"id":3,"result":{"thread":{"id":"fork-1","forkedFromId":"current-thread","ephemeral":true,"cwd":"/repo","status":{"type":"idle"}},"cwd":"/repo"}}`,
+		`{"id":3,"result":{"thread":{"id":"fork-1","forkedFromId":"current-thread","ephemeral":true,"cwd":"/repo","status":{"type":"idle"}},"cwd":"/repo","approvalPolicy":"never","sandbox":{"type":"readOnly"}}}`,
 		`{"id":4,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}`,
 		`{"method":"item/completed","params":{"threadId":"fork-1","turnId":"turn-1","item":{"type":"agentMessage","text":"Use the CLI first."}}}`,
 		`{"method":"turn/completed","params":{"threadId":"fork-1","turn":{"id":"turn-1","status":"completed"}}}`,
