@@ -17,8 +17,27 @@ async function previewHoverState(page, locator) {
     window.__planmaxxHoverEvents = [];
   });
   await locator.hover();
-  await page.waitForFunction(() => window.__planmaxxHoverEvents.length > 0);
+  await waitForPageCondition("preview hover event", () => window.__planmaxxHoverEvents.length > 0);
   return page.evaluate(() => window.__planmaxxHoverEvents.at(-1));
+}
+
+async function waitForPageCondition(label, pageFunction, arg, options) {
+  try {
+    await page.waitForFunction(pageFunction, arg, options);
+  } catch (error) {
+    throw new Error(`${label}: ${error}`);
+  }
+}
+
+async function waitForMeasurement(label, measure, predicate, timeout = 5_000) {
+  const deadline = Date.now() + timeout;
+  let latest;
+  while (Date.now() < deadline) {
+    latest = await measure();
+    if (predicate(latest)) return latest;
+    await page.waitForTimeout(25);
+  }
+  throw new Error(`${label}: timed out with ${JSON.stringify(latest)}`);
 }
 
 try {
@@ -185,7 +204,10 @@ try {
     });
 
     await preview.locator("body").evaluate(() => window.scrollTo({ top: 180, behavior: "auto" }));
-    await page.waitForFunction(() => window.__planmaxxPreviewPositions.length > 0);
+    await waitForPageCondition(
+      "Preview scroll position after shallow scroll",
+      () => window.__planmaxxPreviewPositions.length > 0,
+    );
     const shallowPreviewPosition = await page.evaluate(() => window.__planmaxxPreviewPositions.at(-1));
     if (!shallowPreviewPosition?.line) {
       throw new Error(`Preview did not publish its first visible rendered element: ${JSON.stringify(shallowPreviewPosition)}`);
@@ -217,7 +239,7 @@ try {
     await headingTarget.evaluate((element) => element.scrollIntoView({ block: "center" }));
     const inlineHeadingCard = page.locator(".html-preview-anchored-overlay").filter({ hasText: "Existing heading element comment" });
     await inlineHeadingCard.waitFor();
-    const inlinePlacement = await Promise.all([
+    const measureInlinePlacement = () => Promise.all([
       headingTarget.evaluate((element) => {
         const rect = element.getBoundingClientRect();
         return { top: rect.top, bottom: rect.bottom };
@@ -232,6 +254,16 @@ try {
         return { top: rect.top, bottom: rect.bottom };
       }),
     ]);
+    const inlinePlacement = await waitForMeasurement(
+      "HTML inline comment placement after Preview scroll",
+      measureInlinePlacement,
+      ([headingRect, inlineCardRect, inlineFrameRect]) =>
+        inlineCardRect.shellTop !== undefined &&
+        inlineCardRect.shellBottom !== undefined &&
+        inlineCardRect.top >= inlineFrameRect.top + headingRect.bottom - 3 &&
+        inlineCardRect.top >= inlineCardRect.shellTop &&
+        inlineCardRect.bottom <= inlineCardRect.shellBottom + 1,
+    );
     const [headingRect, inlineCardRect, inlineFrameRect] = inlinePlacement;
     if (
       inlineCardRect.shellTop === undefined ||
@@ -256,7 +288,7 @@ try {
       page.evaluate(() => window.scrollY),
     ]);
     await page.mouse.wheel(0, 120);
-    await page.waitForFunction((previous) => {
+    await waitForPageCondition("wheel forwarding into HTML Preview", (previous) => {
       const frame = document.querySelector(".html-plan-preview");
       return Boolean(frame && previous >= 0);
     }, wheelBefore[0]);
@@ -331,7 +363,7 @@ try {
     }
     const headSourceRow = page.locator("[data-document-line]").filter({ hasText: "<head>" }).first();
     const mainSourceRow = page.locator("[data-document-line]").filter({ hasText: "<main>" }).first();
-    await page.waitForFunction(() =>
+    await waitForPageCondition("Shiki-highlighted HTML Source", () =>
       [...document.querySelectorAll("[data-document-line]")].some(
         (row) => row.textContent?.includes("<main>") && row.querySelectorAll('.line-content span[style*="color"]').length > 1,
       ),
@@ -442,7 +474,7 @@ try {
       throw new Error(`text range selection did not suppress the element hover target: ${JSON.stringify(selectionHoverState)}`);
     }
     const previewDraftField = previewComposer.getByPlaceholder("Leave a comment for this selection...");
-    await page.waitForFunction(() =>
+    await waitForPageCondition("HTML range composer autofocus", () =>
       document.activeElement?.getAttribute("placeholder") === "Leave a comment for this selection...",
     );
     await previewDraftField.fill("Draft text must survive a new HTML selection");
@@ -459,7 +491,7 @@ try {
       selection?.addRange(range);
       item.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
     });
-    await page.waitForFunction(() => {
+    await waitForPageCondition("HTML draft preservation after selection retarget", () => {
       const field = document.querySelector('textarea[placeholder="Leave a comment for this selection..."]');
       return field?.value === "Draft text must survive a new HTML selection" && document.activeElement === field;
     });
@@ -508,7 +540,7 @@ try {
     }
     const railAnchorBeforeScroll = alignedListComment[1].anchorY;
     await preview.locator("body").evaluate(() => window.scrollBy({ top: 28, behavior: "auto" }));
-    await page.waitForFunction((previousAnchor) => {
+    await waitForPageCondition("alongside HTML anchor reposition after Preview scroll", (previousAnchor) => {
       const card = [...document.querySelectorAll(".html-preview-rail-comment")].find((element) => element.textContent?.includes("Existing list comment"));
       const anchor = card ? Number.parseFloat(getComputedStyle(card).getPropertyValue("--html-comment-anchor-y")) : NaN;
       return Number.isFinite(anchor) && Math.abs(anchor - previousAnchor) > 8;
@@ -555,7 +587,7 @@ try {
     }
     await page.waitForTimeout(800);
     await listRailCard.locator(".thread-card-heading").click();
-    await page.waitForFunction(() => {
+    await waitForPageCondition("alongside comment pulse after card click", () => {
       const card = [...document.querySelectorAll(".html-preview-rail-comment .thread")].find((element) => element.textContent?.includes("Existing list comment"));
       return card?.classList.contains("is-link-ping");
     });
@@ -583,7 +615,10 @@ try {
     const sourceListCard = page.locator(".plan-comment-rail .thread").filter({ hasText: "Existing list comment" });
     await sourceListCard.waitFor();
     await sourceListCard.locator(".thread-card-heading").click();
-    await page.waitForFunction(() => document.querySelector(".line-row.is-link-ping") !== null);
+    await waitForPageCondition(
+      "Source highlight pulse after alongside card click",
+      () => document.querySelector(".line-row.is-link-ping") !== null,
+    );
     const sourceListTarget = page.locator("[data-document-line]").filter({ hasText: "Ship &amp; iterate carefully." }).first();
     const sourceListPosition = await sourceListTarget.evaluate((row) => {
       const rect = row.getBoundingClientRect();
