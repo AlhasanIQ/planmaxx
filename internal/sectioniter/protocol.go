@@ -12,6 +12,29 @@ import (
 )
 
 func ParseResponse(raw string) (ParsedResponse, error) {
+	var root struct {
+		XMLName xml.Name
+	}
+	if err := decodeSingleXMLDocument(raw, &root); err != nil {
+		return ParsedResponse{}, err
+	}
+	if root.XMLName.Local == "planmaxx_thread_reply" {
+		var reply struct {
+			XMLName  xml.Name `xml:"planmaxx_thread_reply"`
+			Version  string   `xml:"version,attr"`
+			Revision string   `xml:"revision,attr"`
+			Message  string   `xml:"message"`
+		}
+		if err := decodeSingleXMLDocument(raw, &reply); err != nil {
+			return ParsedResponse{}, err
+		}
+		message := strings.TrimSpace(reply.Message)
+		if reply.Version != "1" || reply.Revision == "" || message == "" {
+			return ParsedResponse{}, errors.New("thread reply protocol requires version, revision, and message")
+		}
+		return ParsedResponse{RevisionID: reply.Revision, ThreadReply: message}, nil
+	}
+
 	var wire struct {
 		XMLName      xml.Name `xml:"planmaxx_proposal"`
 		Version      string   `xml:"version,attr"`
@@ -27,15 +50,8 @@ func ParseResponse(raw string) (ParsedResponse, error) {
 			Content  *string `xml:"content"`
 		} `xml:"replacement"`
 	}
-	decoder := xml.NewDecoder(strings.NewReader(raw))
-	if err := decoder.Decode(&wire); err != nil {
-		return ParsedResponse{}, fmt.Errorf("section iteration response is not valid XML: %w", err)
-	}
-	if token, err := decoder.Token(); err != io.EOF {
-		if err != nil {
-			return ParsedResponse{}, fmt.Errorf("section iteration response has invalid trailing content: %w", err)
-		}
-		return ParsedResponse{}, fmt.Errorf("section iteration response has content outside the XML document: %v", token)
+	if err := decodeSingleXMLDocument(raw, &wire); err != nil {
+		return ParsedResponse{}, err
 	}
 	if wire.XMLName.Local != "planmaxx_proposal" || wire.Version != "1" || wire.Revision == "" || strings.TrimSpace(wire.Summary) == "" || len(wire.Replacements) == 0 {
 		return ParsedResponse{}, errors.New("protocol requires proposal, revision, summary, and hunks")
@@ -59,4 +75,18 @@ func ParseResponse(raw string) (ParsedResponse, error) {
 		result.Hunks = append(result.Hunks, patches.Hunk{Target: h.Target, Before: h.Before, Expected: h.Expected, After: h.After, Content: *h.Content, StartHint: start, EndHint: end})
 	}
 	return result, nil
+}
+
+func decodeSingleXMLDocument(raw string, target any) error {
+	decoder := xml.NewDecoder(strings.NewReader(raw))
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("section iteration response is not valid XML: %w", err)
+	}
+	if token, err := decoder.Token(); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("section iteration response has invalid trailing content: %w", err)
+		}
+		return fmt.Errorf("section iteration response has content outside the XML document: %v", token)
+	}
+	return nil
 }

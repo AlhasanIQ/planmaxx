@@ -1,5 +1,5 @@
 import type { SideQuestionContext } from "./lib/selectionContext";
-import type { Anchor, ChangeView, Digest, Revision, SectionProposal, Session, SideAnswer, Thread, ThreadIntent } from "./types";
+import type { Anchor, ChangeView, Digest, IterationOperation, Revision, Session, SideAnswer, Thread, ThreadIntent } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, public status: number) {
@@ -110,14 +110,21 @@ export const api = {
       body: "{}",
     }),
   proposeSection: (threadId: string | undefined, anchor: Anchor, instruction: string) =>
-    request<SectionProposal>("/api/revisions/propose-section", {
+    request<IterationOperation>("/api/iterations/section", {
       method: "POST",
       body: JSON.stringify({ threadId, anchor, instruction }),
     }),
   proposeReview: (digest: Digest) =>
-    request<SectionProposal>("/api/revisions/propose-review", {
+    request<IterationOperation>("/api/iterations/review", {
       method: "POST",
       body: JSON.stringify(digest),
+    }),
+  getOperation: (operationId: string) =>
+    request<IterationOperation>(`/api/operations/${encodeURIComponent(operationId)}`),
+  cancelOperation: (operationId: string) =>
+    request<IterationOperation>(`/api/operations/${encodeURIComponent(operationId)}/cancel`, {
+      method: "POST",
+      body: "{}",
     }),
   applyProposal: (proposalId: string) =>
     request<Revision>(`/api/revisions/proposals/${encodeURIComponent(proposalId)}/apply`, {

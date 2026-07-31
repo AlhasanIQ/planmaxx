@@ -1,21 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import { anchorForCommentSelection } from "../src/lib/commentSelection";
+import { anchorForCommentSelection, sourceBoundariesForRenderedText } from "../src/lib/commentSelection";
 
 describe("anchorForCommentSelection", () => {
-  test("uses complete rows for a table selection so source Markdown offsets cannot drift", () => {
-    expect(anchorForCommentSelection(6, 4, 6, 10, true)).toEqual({ startLine: 6, endLine: 6 });
-  });
-
-  test("uses complete rows when a selection crosses a table boundary", () => {
-    expect(anchorForCommentSelection(5, 2, 7, 8, true)).toEqual({ startLine: 5, endLine: 7 });
-  });
-
-  test("retains exact character coordinates for a code-block selection", () => {
-    expect(anchorForCommentSelection(11, 6, 11, 9, false)).toEqual({
+  test("retains exact character coordinates", () => {
+    expect(anchorForCommentSelection(11, 6, 11, 9)).toEqual({
       startLine: 11,
       startChar: 6,
       endLine: 11,
       endChar: 9,
     });
+  });
+});
+
+describe("sourceBoundariesForRenderedText", () => {
+  test("skips Markdown formatting around rendered text", () => {
+    expect(sourceBoundariesForRenderedText("**Alpha**", "Alpha")).toEqual([2, 3, 4, 5, 6, 7]);
+  });
+
+  test("includes escaped punctuation in the selected source range", () => {
+    expect(sourceBoundariesForRenderedText("x\\|y", "x|y")).toEqual([0, 1, 3, 4]);
+  });
+
+  test("includes a complete HTML entity in the selected source range", () => {
+    expect(sourceBoundariesForRenderedText("A &amp; B", "A & B")).toEqual([0, 1, 2, 7, 8, 9]);
   });
 });

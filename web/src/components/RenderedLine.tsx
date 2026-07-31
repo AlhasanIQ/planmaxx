@@ -71,7 +71,18 @@ function inlineNodeToReact(node: ChildNode, key: string): React.ReactNode {
     case "em": return <em key={key}>{children}</em>;
     case "strong": return <strong key={key}>{children}</strong>;
     case "span":
-      return <span key={key} className={element.getAttribute("class") ?? undefined} style={spanStyle(element.getAttribute("style"))}>{children}</span>;
+      return (
+        <span
+          key={key}
+          className={element.getAttribute("class") ?? undefined}
+          data-source-length={element.getAttribute("data-source-length") ?? undefined}
+          data-source-start={element.getAttribute("data-source-start") ?? undefined}
+          data-source-text={element.getAttribute("data-source-text") ?? undefined}
+          style={spanStyle(element.getAttribute("style"))}
+        >
+          {children}
+        </span>
+      );
     default: return <span key={key}>{children}</span>;
   }
 }

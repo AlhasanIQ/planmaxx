@@ -62,6 +62,9 @@ describe("renderPlanLines", () => {
     expect(lines).toHaveLength(4);
     expect(lines.map((line) => line.kind)).toEqual(["table-header", "table-divider", "table-row", "table-row"]);
     expect(lines[0].html).toContain("plan-table-row is-header");
+    expect(lines[0].html).toContain('data-source-length="16"');
+    expect(lines[0].html).toContain('data-source-start="2"');
+    expect(lines[0].html).toContain('data-source-text="Name"');
     expect(lines[0].html).toContain("is-left");
     expect(lines[2].html).toContain("<strong>Alpha</strong>");
     expect(lines[2].html).toContain("is-right");

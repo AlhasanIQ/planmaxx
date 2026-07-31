@@ -137,7 +137,7 @@ func Build(input BuildInput) ChangeView {
 			view.Rows[index].ClusterID = cluster.ID
 		}
 	}
-	view.ThreadPlacements = placeThreads(input.Mode, input.Threads, view.Rows, view.Clusters)
+	view.ThreadPlacements = placeThreads(input.Mode, input.TargetID, input.Threads, view.Rows, view.Clusters)
 	if input.Mode != ModeRevision || input.IsDirect {
 		view.FeedbackPlacements = placeFeedback(view.Feedback, view.Rows, view.Clusters)
 	}
@@ -248,7 +248,7 @@ func stopAtRow(stop ReviewStop, rowIndex int, view ChangeView) ReviewStop {
 // otherwise immutable revision ChangeView. This keeps cached revision diffs
 // independent from comments added after the comparison was first requested.
 func WithThreadPlacements(view ChangeView, threads []session.Thread) ChangeView {
-	view.ThreadPlacements = placeThreads(view.Mode, threads, view.Rows, view.Clusters)
+	view.ThreadPlacements = placeThreads(view.Mode, view.TargetID, threads, view.Rows, view.Clusters)
 	return view
 }
 
@@ -311,13 +311,13 @@ func buildClusters(rows []ChangeRow) []ChangeCluster {
 	return clusters
 }
 
-func placeThreads(mode string, threads []session.Thread, rows []ChangeRow, clusters []ChangeCluster) []ThreadPlacement {
+func placeThreads(mode, targetID string, threads []session.Thread, rows []ChangeRow, clusters []ChangeCluster) []ThreadPlacement {
 	placements := make([]ThreadPlacement, 0, len(threads))
 	for _, thread := range threads {
 		rowIndex := -1
 		for _, cluster := range clusters {
 			clusterStart, clusterEnd := cluster.BeforeStart, cluster.BeforeEnd
-			if mode == ModeRevision {
+			if mode == ModeRevision || (mode == ModeProposal && thread.RevisionID == targetID) {
 				clusterStart, clusterEnd = cluster.AfterStart, cluster.AfterEnd
 			}
 			if overlaps(thread.Anchor.StartLine, thread.Anchor.EndLine, clusterStart, clusterEnd) {
@@ -328,7 +328,7 @@ func placeThreads(mode string, threads []session.Thread, rows []ChangeRow, clust
 			for index, row := range rows {
 				line := row.Before
 				valid := row.Kind != plandiff.KindAdd
-				if mode == ModeRevision {
+				if mode == ModeRevision || (mode == ModeProposal && thread.RevisionID == targetID) {
 					line, valid = row.After, row.Kind != plandiff.KindRemove
 				}
 				if valid && line == thread.Anchor.EndLine {

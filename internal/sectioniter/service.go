@@ -51,7 +51,9 @@ func (s Service) Propose(ctx context.Context, req Request) (session.SectionPropo
 	if s.currentThreadID == "" || s.client == nil {
 		return session.SectionProposalInput{}, ErrUnavailable
 	}
-	prompt := prompts.SectionIteration(prompts.SectionIterationInput{Protocol: req.Protocol, Format: req.Format})
+	prompt := prompts.SectionIteration(prompts.SectionIterationInput{
+		Protocol: req.Protocol, Format: req.Format, AllowThreadReply: req.ThreadID != "",
+	})
 	raw, err := s.client.AskPrompt(ctx, prompt)
 	if err != nil {
 		return session.SectionProposalInput{}, err
@@ -85,6 +87,15 @@ func BuildProposal(req Request, raw string) (session.SectionProposalInput, error
 	}
 	if parsed.RevisionID != req.RevisionID {
 		return session.SectionProposalInput{}, fmt.Errorf("section iteration response targets revision %q, expected %q", parsed.RevisionID, req.RevisionID)
+	}
+	if parsed.ThreadReply != "" {
+		if req.ThreadID == "" {
+			return session.SectionProposalInput{}, errors.New("section iteration response cannot reply without a target thread")
+		}
+		return session.SectionProposalInput{
+			ThreadID: req.ThreadID, Anchor: req.Anchor, Instruction: req.ReviewerInstruction,
+			RawResponse: raw, AgentReply: parsed.ThreadReply,
+		}, nil
 	}
 	if len(parsed.Hunks) > 0 {
 		resolved, err := patches.Resolve(req.Plan, parsed.Hunks)

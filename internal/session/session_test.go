@@ -31,6 +31,57 @@ func TestSessionStoresThreadedComments(t *testing.T) {
 	}
 }
 
+func TestSessionStoresAgentReplyWithDistinctAuthor(t *testing.T) {
+	s := New("plan-1", "# Plan")
+	thread := s.AddThread(Anchor{StartLine: 1, EndLine: 1}, "What does this mean?")
+	if err := s.AddAgentReplyChecked(thread.ID, "It describes the rollout default."); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Threads[0].Messages[1]; got.Author != "assistant" || got.Body != "It describes the rollout default." {
+		t.Fatalf("unexpected agent reply %+v", got)
+	}
+	selection := SelectContext(*s, ContextOptions{ExplicitThreadID: thread.ID})
+	if got := selection.InstructionMessages(); len(got) != 1 || got[0] != "What does this mean?" {
+		t.Fatalf("agent reply was reused as reviewer instruction: %+v", got)
+	}
+}
+
+func TestProposalTargetThreadsFollowApplyAndDiscard(t *testing.T) {
+	t.Run("apply", func(t *testing.T) {
+		s := New("plan-1", "old")
+		proposal := s.CreateSectionProposal(SectionProposalInput{
+			Anchor: Anchor{StartLine: 1, EndLine: 1}, ProposedPlan: "new", ProposedSection: "new",
+		})
+		thread, err := s.AddThreadWithIntentForRevision(proposal.ID, Anchor{StartLine: 1, EndLine: 1}, "Polish this later", "new", ThreadIntentPrivate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		revision, err := s.ApplyProposalChecked(proposal.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := s.Threads[0]; got.ID != thread.ID || got.RevisionID != revision.ID || got.Lifecycle() != ThreadLifecycleActive {
+			t.Fatalf("proposal thread did not follow accepted revision: %+v", got)
+		}
+	})
+
+	t.Run("discard", func(t *testing.T) {
+		s := New("plan-1", "old")
+		proposal := s.CreateSectionProposal(SectionProposalInput{
+			Anchor: Anchor{StartLine: 1, EndLine: 1}, ProposedPlan: "new", ProposedSection: "new",
+		})
+		if _, err := s.AddThreadWithIntentForRevision(proposal.ID, Anchor{StartLine: 1, EndLine: 1}, "Do not keep", "new", ThreadIntentInstruction); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DiscardProposalChecked(proposal.ID); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.Threads) != 0 {
+			t.Fatalf("discard retained proposal-only comments: %+v", s.Threads)
+		}
+	})
+}
+
 func TestSessionDoesNotReuseThreadOrSideAnswerIDs(t *testing.T) {
 	s := New("plan-1", "# Plan")
 	first := s.AddThread(Anchor{StartLine: 1, EndLine: 1}, "First")

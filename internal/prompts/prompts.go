@@ -38,8 +38,9 @@ type sideQuestionTemplateData struct {
 }
 
 type SectionIterationInput struct {
-	Protocol string
-	Format   planformat.Format
+	Protocol         string
+	Format           planformat.Format
+	AllowThreadReply bool
 }
 
 type sectionIterationTemplateData struct {
@@ -55,8 +56,9 @@ type reviewIterationTemplateData struct {
 }
 
 type protocolDocumentationData struct {
-	Mode   string
-	Format planformat.Format
+	Mode             string
+	Format           planformat.Format
+	AllowThreadReply bool
 }
 
 func ApprovedHandoff(plan string, digest string, reviewContext string, noReviewItems bool, format planformat.Format) string {
@@ -94,8 +96,12 @@ func SideQuestion(question string, filePath string, reference string, selectedTe
 func SectionIteration(input SectionIterationInput) string {
 	input.Format = planformat.Normalize(input.Format, "")
 	return render("section_iteration.gotmpl", sectionIterationTemplateData{
-		Protocol:              input.Protocol,
-		ProtocolDocumentation: protocolDocumentation("section_iteration", input.Format),
+		Protocol: input.Protocol,
+		ProtocolDocumentation: render("protocol.gotmpl", protocolDocumentationData{
+			Mode:             "section_iteration",
+			Format:           input.Format,
+			AllowThreadReply: input.AllowThreadReply,
+		}),
 	})
 }
 

@@ -43,8 +43,8 @@ async function waitForMeasurement(label, measure, predicate, timeout = 5_000) {
 try {
   await page.goto(url, { waitUntil: "networkidle" });
   if (mode === "standalone") {
-    await page.getByRole("banner").getByText("Manual review", { exact: true }).waitFor();
-    await page.getByText("Assisted actions off", { exact: true }).waitFor();
+    await page.getByRole("banner").getByText("Manual review only", { exact: true }).waitFor();
+    await page.getByText("Assistance off", { exact: true }).waitFor();
     if (!(await page.getByRole("button", { name: "Iterate", exact: true }).isDisabled())) {
       throw new Error("whole-plan iteration is enabled without an attached agent");
     }
@@ -52,7 +52,7 @@ try {
     const refine = page.getByLabel("Refine", { exact: true });
     await refine.waitFor();
     if (!(await refine.isDisabled())) throw new Error("proposal refinement is enabled without an attached agent");
-    if (!(await page.getByRole("button", { name: "Iterate again" }).isDisabled())) {
+    if (!(await page.getByRole("button", { name: "Refine proposal", exact: true }).isDisabled())) {
       throw new Error("proposal re-iteration is enabled without an attached agent");
     }
     if (await page.getByRole("button", { name: "Discard" }).isDisabled()) {
@@ -670,7 +670,7 @@ try {
     await page.getByText("Pending proposal", { exact: true }).waitFor();
     if (await page.getByRole("button", { name: "Source" }).getAttribute("aria-pressed") !== "true") throw new Error("HTML proposal did not switch to source comparison");
     await page.getByPlaceholder("Ask for a narrower, clearer, or more specific version...").fill("Mention rollback");
-    await page.getByRole("button", { name: "Iterate again" }).click();
+    await page.getByRole("button", { name: "Refine proposal", exact: true }).click();
     await page.getByText("Added rollback emphasis.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Apply as new revision" }).click();
     await page.getByText("Showing changes: rev-1 → rev-2", { exact: false }).waitFor();
@@ -680,6 +680,36 @@ try {
     await page.getByText("Existing table-row comment", { exact: true }).waitFor();
     if (await page.locator(".line-row.is-table-row").count() < 2) throw new Error("Markdown table did not render as table rows");
     if (await page.getByText("flowchart LR", { exact: false }).count() !== 1) throw new Error("Markdown diagram code block disappeared");
+
+    const tableCell = page.getByText("Rollback", { exact: true }).first();
+    await tableCell.evaluate((cell) => {
+      const text = cell.firstChild;
+      if (!text) throw new Error("Markdown table cell has no selectable text");
+      const range = document.createRange();
+      range.setStart(text, 0);
+      range.setEnd(text, "Roll".length);
+      const selection = document.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      cell.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    });
+    const tableComposer = page.getByPlaceholder("Leave a comment for this selection...");
+    await tableComposer.waitFor();
+    await tableComposer.fill("Table range regression");
+    const [tableRequest] = await Promise.all([
+      page.waitForRequest((request) => request.url().endsWith("/api/threads") && request.method() === "POST"),
+      page.getByRole("button", { name: "Add comment", exact: true }).click(),
+    ]);
+    const tablePayload = tableRequest.postDataJSON();
+    if (
+      tablePayload.selectedText !== "Roll" ||
+      tablePayload.anchor?.startLine !== 15 ||
+      tablePayload.anchor?.startChar !== 2 ||
+      tablePayload.anchor?.endLine !== 15 ||
+      tablePayload.anchor?.endChar !== 6
+    ) {
+      throw new Error(`Markdown table selection did not retain its exact source range: ${JSON.stringify(tablePayload)}`);
+    }
 
     const rolloutLine = page.locator('[data-document-line="8"] .line-content');
     await rolloutLine.evaluate((line) => {
@@ -767,7 +797,7 @@ try {
     await page.getByRole("button", { name: "Iterate section" }).click();
     await page.getByText("Pending proposal", { exact: true }).waitFor();
     await page.getByPlaceholder("Ask for a narrower, clearer, or more specific version...").fill("Add a rollback gate");
-    await page.getByRole("button", { name: "Iterate again" }).click();
+    await page.getByRole("button", { name: "Refine proposal", exact: true }).click();
     await page.getByText("Added rollback wording.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Apply as new revision" }).click();
     await page.getByText("Showing changes: rev-1 → rev-2", { exact: false }).waitFor();
@@ -818,6 +848,26 @@ try {
   const addedTableRows = page.locator(".line-row.is-proposal-add.is-table-row");
   if (await addedTableRows.count() < 2) {
     throw new Error("added Markdown table rows were not rendered as table rows");
+  }
+  const removedProposalRows = page.locator(".line-row.is-proposal-remove");
+  if (await removedProposalRows.locator('button[aria-label^="Comment on line"]').count() !== 0) {
+    throw new Error("removed proposal rows still expose comment buttons");
+  }
+  const addedProposalFeedback = page.locator(".line-row.is-proposal-add").first().getByRole("button", { name: /Comment on line/ });
+  if (!(await addedProposalFeedback.isEnabled())) {
+    throw new Error("added proposal row comment button is disabled");
+  }
+  await addedProposalFeedback.click();
+  const proposalFeedback = page.getByPlaceholder("Leave a comment for this selection...");
+  await proposalFeedback.waitFor();
+  if (!(await proposalFeedback.isEnabled())) {
+    throw new Error("proposal comment composer is disabled");
+  }
+  await proposalFeedback.fill("Keep this proposed line concise");
+  await page.getByRole("button", { name: "Add comment", exact: true }).click();
+  await page.getByText("Keep this proposed line concise", { exact: true }).waitFor();
+  if (!(await page.getByRole("button", { name: "Refine proposal (1)", exact: true }).isEnabled())) {
+    throw new Error("saved proposal feedback is not available for batched refinement");
   }
 
   for (const comment of ["replace both lines", "overlapping replacement"]) {

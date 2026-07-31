@@ -49,6 +49,8 @@ type Server struct {
 	sideQuestionTimeout time.Duration
 	sectionIterations   sectioniter.Service
 	agent               AgentInfo
+	iterationOperation  *iterationOperation
+	iterationSequence   uint64
 	revisionStore       *revisions.Store
 	revisionPlanID      string
 	bundleStore         *BundleStore
@@ -86,6 +88,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/side-answers/", s.handleSideAnswerAction)
 	mux.HandleFunc("/api/side-questions", s.handleSideQuestion)
 	mux.HandleFunc("/api/digest/draft", s.handleDigestDraft)
+	mux.HandleFunc("/api/iterations/review", s.handleStartReviewIteration)
+	mux.HandleFunc("/api/iterations/section", s.handleStartSectionIteration)
+	mux.HandleFunc("/api/operations/", s.handleOperationAction)
 	mux.HandleFunc("/api/revisions/propose-review", s.handleProposeReview)
 	mux.HandleFunc("/api/revisions/propose-section", s.handleProposeSection)
 	mux.HandleFunc("/api/revisions/proposals/", s.handleRevisionProposalAction)
@@ -108,6 +113,7 @@ func (s *Server) WithOrphanTimeout(timeout time.Duration) *Server {
 // hijacked WebSocket connections during Server.Shutdown, so the CLI calls this
 // before shutting down its HTTP server.
 func (s *Server) Close() {
+	s.cancelActiveIteration()
 	s.presence.Close()
 }
 
@@ -376,7 +382,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, buildClientState(*s.session, s.finished, s.agent))
+	writeJSON(w, buildClientStateWithOperation(*s.session, s.finished, s.agent, snapshotIterationOperation(s.iterationOperation)))
 }
 
 func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
@@ -426,30 +432,44 @@ func (s *Server) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		writeSourceSyncError(w, err)
 		return
 	}
-	if s.session.PendingProposal != nil {
+	if s.iterationRunningLocked() {
 		s.mu.Unlock()
-		writeError(w, http.StatusConflict, "apply or discard the pending proposal before changing review feedback")
+		writeError(w, http.StatusConflict, "wait for or stop the active iteration before changing review feedback")
 		return
 	}
 	request.Body = strings.TrimSpace(request.Body)
-	if err := validateThreadRequest(request, s.session.Plan); err != nil {
+	targetRevisionID := s.session.CurrentRevisionID
+	targetPlan := s.session.Plan
+	if proposal := s.session.PendingProposal; proposal != nil {
+		if proposal.Obsolete {
+			s.mu.Unlock()
+			writeError(w, http.StatusConflict, "discard the stale proposal before changing review feedback")
+			return
+		}
+		targetRevisionID = proposal.ID
+		targetPlan = proposal.ProposedPlan
+	}
+	if err := validateThreadRequest(request, targetPlan); err != nil {
 		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "invalid thread json")
 		return
 	}
 	before := cloneSession(*s.session)
+	beforeOperation := cloneIterationOperation(s.iterationOperation)
 	if request.Intent == "" {
 		request.Intent = session.ThreadIntentInstruction
 	}
-	thread, err := s.session.AddThreadWithIntent(request.Anchor, request.Body, request.SelectedText, request.Intent)
+	thread, err := s.session.AddThreadWithIntentForRevision(targetRevisionID, request.Anchor, request.Body, request.SelectedText, request.Intent)
 	if err != nil {
 		s.mu.Unlock()
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	s.clearTerminalIterationLocked()
 	if err := s.persistLocked(); err != nil {
 		if !autosaveWasCommitted(err) {
 			*s.session = before
+			s.iterationOperation = beforeOperation
 			s.mu.Unlock()
 			writePersistenceError(w, err)
 			return
@@ -536,6 +556,11 @@ func (s *Server) handleSideQuestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "apply or discard the pending proposal before asking a side question")
 		return
 	}
+	if s.iterationRunningLocked() {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "wait for or stop the active iteration before asking a side question")
+		return
+	}
 	var thread session.Thread
 	var ok bool
 	for _, candidate := range s.session.Threads {
@@ -579,6 +604,11 @@ func (s *Server) handleSideQuestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "apply or discard the pending proposal before asking a side question")
 		return
 	}
+	if s.iterationRunningLocked() {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "iteration started while the side question was running")
+		return
+	}
 	if err := s.syncExternalSourceLocked(); err != nil {
 		s.mu.Unlock()
 		writeSourceSyncError(w, err)
@@ -590,6 +620,7 @@ func (s *Server) handleSideQuestion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	before := cloneSession(*s.session)
+	beforeOperation := cloneIterationOperation(s.iterationOperation)
 	sideAnswer, err := s.session.AddSideAnswerChecked(req.ThreadID, req.Question, answer)
 	if err != nil {
 		*s.session = before
@@ -597,9 +628,11 @@ func (s *Server) handleSideQuestion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
+	s.clearTerminalIterationLocked()
 	if err := s.persistLocked(); err != nil {
 		if !autosaveWasCommitted(err) {
 			*s.session = before
+			s.iterationOperation = beforeOperation
 			s.mu.Unlock()
 			writePersistenceError(w, err)
 			return
@@ -683,7 +716,7 @@ func (s *Server) handleReplyThread(w http.ResponseWriter, r *http.Request, threa
 	}
 
 	s.mutateSession(w, func() (any, error) {
-		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+		if err := rejectLockedThreadMutation(s.session, threadID); err != nil {
 			return nil, err
 		}
 		if err := s.session.AddReplyChecked(threadID, request.Body); err != nil {
@@ -700,7 +733,7 @@ func (s *Server) handleDeleteThread(w http.ResponseWriter, threadID string) {
 	}
 
 	s.mutateSession(w, func() (any, error) {
-		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+		if err := rejectLockedThreadMutation(s.session, threadID); err != nil {
 			return nil, err
 		}
 		if !s.session.DeleteThread(threadID) {
@@ -723,7 +756,7 @@ func (s *Server) handleMoveThread(w http.ResponseWriter, r *http.Request, thread
 	}
 
 	s.mutateSession(w, func() (any, error) {
-		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+		if err := rejectLockedThreadMutation(s.session, threadID); err != nil {
 			return nil, err
 		}
 		if !s.session.MoveThread(threadID, position) {
@@ -801,10 +834,16 @@ func (s *Server) handleEditThread(w http.ResponseWriter, r *http.Request, thread
 	}
 
 	s.mutateSession(w, func() (any, error) {
-		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+		if err := rejectLockedThreadMutation(s.session, threadID); err != nil {
 			return nil, err
 		}
-		if err := validateAnchor(request.Anchor, s.session.Plan); err != nil {
+		targetPlan := s.session.Plan
+		if proposal := s.session.PendingProposal; proposal != nil {
+			if thread, ok := findThread(*s.session, threadID); ok && thread.RevisionID == proposal.ID {
+				targetPlan = proposal.ProposedPlan
+			}
+		}
+		if err := validateAnchor(request.Anchor, targetPlan); err != nil {
 			return nil, responseError{status: http.StatusBadRequest, message: "invalid thread edit json"}
 		}
 		if err := s.session.EditThreadChecked(threadID, request.Anchor, request.Body, request.SelectedText); err != nil {
@@ -828,7 +867,7 @@ func (s *Server) handleThreadKind(w http.ResponseWriter, r *http.Request, thread
 	request.Kind = strings.TrimSpace(request.Kind)
 
 	s.mutateSession(w, func() (any, error) {
-		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+		if err := rejectLockedThreadMutation(s.session, threadID); err != nil {
 			return nil, err
 		}
 		if !s.session.SetThreadKind(threadID, request.Kind) {
@@ -852,7 +891,7 @@ func (s *Server) handleThreadIntent(w http.ResponseWriter, r *http.Request, thre
 		return
 	}
 	s.mutateSession(w, func() (any, error) {
-		if err := rejectPendingFeedbackMutation(s.session); err != nil {
+		if err := rejectLockedThreadMutation(s.session, threadID); err != nil {
 			return nil, err
 		}
 		if err := s.session.SetThreadIntent(threadID, request.Intent); err != nil {
@@ -1024,24 +1063,59 @@ func (s *Server) handleProposeReview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) proposeSection(w http.ResponseWriter, r *http.Request, request proposeSectionRequest, lifecycle proposalLifecycle) {
-	request.Instruction = strings.TrimSpace(request.Instruction)
-
-	s.mu.Lock()
-	if s.finished {
-		s.mu.Unlock()
-		writeError(w, http.StatusConflict, "review already completed")
+	prepared, err := s.prepareProposal(request, lifecycle)
+	if err != nil {
+		writeProposalError(w, err)
 		return
 	}
-	if err := s.syncExternalSourceLocked(); err != nil {
-		s.mu.Unlock()
-		writeSourceSyncError(w, err)
+	ctx := r.Context()
+	if s.sideQuestionTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.sideQuestionTimeout)
+		defer cancel()
+	}
+	result, err := s.executePreparedProposal(ctx, prepared)
+	if err != nil {
+		writeProposalError(w, err)
 		return
+	}
+	if result.Proposal != nil {
+		writeJSON(w, result.Proposal)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "answered", "threadId": result.ThreadID})
+}
+
+type preparedProposal struct {
+	request               sectioniter.Request
+	lifecycle             proposalLifecycle
+	baseRevisionID        string
+	basePendingProposalID string
+	baseFeedback          string
+	previousProposedPlan  string
+}
+
+func (s *Server) prepareProposal(request proposeSectionRequest, lifecycle proposalLifecycle) (preparedProposal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.iterationRunningLocked() {
+		return preparedProposal{}, responseError{status: http.StatusConflict, message: "wait for or stop the active iteration before starting another"}
+	}
+	return s.prepareProposalLocked(request, lifecycle)
+}
+
+func (s *Server) prepareProposalLocked(request proposeSectionRequest, lifecycle proposalLifecycle) (preparedProposal, error) {
+	request.Instruction = strings.TrimSpace(request.Instruction)
+
+	if s.finished {
+		return preparedProposal{}, responseError{status: http.StatusConflict, message: "review already completed"}
+	}
+	if err := s.syncExternalSourceLocked(); err != nil {
+		return preparedProposal{}, err
 	}
 	if lifecycle.kind == session.ProposalKindReview {
 		if s.session.PendingProposal != nil {
-			s.mu.Unlock()
-			writeError(w, http.StatusConflict, "apply or discard the pending proposal before iterating the final review")
-			return
+			return preparedProposal{}, responseError{status: http.StatusConflict, message: "apply or discard the pending proposal before iterating the final review"}
 		}
 		authoritative := digest.DraftFromState(*s.session)
 		if lifecycle.reviewDigest != nil && strings.TrimSpace(lifecycle.reviewDigest.Summary) != "" {
@@ -1060,26 +1134,18 @@ func (s *Server) proposeSection(w http.ResponseWriter, r *http.Request, request 
 		request.Instruction = reviewIterationInstruction(lifecycle.reviewDigest, request.Instruction)
 	}
 	if request.Instruction == "" {
-		s.mu.Unlock()
-		writeError(w, http.StatusBadRequest, "invalid section proposal json")
-		return
+		return preparedProposal{}, responseError{status: http.StatusBadRequest, message: "invalid section proposal json"}
 	}
 	if err := validateAnchor(request.Anchor, s.session.Plan); err != nil {
-		s.mu.Unlock()
-		writeError(w, http.StatusBadRequest, "invalid section proposal json")
-		return
+		return preparedProposal{}, responseError{status: http.StatusBadRequest, message: "invalid section proposal json"}
 	}
 	if request.ThreadID != "" {
 		thread, exists := findThread(*s.session, request.ThreadID)
 		if !exists {
-			s.mu.Unlock()
-			writeError(w, http.StatusNotFound, "thread not found")
-			return
+			return preparedProposal{}, responseError{status: http.StatusNotFound, message: "thread not found"}
 		}
 		if thread.Lifecycle() != session.ThreadLifecycleActive {
-			s.mu.Unlock()
-			writeError(w, http.StatusConflict, "reactivate feedback before iterating it")
-			return
+			return preparedProposal{}, responseError{status: http.StatusConflict, message: "reactivate feedback before iterating it"}
 		}
 	}
 	if len(lifecycle.consumedSideAnswerIDs) == 0 {
@@ -1087,29 +1153,35 @@ func (s *Server) proposeSection(w http.ResponseWriter, r *http.Request, request 
 		lifecycle.consumedSideAnswerIDs = append([]string(nil), selection.AnswerIDs...)
 	}
 	if s.session.PendingProposal != nil && s.session.PendingProposal.Obsolete {
-		s.mu.Unlock()
-		writeError(w, http.StatusConflict, "discard the stale section proposal before iterating again")
-		return
+		return preparedProposal{}, responseError{status: http.StatusConflict, message: "discard the stale section proposal before iterating again"}
 	}
 	if s.session.PendingProposal != nil && !anchorsEqual(s.session.PendingProposal.Anchor, request.Anchor) {
-		s.mu.Unlock()
-		writeError(w, http.StatusConflict, "apply or discard the pending proposal before iterating a different section")
-		return
+		return preparedProposal{}, responseError{status: http.StatusConflict, message: "apply or discard the pending proposal before iterating a different section"}
 	}
-	baseRevisionID := s.session.CurrentRevisionID
-	basePendingProposalID := pendingProposalID(s.session.PendingProposal)
-	baseFeedback := reviewFeedbackFingerprint(*s.session)
-	req := s.sectionIterationRequestLocked(request)
-	s.mu.Unlock()
+	prepared := preparedProposal{
+		request:               s.sectionIterationRequestLocked(request),
+		lifecycle:             lifecycle,
+		baseRevisionID:        s.session.CurrentRevisionID,
+		basePendingProposalID: pendingProposalID(s.session.PendingProposal),
+		baseFeedback:          reviewFeedbackFingerprint(*s.session),
+	}
+	if pending := s.session.PendingProposal; pending != nil {
+		prepared.previousProposedPlan = pending.ProposedPlan
+	}
+	return prepared, nil
+}
 
-	ctx := r.Context()
-	if s.sideQuestionTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.sideQuestionTimeout)
-		defer cancel()
-	}
-	input, err := s.sectionIterations.Propose(ctx, req)
+type iterationExecutionResult struct {
+	Proposal *session.SectionProposal
+	ThreadID string
+}
+
+func (s *Server) executePreparedProposal(ctx context.Context, prepared preparedProposal) (iterationExecutionResult, error) {
+	input, err := s.sectionIterations.Propose(ctx, prepared.request)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return iterationExecutionResult{}, err
+		}
 		status := http.StatusBadGateway
 		if errors.Is(err, sectioniter.ErrUnavailable) {
 			status = http.StatusServiceUnavailable
@@ -1117,37 +1189,60 @@ func (s *Server) proposeSection(w http.ResponseWriter, r *http.Request, request 
 		if errors.Is(err, context.DeadlineExceeded) {
 			status = http.StatusGatewayTimeout
 		}
-		writeError(w, status, err.Error())
-		return
+		return iterationExecutionResult{}, responseError{status: status, message: err.Error()}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.finished {
-		writeError(w, http.StatusConflict, "review already completed")
-		return
+		return iterationExecutionResult{}, responseError{status: http.StatusConflict, message: "review already completed"}
 	}
 	if err := s.syncExternalSourceLocked(); err != nil {
-		writeSourceSyncError(w, err)
-		return
+		return iterationExecutionResult{}, err
 	}
-	if s.session.CurrentRevisionID != baseRevisionID || pendingProposalID(s.session.PendingProposal) != basePendingProposalID || reviewFeedbackFingerprint(*s.session) != baseFeedback {
-		writeError(w, http.StatusConflict, "plan changed while section iteration was running")
-		return
+	if s.session.CurrentRevisionID != prepared.baseRevisionID || pendingProposalID(s.session.PendingProposal) != prepared.basePendingProposalID || reviewFeedbackFingerprint(*s.session) != prepared.baseFeedback {
+		return iterationExecutionResult{}, responseError{status: http.StatusConflict, message: "plan changed while section iteration was running"}
 	}
 	before := cloneSession(*s.session)
-	input.Kind = lifecycle.kind
-	input.ReviewDigest = cloneDigestPointer(lifecycle.reviewDigest)
-	input.ConsumedSideAnswerIDs = append([]string(nil), lifecycle.consumedSideAnswerIDs...)
+	if input.AgentReply != "" {
+		if err := s.session.AddAgentReplyChecked(input.ThreadID, input.AgentReply); err != nil {
+			return iterationExecutionResult{}, transitionResponseError(err)
+		}
+		if err := s.persistLocked(); err != nil {
+			if !autosaveWasCommitted(err) {
+				*s.session = before
+				return iterationExecutionResult{}, err
+			}
+		}
+		return iterationExecutionResult{ThreadID: input.ThreadID}, nil
+	}
+	input.Kind = prepared.lifecycle.kind
+	input.ReviewDigest = cloneDigestPointer(prepared.lifecycle.reviewDigest)
+	input.ConsumedSideAnswerIDs = append([]string(nil), prepared.lifecycle.consumedSideAnswerIDs...)
 	proposal := s.session.CreateSectionProposal(input)
+	if prepared.basePendingProposalID != "" {
+		s.session.RetargetProposalThreads(prepared.basePendingProposalID, proposal.ID, prepared.previousProposedPlan, proposal.ProposedPlan)
+	}
 	if err := s.persistLocked(); err != nil {
 		if !autosaveWasCommitted(err) {
 			*s.session = before
-			writePersistenceError(w, err)
-			return
+			return iterationExecutionResult{}, err
 		}
 	}
-	writeJSON(w, proposal)
+	return iterationExecutionResult{Proposal: &proposal}, nil
+}
+
+func writeProposalError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrAutosaveConflict) || errors.Is(err, ErrBundleConflict) || errors.Is(err, revisions.ErrHeadChanged) {
+		writeError(w, http.StatusConflict, "review state changed in another PlanMaxx session; reload the review before continuing")
+		return
+	}
+	var httpErr responseError
+	if errors.As(err, &httpErr) {
+		writeError(w, httpErr.status, httpErr.message)
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 func (s *Server) handleRevisionProposalAction(w http.ResponseWriter, r *http.Request) {
@@ -1246,14 +1341,20 @@ func (s *Server) mutateSession(w http.ResponseWriter, mutate func() (any, error)
 		writeError(w, http.StatusConflict, "review already completed")
 		return
 	}
+	if s.iterationRunningLocked() {
+		writeError(w, http.StatusConflict, "wait for or stop the active iteration before changing the review")
+		return
+	}
 	if err := s.syncExternalSourceLocked(); err != nil {
 		writeSourceSyncError(w, err)
 		return
 	}
 	before := cloneSession(*s.session)
+	beforeOperation := cloneIterationOperation(s.iterationOperation)
 	response, err := mutate()
 	if err != nil {
 		*s.session = before
+		s.iterationOperation = beforeOperation
 		var httpErr responseError
 		if errors.As(err, &httpErr) {
 			writeError(w, httpErr.status, httpErr.message)
@@ -1262,9 +1363,11 @@ func (s *Server) mutateSession(w http.ResponseWriter, mutate func() (any, error)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.clearTerminalIterationLocked()
 	if err := s.persistLocked(); err != nil {
 		if !autosaveWasCommitted(err) {
 			*s.session = before
+			s.iterationOperation = beforeOperation
 			writePersistenceError(w, err)
 			return
 		}
@@ -1280,10 +1383,24 @@ func rejectPendingFeedbackMutation(s *session.Session) error {
 	if s.PendingProposal == nil {
 		return nil
 	}
+	if s.PendingProposal.Obsolete {
+		return rejectPendingFeedbackMutation(s)
+	}
 	return responseError{
 		status:  http.StatusConflict,
 		message: "apply or discard the pending proposal before changing review feedback",
 	}
+}
+
+func rejectLockedThreadMutation(s *session.Session, threadID string) error {
+	if s.PendingProposal == nil {
+		return nil
+	}
+	thread, ok := findThread(*s, threadID)
+	if ok && thread.RevisionID == s.PendingProposal.ID {
+		return nil
+	}
+	return rejectPendingFeedbackMutation(s)
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -1312,6 +1429,9 @@ func (s *Server) finalize(submitted session.Digest) (Result, error) {
 	if s.session.PendingProposal != nil {
 		return Result{}, errors.New("apply or discard the pending proposal before finalizing")
 	}
+	if s.iterationRunningLocked() {
+		return Result{}, errors.New("wait for or stop the active iteration before finalizing")
+	}
 	canonical := digest.DraftFromState(*s.session)
 	if strings.TrimSpace(submitted.Summary) != "" {
 		canonical.Summary = strings.TrimSpace(submitted.Summary)
@@ -1339,6 +1459,7 @@ func (s *Server) cancel() (Result, error) {
 		return Result{}, errors.New("review already completed")
 	}
 	previousStatus := s.autosaveStatus
+	s.cancelIterationLocked()
 	s.finished = true
 	s.autosaveStatus = "canceled"
 	if err := s.persistLocked(); err != nil {
@@ -1358,6 +1479,7 @@ func (s *Server) abandonOrphanedReview() {
 		return
 	}
 	s.finished = true
+	s.cancelIterationLocked()
 	result := Result{Session: *s.session, Abandoned: true}
 	s.mu.Unlock()
 
@@ -1772,10 +1894,16 @@ func (s *Server) sectionIterationRequestLocked(request proposeSectionRequest) se
 	replacementAnchor := request.Anchor
 	rootAppliedAnchor := session.Anchor{}
 	selectedSection, _ := sectioniter.SectionForAnchor(basePlan, request.Anchor)
+	contextRevisionID := s.session.CurrentRevisionID
+	contextAnchor := &request.Anchor
+	includedThreadIDs := []string(nil)
 	if s.session.PendingProposal != nil && anchorsEqual(s.session.PendingProposal.Anchor, request.Anchor) {
 		basePlan = s.session.PendingProposal.ProposedPlan
 		selectedSection = s.session.PendingProposal.ProposedSection
 		replacementAnchor = s.session.PendingProposal.ReplacementAnchor
+		contextRevisionID = s.session.PendingProposal.ID
+		contextAnchor = nil
+		includedThreadIDs = append(includedThreadIDs, s.session.PendingProposal.IncludedThreadIDs...)
 		if replacementAnchor.StartLine == 0 {
 			replacementAnchor = pendingProposalReplacementAnchor(request.Anchor, selectedSection)
 		}
@@ -1784,7 +1912,10 @@ func (s *Server) sectionIterationRequestLocked(request proposeSectionRequest) se
 			rootAppliedAnchor = s.session.PendingProposal.Anchor
 		}
 	}
-	selection := session.SelectContext(*s.session, session.ContextOptions{Anchor: &request.Anchor, ExplicitThreadID: request.ThreadID})
+	selection := session.SelectContext(*s.session, session.ContextOptions{Anchor: contextAnchor, ExplicitThreadID: request.ThreadID, RevisionID: contextRevisionID})
+	if includedThreadIDs == nil {
+		includedThreadIDs = append(includedThreadIDs, selection.ThreadIDs...)
+	}
 	protocolRevisionID := s.protocolRevisionIDLocked()
 	return sectioniter.Request{
 		RevisionID:          protocolRevisionID,
@@ -1807,7 +1938,7 @@ func (s *Server) sectionIterationRequestLocked(request proposeSectionRequest) se
 			ExplicitThreadID: request.ThreadID,
 			Format:           s.session.PlanFormat,
 		}),
-		IncludedThreadIDs: append([]string(nil), selection.ThreadIDs...),
+		IncludedThreadIDs: includedThreadIDs,
 		Format:            s.session.PlanFormat,
 	}
 }

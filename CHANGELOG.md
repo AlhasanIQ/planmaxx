@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.9.0 - 2026-07-31
+
+- Made assisted iterations durable, idempotent, cancellable background
+  operations that survive tab closure and report unified agent status.
+- Added thread-scoped agent replies so questions can be answered in their
+  existing comment thread without creating an unnecessary revision.
+- Made proposal feedback behave like revision feedback, including local
+  batching, editing, deletion, exact proposed-line targeting, and lifecycle
+  cleanup when proposals are refined, applied, or discarded.
+- Improved rendered-source selection accuracy and strengthened agent skill
+  safeguards around interrupted foreground reviews.
+
 ## v0.8.0 - 2026-07-31
 
 - Added browser-presence cleanup for orphaned reviews. After the last connected

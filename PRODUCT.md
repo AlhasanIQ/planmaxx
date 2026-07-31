@@ -67,7 +67,21 @@ variable. Reviewers can explicitly select `codex`, `claude`, `grok`, or `none`.
   resources. A nonce-restricted PlanMaxx bridge runs in an opaque,
   network-blocked iframe solely to relay annotations and highlights.
 - Attachment availability and operation capabilities come from the server.
-- The UI describes the calling agent as waiting and the final handoff as ready;
-  it does not claim the caller resumed before stdout is delivered.
+- One unified status identifies the main calling agent as waiting during review
+  and temporarily foregrounds a running disposable subagent during assisted
+  actions. When no supported harness is attached, the same status explains why
+  agent-backed actions are off and which manual review actions remain usable.
+  It does not claim the caller resumed before stdout is delivered.
+- Pending proposals keep comments on the current revision locked, while the
+  proposed document behaves like any other revision: reviewers can add, edit,
+  and delete multiple comments before sending the batch with Refine proposal.
+  Removed lines are never comment targets.
+- A thread-scoped iteration lets the agent choose one structured outcome: an
+  exact plan proposal, or a concise agent-authored reply in that review thread
+  when an answer serves the reviewer better than an edit. The prompt asks for
+  judgment; PlanMaxx does not classify comments with keyword rules.
+- Assisted iterations are owned by the local review server rather than a
+  browser request. Reopened tabs restore the active operation, matching
+  resubmissions reuse it, and only an explicit stop cancels it.
 - PlanMaxx initially integrates locally installed, user-authenticated CLIs. A
   hosted or multi-user agent execution service is outside the current scope.

@@ -43,6 +43,7 @@ type threadCapabilities struct {
 
 type threadView struct {
 	ID                  string                  `json:"id"`
+	RevisionID          string                  `json:"revisionId,omitempty"`
 	Anchor              session.Anchor          `json:"anchor"`
 	SelectedText        string                  `json:"selectedText,omitempty"`
 	Intent              session.ThreadIntent    `json:"intent"`
@@ -110,28 +111,34 @@ type clientState struct {
 	Digest            session.Digest          `json:"digest"`
 	Phase             string                  `json:"phase"`
 	Capabilities      clientCapabilities      `json:"capabilities"`
+	Operation         *iterationOperationView `json:"operation"`
 	ActiveChange      *reviewmodel.ChangeView `json:"activeChange"`
 }
 
 func buildClientState(source session.Session, finished bool, attachedAgent ...AgentInfo) clientState {
-	revisions := append([]session.Revision{}, source.Revisions...)
-	for index := range revisions {
-		revisions[index].Plan = ""
-		revisions[index].Feedback = nil
-	}
-	locked := finished || source.PendingProposal != nil
 	agent := AgentInfo{
 		ID:          "unspecified",
 		DisplayName: "Agent",
 		ContextMode: "unspecified",
 		Available:   true,
 	}
-	agentAvailable := true
 	if len(attachedAgent) > 0 {
 		agent = attachedAgent[0]
-		agentAvailable = agent.Available
 	}
-	threads, counts := buildThreadViews(source, locked, agentAvailable)
+	return buildClientStateWithOperation(source, finished, agent, nil)
+}
+
+func buildClientStateWithOperation(source session.Session, finished bool, agent AgentInfo, operation *iterationOperationView) clientState {
+	revisions := append([]session.Revision{}, source.Revisions...)
+	for index := range revisions {
+		revisions[index].Plan = ""
+		revisions[index].Feedback = nil
+	}
+	operationRunning := operation != nil &&
+		(operation.Status == iterationOperationQueued || operation.Status == iterationOperationRunning || operation.Status == iterationOperationCanceling)
+	locked := finished || source.PendingProposal != nil || operationRunning
+	agentAvailable := agent.Available
+	threads, counts := buildThreadViews(source, locked, agentAvailable, finished || operationRunning)
 	sideAnswers := buildSideAnswerViews(source, locked, &counts)
 	digest := source.Digest
 	digest.ReviewerDecisions = nonNilStrings(source.Digest.ReviewerDecisions)
@@ -144,6 +151,7 @@ func buildClientState(source session.Session, finished bool, attachedAgent ...Ag
 		Revisions:         nonNilRevisions(revisions), Threads: threads,
 		SideAnswers: sideAnswers, Counts: counts, Digest: digest,
 		Phase:        "active",
+		Operation:    operation,
 		Capabilities: clientCapabilities{CanFinalize: !locked, CanIterate: !locked && agentAvailable, CanEditFeedback: !locked, CanRestoreRevision: !locked},
 	}
 	if finished {
@@ -152,6 +160,7 @@ func buildClientState(source session.Session, finished bool, attachedAgent ...Ag
 	if proposal := source.PendingProposal; proposal != nil {
 		state.Phase = "proposal_pending"
 		state.Capabilities.CanApplyProposal = !finished && !proposal.Obsolete && proposal.ParentID == source.CurrentRevisionID
+		state.Capabilities.CanEditFeedback = !finished && !operationRunning && !proposal.Obsolete
 		state.PendingProposal = &pendingProposalSummary{
 			ID: proposal.ID, Kind: proposal.Kind, ParentID: proposal.ParentID, ThreadID: proposal.ThreadID,
 			Anchor: proposal.Anchor, ReplacementAnchor: proposal.ReplacementAnchor,
@@ -168,10 +177,14 @@ func buildClientState(source session.Session, finished bool, attachedAgent ...Ag
 	return state
 }
 
-func buildThreadViews(source session.Session, locked bool, attachedAgentAvailable ...bool) ([]threadView, reviewCounts) {
+func buildThreadViews(source session.Session, locked bool, options ...bool) ([]threadView, reviewCounts) {
 	agentAvailable := true
-	if len(attachedAgentAvailable) > 0 {
-		agentAvailable = attachedAgentAvailable[0]
+	if len(options) > 0 {
+		agentAvailable = options[0]
+	}
+	hardLocked := false
+	if len(options) > 1 {
+		hardLocked = options[1]
 	}
 	addressedByThread := map[string]string{}
 	for _, revision := range source.Revisions {
@@ -182,6 +195,10 @@ func buildThreadViews(source session.Session, locked bool, attachedAgentAvailabl
 	views := make([]threadView, 0, len(source.Threads))
 	counts := reviewCounts{}
 	for _, thread := range source.Threads {
+		threadLocked := locked
+		if !hardLocked && source.PendingProposal != nil && thread.RevisionID == source.PendingProposal.ID {
+			threadLocked = false
+		}
 		lifecycle := thread.Lifecycle()
 		intent := thread.Intent()
 		bucket, delivery := "active", "private"
@@ -194,23 +211,27 @@ func buildThreadViews(source session.Session, locked bool, attachedAgentAvailabl
 			} else {
 				counts.ActivePrivateNotes++
 			}
-			if !locked {
-				capabilities = threadCapabilities{CanEdit: true, CanReply: true, CanChangeIntent: true, CanAsk: agentAvailable, CanIterate: agentAvailable, CanDelete: true}
+			if !threadLocked {
+				capabilities = threadCapabilities{CanEdit: true, CanReply: true, CanChangeIntent: true, CanDelete: true}
+				if source.PendingProposal == nil {
+					capabilities.CanAsk = agentAvailable
+					capabilities.CanIterate = agentAvailable
+				}
 			}
 		case session.ThreadLifecycleDetached:
 			bucket, delivery = "attention", "none"
 			counts.DetachedFeedback++
-			if !locked {
+			if !threadLocked {
 				capabilities = threadCapabilities{CanEdit: true, CanReanchor: true, CanMarkAddressed: true, CanDelete: true}
 			}
 		case session.ThreadLifecycleAddressed:
 			bucket, delivery = "history", "none"
 			counts.AddressedHistory++
-			if !locked {
+			if !threadLocked {
 				capabilities = threadCapabilities{CanDelete: true, CanCreateFollowUp: true}
 			}
 		}
-		views = append(views, threadView{ID: thread.ID, Anchor: thread.Anchor, SelectedText: thread.SelectedText, Intent: intent, Lifecycle: lifecycle, Bucket: bucket, Delivery: delivery, AddressedRevisionID: addressedByThread[thread.ID], Position: thread.Position, Messages: append([]session.Message{}, thread.Messages...), Capabilities: capabilities})
+		views = append(views, threadView{ID: thread.ID, RevisionID: thread.RevisionID, Anchor: thread.Anchor, SelectedText: thread.SelectedText, Intent: intent, Lifecycle: lifecycle, Bucket: bucket, Delivery: delivery, AddressedRevisionID: addressedByThread[thread.ID], Position: thread.Position, Messages: append([]session.Message{}, thread.Messages...), Capabilities: capabilities})
 	}
 	return views, counts
 }

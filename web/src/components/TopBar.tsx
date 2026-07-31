@@ -18,6 +18,7 @@ import type { ResolvedTheme, ThemeMode } from "../lib/theme";
 interface Props {
   statusLabel: string;
   statusKind: "idle" | "busy" | "error" | "success";
+  statusActor: "planmaxx" | "subagent";
   forIterationCount: number;
   privateCount: number;
   attentionCount: number;
@@ -30,9 +31,11 @@ interface Props {
   agentUnavailableReason?: string;
   onOpenRevisions: () => void;
   onCancel: () => void;
+  onCancelIteration: () => void;
   onIterate: () => void;
   onFinalize: () => void;
   disabled: boolean;
+  iterationRunning?: boolean;
   finalizeDisabled?: boolean;
   iterateDisabled?: boolean;
 }
@@ -41,6 +44,7 @@ export function TopBar(props: Props) {
   const {
     statusLabel,
     statusKind,
+    statusActor,
     forIterationCount,
     privateCount,
     attentionCount,
@@ -53,9 +57,11 @@ export function TopBar(props: Props) {
     agentUnavailableReason,
     onOpenRevisions,
     onCancel,
+    onCancelIteration,
     onIterate,
     onFinalize,
     disabled,
+    iterationRunning = false,
     finalizeDisabled = false,
     iterateDisabled = false,
   } = props;
@@ -74,7 +80,7 @@ export function TopBar(props: Props) {
           type="button"
           className="btn btn-ghost shrink-0 whitespace-nowrap"
           onClick={onOpenRevisions}
-          disabled={disabled}
+          disabled={disabled || iterationRunning}
           title={`Revisions — current ${currentRevisionId || "none"}`}
           aria-label={`Revisions — current ${currentRevisionId || "none"}`}
         >
@@ -83,20 +89,14 @@ export function TopBar(props: Props) {
           <strong className="whitespace-nowrap">{currentRevisionId || "none"}</strong>
           <ChevronDown size={12} aria-hidden />
         </button>
-        <span
-          className="review-in-progress hidden md:inline-flex"
-          title={agentAvailable
-            ? `${agentDisplayName || "The calling agent"} is waiting for this review`
-            : agentUnavailableReason || "No agent session is attached to this manual review"}
-        >
-          <Pause size={11} /> {agentAvailable ? `${agentDisplayName || "Agent"} waiting` : "Manual review"}
-        </span>
-        <span
-          className={`hidden rounded-full px-2 py-0.5 text-[11px] font-medium lg:inline-flex ${agentAvailable ? "bg-accent/10 text-accent" : "bg-surface-muted text-foreground-muted"}`}
-          title={agentAvailable ? `${agentDisplayName} assisted actions use an active-session fork` : agentUnavailableReason}
-        >
-          {agentAvailable ? "Assisted actions on" : "Assisted actions off"}
-        </span>
+        <AgentStatus
+          statusLabel={statusLabel}
+          statusKind={statusKind}
+          statusActor={statusActor}
+          agentDisplayName={agentDisplayName}
+          agentAvailable={agentAvailable}
+          agentUnavailableReason={agentUnavailableReason}
+        />
         <div className="ml-2 hidden gap-2 sm:flex">
           <span
             className="pill pill-go"
@@ -113,7 +113,6 @@ export function TopBar(props: Props) {
           {attentionCount > 0 ? <span className="pill pill-attention" title="Detached feedback needs re-anchoring before it can be used"><AlertTriangle size={11} /> {attentionCount} need attention</span> : null}
         </div>
         <div className="topbar-actions ml-auto flex items-center gap-3">
-          <span className="topbar-status"><StatusBadge kind={statusKind} label={statusLabel} /></span>
           <button
             type="button"
             className="btn btn-ghost"
@@ -124,22 +123,24 @@ export function TopBar(props: Props) {
             <ThemeIcon size={13} />
             <span className="hidden sm:inline">{themeLabel}</span>
           </button>
-          <button type="button" className="btn topbar-action" onClick={onCancel} disabled={disabled} aria-label="Cancel review">
+          <button type="button" className="btn topbar-action" onClick={onCancel} disabled={disabled || iterationRunning} aria-label="Cancel review">
             <XOctagon size={14} /><span>Cancel</span>
           </button>
           <button
             type="button"
             className="btn topbar-action"
-            onClick={onIterate}
-            disabled={disabled || iterateDisabled}
+            onClick={iterationRunning ? onCancelIteration : onIterate}
+            disabled={disabled || (!iterationRunning && iterateDisabled)}
+            aria-label={iterationRunning ? "Stop iteration" : "Iterate"}
           >
-            <Sparkles size={14} /> <span>Iterate</span>
+            {iterationRunning ? <XOctagon size={14} /> : <Sparkles size={14} />}
+            <span>{iterationRunning ? "Stop iteration" : "Iterate"}</span>
           </button>
           <button
             type="button"
             className="btn btn-primary topbar-action"
             onClick={onFinalize}
-            disabled={disabled || finalizeDisabled}
+            disabled={disabled || iterationRunning || finalizeDisabled}
           >
             <CheckCircle2 size={14} /> <span>Finalize</span>
           </button>
@@ -149,19 +150,78 @@ export function TopBar(props: Props) {
   );
 }
 
-function StatusBadge({ kind, label }: { kind: Props["statusKind"]; label: string }) {
+export function AgentStatus({
+  statusLabel,
+  statusKind,
+  statusActor,
+  agentDisplayName,
+  agentAvailable,
+  agentUnavailableReason,
+}: Pick<Props, "statusLabel" | "statusKind" | "statusActor" | "agentDisplayName" | "agentAvailable" | "agentUnavailableReason">) {
+  const agentName = agentDisplayName || "Agent";
+  const isSubagentOperation = agentAvailable && statusActor === "subagent";
+  const isRunning = statusKind === "busy";
+  const isSubagentRunning = isSubagentOperation && isRunning;
+  const assistanceUnavailable = !agentAvailable;
+  const unavailableReason = agentUnavailableReason || "No supported agent harness is attached to this review.";
+  const role = isSubagentOperation
+    ? "Subagent"
+    : isRunning
+      ? "PlanMaxx"
+      : assistanceUnavailable
+        ? "Assistance off"
+        : "Main agent";
+  const headline = isSubagentOperation
+    ? `${agentName} ${isRunning ? "running" : statusKind === "error" ? "failed" : "finished"}`
+    : isRunning
+      ? "Working"
+      : agentAvailable
+        ? `${agentName} waiting`
+        : "Manual review only";
+  const detail = isSubagentOperation
+    ? `${statusLabel} Main agent is waiting for review.`
+    : isRunning && agentAvailable
+      ? `${statusLabel} Main ${agentName} is waiting.`
+      : isRunning
+        ? `${statusLabel} Assisted /btw and iteration remain unavailable: ${unavailableReason}`
+      : agentAvailable
+        ? "Waiting for you to finish the review."
+        : `${unavailableReason} Agent-backed /btw and iteration are unavailable; comments and manual review still work.`;
   const Icon =
-    kind === "busy" ? Loader2 : kind === "error" ? XOctagon : kind === "success" ? CheckCircle2 : null;
-  const color =
-    kind === "error"
-      ? "text-danger"
-      : kind === "success"
-        ? "text-success"
-        : "text-foreground-muted";
+    isRunning
+      ? Loader2
+      : statusKind === "error"
+        ? XOctagon
+        : statusKind === "success"
+          ? CheckCircle2
+          : assistanceUnavailable
+            ? AlertTriangle
+            : Pause;
+  const title = isSubagentOperation
+    ? `${headline}. ${statusLabel} The main ${agentName} session remains paused until this review is finished.`
+    : agentAvailable
+      ? `Main ${agentName} is waiting for this review.${isRunning ? ` PlanMaxx is currently ${statusLabel.toLowerCase()}` : ""}`
+      : `${unavailableReason} Agent-backed /btw and iteration are unavailable; comments and manual review still work.`;
+  const visualState = isSubagentRunning
+    ? "subagent"
+    : assistanceUnavailable && !isRunning && statusKind === "idle"
+      ? "unavailable"
+      : statusKind;
   return (
-    <div className={`hidden items-center gap-1.5 text-xs md:flex ${color}`} aria-live="polite">
-      {Icon ? <Icon size={12} className={kind === "busy" ? "animate-spin" : ""} /> : null}
-      <span>{label}</span>
+    <div
+      className={`agent-status is-${visualState}`}
+      aria-live="polite"
+      role="status"
+      title={title}
+    >
+      <Icon size={13} className={isRunning ? "animate-spin" : ""} aria-hidden />
+      <span className="agent-status-copy">
+        <span className="agent-status-main">
+          <span className="agent-status-role">{role}</span>
+          <strong>{headline}</strong>
+        </span>
+        {detail ? <span className="agent-status-detail">{detail}</span> : null}
+      </span>
     </div>
   );
 }

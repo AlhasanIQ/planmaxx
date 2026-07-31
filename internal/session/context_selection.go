@@ -8,6 +8,7 @@ import "strings"
 type ContextOptions struct {
 	Anchor           *Anchor
 	ExplicitThreadID string
+	RevisionID       string
 }
 
 type ContextSelection struct {
@@ -32,6 +33,17 @@ func SelectContext(source Session, options ContextOptions) ContextSelection {
 	for _, thread := range source.Threads {
 		threadByID[thread.ID] = thread
 		if thread.Lifecycle() != ThreadLifecycleActive {
+			continue
+		}
+		targetRevisionID := options.RevisionID
+		if targetRevisionID == "" {
+			targetRevisionID = source.CurrentRevisionID
+		}
+		threadRevisionID := thread.RevisionID
+		if threadRevisionID == "" {
+			threadRevisionID = source.CurrentRevisionID
+		}
+		if threadRevisionID != targetRevisionID {
 			continue
 		}
 		explicit := thread.ID == options.ExplicitThreadID
@@ -62,7 +74,7 @@ func (selection ContextSelection) InstructionMessages() []string {
 	out := []string{}
 	for _, thread := range selection.InstructionThreads {
 		for _, message := range thread.Messages {
-			if strings.TrimSpace(message.Body) != "" {
+			if message.Author == "reviewer" && strings.TrimSpace(message.Body) != "" {
 				out = append(out, message.Body)
 			}
 		}

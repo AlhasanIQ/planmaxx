@@ -286,29 +286,59 @@ function tableAt(lines: string[], start: number): { consumed: number; lines: Lin
   return {
     consumed,
     lines: [
-      { kind: "table-header", html: tableMarkup(first.header, columns, "header") },
-      { kind: "table-divider", html: tableDividerMarkup(columns) },
-      ...first.rows.map((cells: Tokens.TableCell[]) => ({
+      { kind: "table-header", html: tableMarkup(first.header, columns, "header", lines[start]) },
+      { kind: "table-divider", html: tableDividerMarkup(columns, lines[start + 1]) },
+      ...first.rows.map((cells: Tokens.TableCell[], rowIndex: number) => ({
         kind: "table-row" as const,
-        html: tableMarkup(cells, columns, "body"),
+        html: tableMarkup(cells, columns, "body", lines[start + rowIndex + 2]),
       })),
     ],
   };
 }
 
-function tableMarkup(cells: Tokens.TableCell[], columns: number, rowKind: "header" | "body"): string {
+function tableMarkup(cells: Tokens.TableCell[], columns: number, rowKind: "header" | "body", sourceLine: string): string {
   const grid = `repeat(${columns}, minmax(9rem, 1fr))`;
-  const cellsHTML = cells.map((cell) => {
+  const ranges = tableCellSourceRanges(sourceLine, columns);
+  const cellsHTML = cells.map((cell, index) => {
     const alignment = cell.align ? ` is-${cell.align}` : "";
-    return `<span class="plan-table-cell${alignment}">${renderInlineMarkdown(cell.text)}</span>`;
+    const range = ranges[index] ?? { start: sourceLine.length, end: sourceLine.length };
+    const source = sourceLine.slice(range.start, range.end);
+    return `<span class="plan-table-cell${alignment}" data-source-start="${range.start}" data-source-text="${escapeHTML(source)}">${renderInlineMarkdown(cell.text)}</span>`;
   }).join("");
-  return `<span class="plan-table-row is-${rowKind}" style="grid-template-columns:${grid};min-width:${columns * 144}px">${cellsHTML}</span>`;
+  return `<span class="plan-table-row is-${rowKind}" data-source-length="${sourceLine.length}" style="grid-template-columns:${grid};min-width:${columns * 144}px">${cellsHTML}</span>`;
 }
 
-function tableDividerMarkup(columns: number): string {
+function tableDividerMarkup(columns: number, sourceLine: string): string {
   const grid = `repeat(${columns}, minmax(9rem, 1fr))`;
   const cells = Array.from({ length: columns }, () => "<span class=\"plan-table-divider-cell\" aria-hidden=\"true\">&nbsp;</span>").join("");
-  return `<span class="plan-table-row is-divider" style="grid-template-columns:${grid};min-width:${columns * 144}px">${cells}</span>`;
+  return `<span class="plan-table-row is-divider" data-source-length="${sourceLine.length}" style="grid-template-columns:${grid};min-width:${columns * 144}px">${cells}</span>`;
+}
+
+function tableCellSourceRanges(sourceLine: string, count: number): Array<{ start: number; end: number }> {
+  const separators: number[] = [];
+  for (let index = 0; index < sourceLine.length; index++) {
+    if (sourceLine[index] !== "|") continue;
+    let slashes = 0;
+    for (let before = index - 1; before >= 0 && sourceLine[before] === "\\"; before--) slashes++;
+    if (slashes % 2 === 0) separators.push(index);
+  }
+
+  const boundaries = [-1, ...separators, sourceLine.length];
+  let segments = boundaries.slice(0, -1).map((boundary, index) => ({
+    start: boundary + 1,
+    end: boundaries[index + 1],
+  }));
+  if (segments[0] && sourceLine.slice(segments[0].start, segments[0].end).trim() === "") segments = segments.slice(1);
+  if (segments.at(-1) && sourceLine.slice(segments.at(-1)!.start, segments.at(-1)!.end).trim() === "") segments = segments.slice(0, -1);
+
+  return Array.from({ length: count }, (_, index) => {
+    const segment = segments[index] ?? { start: sourceLine.length, end: sourceLine.length };
+    let start = segment.start;
+    let end = segment.end;
+    while (start < end && /\s/.test(sourceLine[start])) start++;
+    while (end > start && /\s/.test(sourceLine[end - 1])) end--;
+    return { start, end };
+  });
 }
 
 export function planExcerpt(plan: string, startLine: number, endLine: number): string {

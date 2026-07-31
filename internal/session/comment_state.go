@@ -1,6 +1,9 @@
 package session
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ThreadIntent is the reviewer-facing meaning of the legacy persisted Kind
 // field. Persisted values stay unchanged so existing autosaves remain valid.
@@ -69,11 +72,15 @@ func intentForLegacyKind(kind string) (ThreadIntent, bool) {
 }
 
 func (s *Session) AddThreadWithIntent(anchor Anchor, body, selectedText string, intent ThreadIntent) (Thread, error) {
+	return s.AddThreadWithIntentForRevision(s.CurrentRevisionID, anchor, body, selectedText, intent)
+}
+
+func (s *Session) AddThreadWithIntentForRevision(revisionID string, anchor Anchor, body, selectedText string, intent ThreadIntent) (Thread, error) {
 	kind, ok := kindForIntent(intent)
 	if !ok {
 		return Thread{}, &TransitionError{Kind: TransitionInvariant, Message: "invalid thread intent"}
 	}
-	thread := s.addThread(anchor, body, selectedText, kind)
+	thread := s.addThread(revisionID, anchor, body, selectedText, kind)
 	return thread, nil
 }
 
@@ -96,6 +103,19 @@ func (s *Session) AddReplyChecked(threadID, body string) error {
 		return err
 	}
 	thread.Messages = append(thread.Messages, s.newMessage("reviewer", body))
+	return nil
+}
+
+func (s *Session) AddAgentReplyChecked(threadID, body string) error {
+	thread, err := s.mutableActiveThread(threadID, "reply to")
+	if err != nil {
+		return err
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return invariant("agent reply body is empty")
+	}
+	thread.Messages = append(thread.Messages, s.newMessage("assistant", body))
 	return nil
 }
 

@@ -95,11 +95,35 @@ func TestBuildClientStateProjectsPendingProposalAndCommentPlacement(t *testing.T
 			t.Fatalf("overlapping comment was not placed after cluster: %+v", placement)
 		}
 	}
-	if state.Capabilities.CanFinalize || state.Capabilities.CanEditFeedback || !state.Capabilities.CanApplyProposal {
+	if state.Capabilities.CanFinalize || !state.Capabilities.CanEditFeedback || !state.Capabilities.CanApplyProposal {
 		t.Fatalf("unexpected proposal capabilities %+v", state.Capabilities)
 	}
 	if state.Capabilities.CanIterate || len(state.ActiveChange.ReviewStops) != 3 {
 		t.Fatalf("pending proposal actions/stops = caps=%+v stops=%+v", state.Capabilities, state.ActiveChange.ReviewStops)
+	}
+}
+
+func TestBuildClientStateUnlocksOnlyProposalTargetComments(t *testing.T) {
+	s := session.New("plan-1", "old")
+	source := s.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "source feedback")
+	proposal := s.CreateSectionProposal(session.SectionProposalInput{
+		Anchor: session.Anchor{StartLine: 1, EndLine: 1}, ProposedPlan: "new", ProposedSection: "new",
+	})
+	target, err := s.AddThreadWithIntentForRevision(proposal.ID, session.Anchor{StartLine: 1, EndLine: 1}, "proposal feedback", "new", session.ThreadIntentInstruction)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state := buildClientState(*s, false)
+	byID := map[string]threadView{}
+	for _, thread := range state.Threads {
+		byID[thread.ID] = thread
+	}
+	if byID[source.ID].Capabilities.CanEdit || !byID[target.ID].Capabilities.CanEdit || !byID[target.ID].Capabilities.CanDelete {
+		t.Fatalf("proposal comment capabilities were not scoped by target: %+v", byID)
+	}
+	if byID[target.ID].Capabilities.CanIterate || byID[target.ID].Capabilities.CanAsk {
+		t.Fatalf("proposal comments should batch through proposal actions: %+v", byID[target.ID].Capabilities)
 	}
 }
 

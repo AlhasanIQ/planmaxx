@@ -25,6 +25,27 @@ func TestParseResponseExtractsSummaryAndReplacement(t *testing.T) {
 	}
 }
 
+func TestParseResponseAcceptsThreadReply(t *testing.T) {
+	got, err := ParseResponse(`<planmaxx_thread_reply version="1" revision="rev-2"><message>The timeout is inherited from the deployment defaults.</message></planmaxx_thread_reply>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RevisionID != "rev-2" || got.ThreadReply != "The timeout is inherited from the deployment defaults." || len(got.Hunks) != 0 {
+		t.Fatalf("unexpected thread reply %+v", got)
+	}
+}
+
+func TestParseResponseRejectsIncompleteThreadReply(t *testing.T) {
+	for _, raw := range []string{
+		`<planmaxx_thread_reply version="1" revision="rev-2"><message></message></planmaxx_thread_reply>`,
+		`<planmaxx_thread_reply version="1"><message>Answer</message></planmaxx_thread_reply>`,
+	} {
+		if _, err := ParseResponse(raw); err == nil {
+			t.Fatalf("expected invalid thread reply to fail: %s", raw)
+		}
+	}
+}
+
 func TestParseResponsePreservesInnerMarkdownFences(t *testing.T) {
 	raw := proposalV1("rev-2", "lines", "## Old", "Added CLI example.", "## Usage\n\n```bash\nplanmaxx review PLAN.md\n```\n\n- Keep verifying.")
 

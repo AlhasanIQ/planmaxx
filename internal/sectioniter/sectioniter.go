@@ -14,9 +14,10 @@ import (
 // Positional replacement protocols were never released and are intentionally
 // not retained as a compatibility path.
 type ParsedResponse struct {
-	RevisionID string
-	Summary    string
-	Hunks      []patches.Hunk
+	RevisionID  string
+	Summary     string
+	Hunks       []patches.Hunk
+	ThreadReply string
 }
 
 func SectionForAnchor(plan string, anchor session.Anchor) (string, error) {

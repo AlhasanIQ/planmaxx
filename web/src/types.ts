@@ -19,6 +19,7 @@ export interface Message {
 
 export interface Thread {
   id: string;
+  revisionId?: string;
   anchor: Anchor;
   selectedText?: string;
   intent: ThreadIntent;
@@ -123,6 +124,19 @@ export interface PendingProposalSummary {
   createdAt: string;
 }
 
+export interface IterationOperation {
+  id: string;
+  kind: "review" | "section";
+  status: "queued" | "running" | "canceling" | "succeeded" | "failed" | "canceled";
+  startedAt: string;
+  completedAt?: string;
+  baseRevisionId: string;
+  proposalId?: string;
+  resultKind?: "proposal" | "thread_reply";
+  threadId?: string;
+  error?: string;
+}
+
 export interface AppliedHunk {
   anchor: Anchor;
   result: Anchor;
@@ -216,6 +230,7 @@ export interface Session {
   currentRevisionId: string;
   revisions: Revision[];
   pendingProposal?: PendingProposalSummary | null;
+  operation?: IterationOperation | null;
   threads: Thread[];
   sideAnswers: SideAnswer[];
   digest: Digest;

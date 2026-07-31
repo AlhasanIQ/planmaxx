@@ -6,7 +6,7 @@ import { positionHTMLPreviewComments } from "../lib/htmlPreviewLayout";
 import type { Anchor, ChangeView, DocumentSnapshot, PendingProposalSummary, PlanFormat, ReviewStop, RevisionComparison, RevisionFeedback, SideAnswer, Thread, ThreadIntent } from "../types";
 import { anchorLabel, anchorTouchesLine } from "../lib/anchors";
 import { inlineCommentComposerPlacement } from "../lib/commentPlacement";
-import { comparisonGutterValues, comparisonLineIdentity } from "../lib/comparisonLines";
+import { comparisonGutterValues, comparisonLineIdentity, proposalLineIdentity } from "../lib/comparisonLines";
 import { highlightCodeBlocks, highlightHTMLSource, type HighlightToken } from "../lib/codeHighlight";
 import { documentOutline, type OutlineItem } from "../lib/documentOutline";
 import { reviewScrollBehavior } from "../lib/reviewNavigation";
@@ -49,7 +49,7 @@ interface PlanProps {
   proposalIterating: boolean;
   onApplyProposal: (proposalId: string) => void;
   onDiscardProposal: (proposalId: string) => void;
-  onIterateProposal: (anchor: Anchor, instruction: string) => Promise<boolean>;
+  onIterateProposal: (anchor: Anchor, instruction: string, threadId?: string) => Promise<boolean>;
   onEditDone: () => void;
   onFocusThread: (threadId: string) => void;
   onHoverThread: (threadId: string | null) => void;
@@ -190,22 +190,24 @@ export const ReviewDocument = memo(function ReviewDocument({
     return diffLines.map((diffLine) => {
 	  const sourceLines = diffLine.kind === "add" ? comparisonAfterLines : comparisonBeforeLines;
       const sourceIndex = ((diffLine.kind === "add" ? diffLine.after : diffLine.before) ?? 0) - 1;
-      const comparisonIdentity = comparison ? comparisonLineIdentity(diffLine) : null;
+      const lineIdentity = comparison
+        ? comparisonLineIdentity(diffLine)
+        : proposal
+          ? proposalLineIdentity(diffLine)
+          : null;
       return {
         diffKind: diffLine.kind,
         line: sourceLines[sourceIndex] ?? renderLines(diffLine.text)[0],
-        displayLineNumber: comparisonIdentity?.displayLineNumber ?? diffLine.before ?? diffLine.after ?? 0,
-        anchorLineNumber: comparisonIdentity
-          ? comparisonIdentity.anchorLineNumber
-          : diffLine.before ?? diffLine.after,
-        beforeLineNumber: comparisonIdentity?.beforeLineNumber,
-        afterLineNumber: comparisonIdentity?.afterLineNumber,
+        displayLineNumber: lineIdentity?.displayLineNumber ?? diffLine.before ?? diffLine.after ?? 0,
+        anchorLineNumber: lineIdentity?.anchorLineNumber,
+        beforeLineNumber: lineIdentity?.beforeLineNumber,
+        afterLineNumber: lineIdentity?.afterLineNumber,
 		clusterId: diffLine.clusterId,
 		rowId: diffLine.id,
         sourceLineNumber: diffLine.after,
       };
     });
-	}, [activeChange, comparison, comparisonAfterLines, comparisonBeforeLines, lines, renderLines]);
+	}, [activeChange, comparison, comparisonAfterLines, comparisonBeforeLines, lines, proposal, renderLines]);
   const feedbackByRow = useMemo(() => {
 	const byRow = new Map<number, RevisionFeedback[]>();
 	if (!comparison?.isDirect) return byRow;
@@ -292,11 +294,12 @@ export const ReviewDocument = memo(function ReviewDocument({
   }, [focusedThreadId, threads]);
   const activeAnchor = hoveredAnchor ?? focusedAnchor;
 
-  usePlanHighlights(articleRef, threads, activeAnchor, draft?.anchor ?? null);
+  const highlightThreads = useMemo(() => proposal ? [] : threads, [proposal, threads]);
+  usePlanHighlights(articleRef, highlightThreads, proposal ? null : activeAnchor, draft?.anchor ?? null);
 
   useEffect(() => {
     if (!editingThread) return;
-	const maxLine = Math.max(1, lines.length);
+	const maxLine = Math.max(1, activeChange ? comparisonAfterLines.length : lines.length);
 	const editAnchor = editingThread.lifecycle === "detached"
 	  ? { startLine: Math.min(Math.max(1, editingThread.anchor.startLine), maxLine), endLine: Math.min(Math.max(1, editingThread.anchor.endLine), maxLine) }
 	  : editingThread.anchor;
@@ -308,7 +311,7 @@ export const ReviewDocument = memo(function ReviewDocument({
       body: editingThread.messages[0]?.body ?? "",
       intent: editingThread.intent,
     });
-  }, [editingThread, lines.length]);
+  }, [activeChange, comparisonAfterLines.length, editingThread, lines.length]);
 
   // Selecting text opens a convenience composer, but it remains a draft until
   // the reviewer explicitly submits it. A click away drops only an untouched
@@ -330,12 +333,13 @@ export const ReviewDocument = memo(function ReviewDocument({
     const map = new Map<number, string>();
     for (const t of threads) {
 	  if (t.lifecycle !== "active") continue;
+	  if (proposal && t.revisionId !== proposal.id) continue;
       for (let i = t.anchor.startLine; i <= t.anchor.endLine; i++) {
         if (!map.has(i)) map.set(i, t.id);
       }
     }
     return map;
-  }, [threads]);
+  }, [proposal, threads]);
 
   function openFullLineDraft(lineNumber: number) {
     if (disabled || submittingDraft) return;
@@ -366,9 +370,10 @@ export const ReviewDocument = memo(function ReviewDocument({
     if (submittingDraft || !draft || !draft.body.trim()) return;
     setSubmittingDraft(true);
     try {
+      const selectedText = currentSelectedText(draft).trim();
       const ok = draft.threadId
-        ? await onUpdateComment(draft.threadId, draft.anchor, draft.body.trim(), currentSelectedText(draft))
-        : await onCreateComment(draft.anchor, draft.body.trim(), currentSelectedText(draft), draft.intent);
+          ? await onUpdateComment(draft.threadId, draft.anchor, draft.body.trim(), selectedText)
+          : await onCreateComment(draft.anchor, draft.body.trim(), selectedText, draft.intent);
       if (!ok) return;
       if (draft.threadId) onEditDone();
       setDraft(null);
@@ -758,6 +763,7 @@ export const ReviewDocument = memo(function ReviewDocument({
 	      onApply={onApplyProposal}
 	      onDiscard={onDiscardProposal}
 	      onIterate={onIterateProposal}
+	      feedbackThreadIds={threads.filter((thread) => thread.revisionId === proposal.id && thread.lifecycle === "active" && thread.intent === "instruction").map((thread) => thread.id)}
 	    />
 	  ) : null}
 	  {!proposal && comparisonLoading ? (
@@ -911,11 +917,11 @@ export const ReviewDocument = memo(function ReviewDocument({
           const line = row.line;
           const isProposedLine = Boolean(proposal && row.diffKind === "add");
           const isHistoricalLine = Boolean(comparison && row.diffKind === "remove");
-          const commentable = !isProposedLine && !isHistoricalLine && lineNumber !== undefined;
+          const commentable = !isHistoricalLine && lineNumber !== undefined;
 		  const commentPlacement = activeChange ? idx : lineNumber;
 		  const lineThreads = commentPlacement === undefined ? [] : threadsAtPlacement.get(commentPlacement) ?? [];
           const inDraft = commentable && draft ? anchorTouchesLine(draft.anchor, lineNumber) : false;
-          const inHoverAnchor = commentable && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
+          const inHoverAnchor = commentable && !proposal && activeAnchor && anchorTouchesLine(activeAnchor, lineNumber);
           const anchoredThreadId = commentable ? lineToThread.get(lineNumber) : undefined;
           const comparisonGutter = comparison
             ? comparisonGutterValues(row.beforeLineNumber, row.afterLineNumber)
@@ -1046,6 +1052,7 @@ export const ReviewDocument = memo(function ReviewDocument({
                     onApply={onApplyProposal}
                     onDiscard={onDiscardProposal}
                     onIterate={onIterateProposal}
+                    feedbackThreadIds={threads.filter((thread) => thread.revisionId === proposal.id && thread.lifecycle === "active" && thread.intent === "instruction").map((thread) => thread.id)}
                   />
                 ) : null}
               </div>
@@ -1386,6 +1393,7 @@ function InlineCommentComposer({
   onSubmit,
   onAskSide,
   onIterate,
+  proposalRefinement = false,
 }: {
   draft: CommentDraft;
   spacerLines: number;
@@ -1398,6 +1406,7 @@ function InlineCommentComposer({
   onSubmit: () => void;
   onAskSide: () => void;
   onIterate: () => void;
+  proposalRefinement?: boolean;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const canSubmit = draft.body.trim().length > 0;
@@ -1436,14 +1445,14 @@ function InlineCommentComposer({
         <span>{anchorLabel(draft.anchor)}</span>
       </div>
       <label className="block text-xs font-semibold text-foreground-muted">
-        Comment
+        {proposalRefinement ? "Proposal feedback" : "Comment"}
         <textarea
           ref={textareaRef}
           value={draft.body}
           onChange={(e) => setDraft({ ...draft, body: e.target.value })}
           onKeyDown={onBodyKeyDown}
           rows={3}
-          placeholder="Leave a comment for this selection..."
+          placeholder={proposalRefinement ? "Describe how this proposed text should change..." : "Leave a comment for this selection..."}
           className="field mt-1 resize-y font-sans"
           disabled={submitting || disabled}
         />
@@ -1454,7 +1463,7 @@ function InlineCommentComposer({
           <span>{agentAction === "asking" ? "The agent is thinking about this /btw…" : "The agent is iterating on this selection…"}</span>
         </div>
       ) : null}
-	  {!isEditing ? <fieldset className="composer-intent" aria-label="Comment intent">
+	  {!isEditing && !proposalRefinement ? <fieldset className="composer-intent" aria-label="Comment intent">
 		<legend>After saving</legend>
 		<button type="button" className={`kind-pill${draft.intent === "instruction" ? " is-active is-go" : ""}`} onClick={() => setDraft({ ...draft, intent: "instruction" })} disabled={submitting || disabled} aria-pressed={draft.intent === "instruction"}>Use in iteration</button>
 		<button type="button" className={`kind-pill${draft.intent === "private" ? " is-active is-stay" : ""}`} onClick={() => setDraft({ ...draft, intent: "private" })} disabled={submitting || disabled} aria-pressed={draft.intent === "private"}>Private note</button>
@@ -1469,9 +1478,9 @@ function InlineCommentComposer({
           onClick={onSubmit}
           disabled={!canSubmit || submitting || disabled}
         >
-          {submitting ? (agentAction ? "Processing…" : "Saving…") : isEditing ? "Save comment" : "Add comment"}
+          {submitting ? (proposalRefinement ? "Refining…" : agentAction ? "Processing…" : "Saving…") : proposalRefinement ? "Refine proposal" : isEditing ? "Save comment" : "Add comment"}
         </button>
-        {!isEditing && agentActionsEnabled ? (
+        {!isEditing && !proposalRefinement && agentActionsEnabled ? (
           <button
             type="button"
             className="btn"
@@ -1482,7 +1491,7 @@ function InlineCommentComposer({
             {agentAction === "asking" ? "Asking…" : "/btw"}
           </button>
         ) : null}
-        {!isEditing && agentActionsEnabled ? (
+        {!isEditing && !proposalRefinement && agentActionsEnabled ? (
           <button
             type="button"
             className="btn"

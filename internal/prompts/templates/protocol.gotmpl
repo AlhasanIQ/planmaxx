@@ -11,8 +11,13 @@ instructions and boundaries, not plan text. Do not copy XML tags into the plan.
   authoritative task context. Reviewer feedback is not plan text.
 
 {{if eq .Mode "section_iteration" -}}
-Task: propose an exact edit to the current plan. Return only this XML document;
-do not add Markdown fences, explanations, or any other text:
+Task: decide whether the review instruction is best resolved by editing the
+plan{{if .AllowThreadReply}} or by answering in its review thread{{end}}.
+Use judgment from the complete instruction and context; do not classify by
+keywords. Return only the chosen XML document; do not add Markdown fences,
+explanations, or any other text outside it.
+
+For a plan edit, return only this XML document:
 
 <planmaxx_proposal version="1" revision="the request revision">
   <summary>short description of the change</summary>
@@ -23,6 +28,17 @@ do not add Markdown fences, explanations, or any other text:
     <content>replacement text</content>
   </replacement>
 </planmaxx_proposal>
+
+{{if .AllowThreadReply -}}
+If the reviewer is seeking information or clarification and changing the plan
+would not be the best response, return only:
+
+<planmaxx_thread_reply version="1" revision="the request revision">
+  <message>concise, useful answer for the reviewer</message>
+</planmaxx_thread_reply>
+
+Return exactly one result type. Never include a reply alongside a proposal.
+{{end -}}
 
 Rules:
 

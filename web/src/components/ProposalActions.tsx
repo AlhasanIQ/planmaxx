@@ -12,6 +12,7 @@ export function ProposalActions({
   onApply,
   onDiscard,
   onIterate,
+  feedbackThreadIds,
 }: {
   proposal: PendingProposalSummary;
   disabled: boolean;
@@ -20,14 +21,20 @@ export function ProposalActions({
   prominent?: boolean;
   onApply: (proposalId: string) => void;
   onDiscard: (proposalId: string) => void;
-  onIterate: (anchor: Anchor, instruction: string) => Promise<boolean>;
+  onIterate: (anchor: Anchor, instruction: string, threadId?: string) => Promise<boolean>;
+  feedbackThreadIds: string[];
 }) {
   const [instruction, setInstruction] = useState("");
-  const canIterate = instruction.trim().length > 0 && !refineDisabled;
+  const feedbackCount = feedbackThreadIds.length;
+  const canIterate = (instruction.trim().length > 0 || feedbackCount > 0) && !refineDisabled;
 
   async function iterateAgain() {
     if (!canIterate) return;
-    const ok = await onIterate(proposal.anchor, instruction.trim());
+    const ok = await onIterate(
+      proposal.anchor,
+      instruction.trim() || "Address all active reviewer feedback on the pending proposal.",
+      feedbackCount === 1 ? feedbackThreadIds[0] : undefined,
+    );
     if (ok) setInstruction("");
   }
 
@@ -43,7 +50,7 @@ export function ProposalActions({
             {anchorLabel(proposal.anchor)} · current revision stays unchanged until Apply
           </p>
 		  <p className="text-[11px] text-foreground-muted">
-			Feedback is locked while this proposal is pending. Apply or discard it to continue editing comments.
+			Add and edit comments as usual, then refine once when the feedback batch is ready. Existing revision comments stay locked.
 		  </p>
         </div>
       </div>
@@ -60,7 +67,7 @@ export function ProposalActions({
       </label>
       <div className="mt-3 flex flex-wrap justify-end gap-2">
         <button type="button" className="btn btn-sm" onClick={iterateAgain} disabled={!canIterate}>
-          <RotateCcw size={13} /> {iterating ? "Iterating…" : "Iterate again"}
+          <RotateCcw size={13} /> {iterating ? "Refining…" : feedbackCount > 0 ? `Refine proposal (${feedbackCount})` : "Refine proposal"}
         </button>
         <button type="button" className="btn btn-ghost btn-sm btn-danger" onClick={() => onDiscard(proposal.id)} disabled={disabled}>
           <Trash2 size={13} /> Discard

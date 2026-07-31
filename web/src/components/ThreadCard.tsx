@@ -86,8 +86,8 @@ export function ThreadCard(props: ThreadCardProps) {
       {thread.lifecycle === "addressed" ? <p className="thread-history-note">This feedback is read-only. Create a follow-up for additional changes.</p> : null}
 
       <ul className="thread-message-list">
-        {thread.messages.map((message) => <li key={message.id} className="thread-message">
-          <div className="thread-message-meta"><span className="thread-actor">{actorLabel(message.author)}</span><span className="text-[11px] text-foreground-muted">{relativeTime(message.createdAt)}</span></div>
+        {thread.messages.map((message) => <li key={message.id} className={`thread-message${isAgentAuthor(message.author) ? " is-agent" : ""}`}>
+          <div className="thread-message-meta"><span className={`thread-actor${isAgentAuthor(message.author) ? " is-agent" : ""}`}>{isAgentAuthor(message.author) ? <Sparkles size={11} /> : null}{actorLabel(message.author)}</span><span className="text-[11px] text-foreground-muted">{relativeTime(message.createdAt)}</span></div>
           <p className="whitespace-pre-wrap break-words text-foreground">{message.body}</p>
         </li>)}
       </ul>
@@ -123,7 +123,11 @@ export function ThreadCard(props: ThreadCardProps) {
 }
 
 function actorLabel(author: string) {
-  return /(?:codex|agent|assistant)/i.test(author) ? "Agent" : "You";
+  return isAgentAuthor(author) ? "Agent" : "You";
+}
+
+function isAgentAuthor(author: string) {
+  return /(?:codex|agent|assistant)/i.test(author);
 }
 
 function IntentToggle({ intent, onChange, disabled }: { intent: ThreadIntent; onChange: (intent: ThreadIntent) => void; disabled: boolean }) {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type React from "react";
-import { anchorForCommentSelection } from "../lib/commentSelection";
+import { anchorForCommentSelection, sourceBoundariesForRenderedText } from "../lib/commentSelection";
 import type { Anchor, Thread } from "../types";
 
 export interface SelectionDraft {
@@ -145,21 +145,14 @@ export function draftFromSelection(selection: Selection | null): SelectionDraft 
   const endLineNumber = Number(endLine.dataset.lineContent);
   if (!Number.isInteger(startLineNumber) || !Number.isInteger(endLineNumber)) return null;
 
-  const selectionTouchesTable = isStructuredRow(startLine) || isStructuredRow(endLine);
-  // Table cells omit Markdown pipes, alignment markers, and spacing. Their DOM
-  // offsets therefore cannot safely target source characters. Keep the user's
-  // exact selected text, but scope table selections to complete source rows.
   const anchor = anchorForCommentSelection(
     startLineNumber,
-    textOffset(startLine, range.startContainer, range.startOffset),
+    sourceOffset(startLine, range.startContainer, range.startOffset),
     endLineNumber,
-    textOffset(endLine, range.endContainer, range.endOffset),
-    selectionTouchesTable,
+    sourceOffset(endLine, range.endContainer, range.endOffset),
   );
-  const quote = selectionTouchesTable
-    ? range.toString().trim()
-    : textForAnchorContents(startLine, endLine, anchor).trim();
-  if (!quote || (!selectionTouchesTable && compareAnchorPoints(anchor.startLine, anchor.startChar ?? 0, anchor.endLine, anchor.endChar ?? 0) === 0)) {
+  const quote = range.toString().trim();
+  if (!quote || compareAnchorPoints(anchor.startLine, anchor.startChar ?? 0, anchor.endLine, anchor.endChar ?? 0) === 0) {
     return null;
   }
 
@@ -176,10 +169,6 @@ export function selectedTextForAnchorInArticle(root: HTMLElement | null, anchor:
   const endContent = lineContent(root, anchor.endLine);
   if (!startContent || !endContent) return "";
   return textForAnchorContents(startContent, endContent, anchor);
-}
-
-function isStructuredRow(line: HTMLElement): boolean {
-  return line.dataset.structuredRow === "true";
 }
 
 export function restoreNativeSelection(root: HTMLElement | null, anchor: Anchor) {
@@ -208,6 +197,15 @@ function textOffset(container: HTMLElement, node: Node, offset: number): number 
   return range.toString().length;
 }
 
+function sourceOffset(container: HTMLElement, node: Node, offset: number): number {
+  const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+  const cell = element?.closest<HTMLElement>("[data-source-start][data-source-text]");
+  if (!cell || !container.contains(cell)) return textOffset(container, node, offset);
+  const renderedOffset = textOffset(cell, node, offset);
+  const boundaries = sourceBoundariesForRenderedText(cell.dataset.sourceText ?? "", cell.textContent ?? "");
+  return Number(cell.dataset.sourceStart) + (boundaries[renderedOffset] ?? boundaries.at(-1) ?? 0);
+}
+
 interface BoundaryHandlePosition {
   left: number;
   top: number;
@@ -233,16 +231,24 @@ function textForAnchorContents(startContent: HTMLElement, endContent: HTMLElemen
             : null;
     const text = content?.textContent ?? "";
     if (line === anchor.startLine && line === anchor.endLine) {
-      parts.push(text.slice(anchor.startChar ?? 0, anchor.endChar ?? text.length));
+      parts.push(textForSourceRange(content, anchor.startChar ?? 0, anchor.endChar ?? sourceTextLength(content)));
     } else if (line === anchor.startLine) {
-      parts.push(text.slice(anchor.startChar ?? 0));
+      parts.push(textForSourceRange(content, anchor.startChar ?? 0, sourceTextLength(content)));
     } else if (line === anchor.endLine) {
-      parts.push(text.slice(0, anchor.endChar ?? text.length));
+      parts.push(textForSourceRange(content, 0, anchor.endChar ?? sourceTextLength(content)));
     } else {
       parts.push(text);
     }
   }
   return parts.join("\n");
+}
+
+function textForSourceRange(content: HTMLElement | null, start: number, end: number): string {
+  if (!content) return "";
+  const range = document.createRange();
+  setBoundary(range, "start", content, start);
+  setBoundary(range, "end", content, end);
+  return range.toString();
 }
 
 function materializeCharacterAnchor(root: HTMLElement, anchor: Anchor): Anchor {
@@ -251,7 +257,7 @@ function materializeCharacterAnchor(root: HTMLElement, anchor: Anchor): Anchor {
     startLine: anchor.startLine,
     startChar: anchor.startChar ?? 0,
     endLine: anchor.endLine,
-    endChar: anchor.endChar ?? textLength(endContent),
+    endChar: anchor.endChar ?? sourceTextLength(endContent),
   };
 }
 
@@ -286,7 +292,7 @@ function boundaryHandlePosition(
   if (!content) return null;
 
   const range = document.createRange();
-  setBoundary(range, "start", content, clamp(char, 0, textLength(content)));
+  setBoundary(range, "start", content, clamp(char, 0, sourceTextLength(content)));
   range.collapse(true);
 
   const rect = range.getClientRects()[0];
@@ -325,7 +331,7 @@ function anchorPointFromClientPosition(
 
   return {
     line: Number(fallbackContent.dataset.lineContent),
-    char: clientX <= rect.left ? 0 : textLength(fallbackContent),
+    char: clientX <= rect.left ? 0 : sourceTextLength(fallbackContent),
   };
 }
 
@@ -334,7 +340,7 @@ function anchorPointForContent(content: HTMLElement, node: Node, offset: number)
   if (!Number.isInteger(line)) return null;
   return {
     line,
-    char: clamp(textOffset(content, node, offset), 0, textLength(content)),
+    char: clamp(sourceOffset(content, node, offset), 0, sourceTextLength(content)),
   };
 }
 
@@ -384,6 +390,11 @@ function caretPointFromClientPosition(clientX: number, clientY: number): { node:
 
 function textLength(content: HTMLElement | null): number {
   return content?.textContent?.length ?? 0;
+}
+
+function sourceTextLength(content: HTMLElement | null): number {
+  const row = content?.querySelector<HTMLElement>("[data-source-length]");
+  return row ? Number(row.dataset.sourceLength) : textLength(content);
 }
 
 function compareAnchorPoints(startLine: number, startChar: number, endLine: number, endChar: number): number {
@@ -477,6 +488,34 @@ function lineContent(root: HTMLElement, lineNumber: number): HTMLElement | null 
 }
 
 function setBoundary(
+  range: Range,
+  side: "start" | "end",
+  container: HTMLElement,
+  offset: number,
+) {
+  const cells = Array.from(container.querySelectorAll<HTMLElement>("[data-source-start][data-source-text]"));
+  if (cells.length > 0) {
+    const firstStart = Number(cells[0].dataset.sourceStart);
+    const cell = offset <= firstStart ? cells[0] : cells.find((candidate) => {
+      const start = Number(candidate.dataset.sourceStart);
+      const end = start + (candidate.dataset.sourceText?.length ?? 0);
+      return offset >= start && offset <= end;
+    }) ?? cells.find((candidate) => Number(candidate.dataset.sourceStart) >= offset) ?? cells.at(-1)!;
+    const sourceStart = Number(cell.dataset.sourceStart);
+    const boundaries = sourceBoundariesForRenderedText(cell.dataset.sourceText ?? "", cell.textContent ?? "");
+    const relative = Math.max(0, offset - sourceStart);
+    let renderedOffset = 0;
+    for (let index = 0; index < boundaries.length; index++) {
+      if (boundaries[index] <= relative) renderedOffset = index;
+      else break;
+    }
+    setTextBoundary(range, side, cell, renderedOffset);
+    return;
+  }
+  setTextBoundary(range, side, container, offset);
+}
+
+function setTextBoundary(
   range: Range,
   side: "start" | "end",
   container: HTMLElement,

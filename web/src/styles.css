@@ -134,11 +134,80 @@
     background: var(--color-surface-muted);
     color: var(--color-foreground-muted);
   }
-  .review-in-progress {
-    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium;
+  .agent-status {
+    display: none;
+    min-width: 0;
+    max-width: 430px;
+    align-items: center;
+    gap: 7px;
+    border-radius: 9px;
+    padding: 4px 9px;
+    font-size: 11px;
+    line-height: 1.2;
     background: color-mix(in srgb, var(--color-warning) 14%, transparent);
     color: var(--color-warning);
     border: 1px solid color-mix(in srgb, var(--color-warning) 35%, transparent);
+  }
+  .agent-status.is-subagent,
+  .agent-status.is-busy {
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+    color: var(--color-accent);
+    border-color: color-mix(in srgb, var(--color-accent) 38%, transparent);
+  }
+  .agent-status.is-error {
+    background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+    color: var(--color-danger);
+    border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
+  }
+  .agent-status.is-unavailable {
+    background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+    color: var(--color-warning);
+    border-color: color-mix(in srgb, var(--color-warning) 35%, transparent);
+  }
+  .agent-status.is-success {
+    background: color-mix(in srgb, var(--color-success) 10%, transparent);
+    color: var(--color-success);
+    border-color: color-mix(in srgb, var(--color-success) 35%, transparent);
+  }
+  .agent-status-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .agent-status-main {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: 5px;
+    white-space: nowrap;
+  }
+  .agent-status-main strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .agent-status-role {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.055em;
+    text-transform: uppercase;
+    opacity: 0.72;
+  }
+  .agent-status-detail {
+    overflow: hidden;
+    color: var(--color-foreground-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @media (min-width: 768px) {
+    .agent-status {
+      display: inline-flex;
+    }
+  }
+  @media (max-width: 1180px) {
+    .agent-status-detail {
+      display: none;
+    }
   }
 }
 
@@ -1386,6 +1455,10 @@
   font-size: 13px;
   line-height: 1.5;
 }
+.thread-message.is-agent {
+  border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface-muted));
+}
 .thread-message-meta {
   display: flex;
   align-items: center;
@@ -1538,8 +1611,7 @@
     gap: 6px;
     padding-inline: 10px;
   }
-  .topbar-shell > div:first-child strong,
-  .topbar-status {
+  .topbar-shell > div:first-child strong {
     display: none;
   }
   .topbar-actions {

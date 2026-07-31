@@ -13,11 +13,18 @@ description: Use when an agent-written plan, design, or spec needs user review b
    and prints the approved handoff to stdout. Use
    `--save-to-file /tmp/final-plan.md` to write only the finalized plan content
    to a different file instead.
-3. Wait for the command to finish.
+3. Run the review command in the foreground and wait for it to finish. Never
+   launch it as a background task: the blocked foreground command is what keeps
+   this agent from changing the plan while the user is still reviewing it.
 4. Treat stderr as status output and stdout as the user's next instruction.
 
 Applying proposals updates PlanMaxx's review state. No plan file is written on
 cancel; finalization is the only action that saves the finalized plan.
+
+If the review command is interrupted or fails, do not read comments from the
+bundle and apply them yourself, do not edit or commit the source plan, and do
+not infer approval. Relaunch `planmaxx review` in the foreground so PlanMaxx
+restores the review state, then keep waiting for an explicit final handoff.
 
 Outcomes:
 

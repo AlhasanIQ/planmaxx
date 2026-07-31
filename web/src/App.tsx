@@ -9,7 +9,7 @@ import { PromptDialog } from "./components/dialogs/PromptDialog";
 import { ConfirmDialog } from "./components/dialogs/ConfirmDialog";
 import { SubmissionReviewDialog, type SubmissionMode } from "./components/dialogs/SubmissionReviewDialog";
 import { AddressFeedbackDialog } from "./components/dialogs/AddressFeedbackDialog";
-import type { Anchor, Digest, RevisionComparison, Session, Thread, ThreadIntent } from "./types";
+import type { Anchor, Digest, IterationOperation, RevisionComparison, Session, Thread, ThreadIntent } from "./types";
 import { anchorLabel } from "./lib/anchors";
 import { sideQuestionContext } from "./lib/selectionContext";
 import {
@@ -25,6 +25,47 @@ import { useRevisionComparison } from "./hooks/useRevisionComparison";
 
 type CompletionState = null | "finalized" | "canceled";
 type ThreadAgentAction = "asking" | "iterating";
+type StatusActor = "planmaxx" | "subagent";
+type ReviewStatus = {
+  label: string;
+  kind: "idle" | "busy" | "error" | "success";
+  actor: StatusActor;
+};
+
+function iterationIsActive(operation?: IterationOperation | null) {
+  return operation?.status === "queued" || operation?.status === "running" || operation?.status === "canceling";
+}
+
+function operationStatus(operation: IterationOperation): ReviewStatus {
+  if (operation.status === "failed") {
+    return { label: operation.error || "Iteration failed", kind: "error", actor: "subagent" };
+  }
+  if (operation.status === "succeeded") {
+    return {
+      label: operation.resultKind === "thread_reply" ? "Answer added to review thread" : "Proposal ready",
+      kind: "success",
+      actor: "subagent",
+    };
+  }
+  if (operation.status === "canceled") {
+    return { label: "Iteration canceled", kind: "idle", actor: "planmaxx" };
+  }
+  const completePlan = operation.kind === "review";
+  return {
+    label: operation.status === "canceling"
+      ? "Stopping iteration…"
+      : completePlan
+        ? "Iterating complete plan…"
+        : "Iterating section…",
+    kind: "busy",
+    actor: "subagent",
+  };
+}
+
+function sessionStatus(session: Session): ReviewStatus {
+  if (session.operation) return operationStatus(session.operation);
+  return { label: "Review in progress", kind: "idle", actor: "planmaxx" };
+}
 
 type DialogState =
   | null
@@ -39,9 +80,10 @@ type DialogState =
 function useReviewController() {
   const [session, setSession] = useState<Session | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [status, setStatus] = useState<{ label: string; kind: "idle" | "busy" | "error" | "success" }>({
+  const [status, setStatus] = useState<ReviewStatus>({
     label: "Loading…",
     kind: "busy",
+    actor: "planmaxx",
   });
   const [completion, setCompletion] = useState<CompletionState>(null);
   const [busy, setBusy] = useState(false);
@@ -57,7 +99,9 @@ function useReviewController() {
   const [iteratingSection, setIteratingSection] = useState(false);
   const iteratingSectionRef = useRef(false);
   const initialComparisonRequestedRef = useRef(false);
+  const reportedOperationRef = useRef<string | null>(null);
   const sideQuestionsEnabled = session?.agent.available ?? false;
+  const iterationRunning = iterationIsActive(session?.operation);
 
   const pushToast = useCallback((kind: Toast["kind"], message: string) => {
     setToasts((prev) => [...prev, { id: Date.now() + Math.random(), kind, message }]);
@@ -85,7 +129,7 @@ function useReviewController() {
       const next = await api.getState();
       setSession(next);
       setLoadError(null);
-      setStatus({ label: "Review in progress", kind: "idle" });
+      setStatus(sessionStatus(next));
 	  if (next.pendingProposal) {
 	  suppressRevisionDiff();
 	  }
@@ -96,16 +140,71 @@ function useReviewController() {
           void handleCompareRevision(currentRevision.parentId, currentRevision.id);
         }
       }
+      return next;
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed to load review";
       setLoadError(msg);
-      setStatus({ label: msg, kind: "error" });
+      setStatus({ label: msg, kind: "error", actor: "planmaxx" });
+      return null;
     }
   }, []);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    const operation = session?.operation;
+    if (!operation || !iterationIsActive(operation)) return;
+    let stopped = false;
+    let timer: number | null = null;
+
+    const poll = async () => {
+      try {
+        const next = await api.getOperation(operation.id);
+        if (stopped) return;
+        setSession((current) => current ? { ...current, operation: next } : current);
+        setStatus(operationStatus(next));
+        if (iterationIsActive(next)) {
+          timer = window.setTimeout(poll, 1000);
+        } else {
+          const refreshed = await refresh();
+          if (!refreshed && !stopped) timer = window.setTimeout(poll, 1000);
+        }
+      } catch {
+        if (stopped) return;
+        await refresh();
+        if (!stopped) timer = window.setTimeout(poll, 1000);
+      }
+    };
+
+    timer = window.setTimeout(poll, 500);
+    return () => {
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [refresh, session?.operation?.id, session?.operation?.status]);
+
+  useEffect(() => {
+    const operation = session?.operation;
+    if (!operation || iterationIsActive(operation) || reportedOperationRef.current === operation.id) return;
+    reportedOperationRef.current = operation.id;
+    if (operation.status === "succeeded") {
+      if (operation.resultKind === "thread_reply") {
+        if (operation.threadId) setFocusedThreadId(operation.threadId);
+        pushToast("success", "Agent answered in the review thread");
+      } else {
+        suppressRevisionDiff();
+        pushToast("success", operation.kind === "review"
+          ? "Whole-plan proposal ready — apply it to create a new revision"
+          : "Proposal ready");
+      }
+    } else if (operation.status === "failed") {
+      pushToast("error", operation.error || "Iteration failed");
+    } else if (operation.status === "canceled") {
+      pushToast("info", "Iteration canceled");
+    }
+  }, [pushToast, session?.operation, suppressRevisionDiff]);
 
   const updateThreadIntent = useCallback(async (threadId: string, intent: ThreadIntent) => {
     const ok = await withBusy("Updating feedback…", () => api.setThreadIntent(threadId, intent));
@@ -114,6 +213,10 @@ function useReviewController() {
 
   const openSubmission = useCallback(async (mode: SubmissionMode) => {
     if (!session) return;
+    if (iterationIsActive(session.operation)) {
+      pushToast("info", "Wait for or stop the active iteration first");
+      return;
+    }
     if (session.pendingProposal) {
       pushToast("error", "Apply or discard the pending proposal first");
       return;
@@ -145,14 +248,18 @@ function useReviewController() {
     return () => document.removeEventListener("keydown", onKey);
   }, [completion, openFinalize]);
 
-  async function withBusy<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
+  async function withBusy<T>(
+    label: string,
+    fn: () => Promise<T>,
+    actor: StatusActor = "planmaxx",
+  ): Promise<T | null> {
     if (operationInFlightRef.current) return null;
     operationInFlightRef.current = true;
     setBusy(true);
-    setStatus({ label, kind: "busy" });
+    setStatus({ label, kind: "busy", actor });
     try {
       const result = await fn();
-      setStatus({ label: "Review in progress", kind: "idle" });
+      setStatus({ label: "Review in progress", kind: "idle", actor: "planmaxx" });
       return result;
     } catch (e) {
       if (isSourceChangeConflict(e)) {
@@ -166,7 +273,7 @@ function useReviewController() {
         await refresh();
       }
       const msg = e instanceof Error ? e.message : "Request failed";
-      setStatus({ label: msg, kind: "error" });
+      setStatus({ label: msg, kind: "error", actor });
       pushToast("error", msg);
       return null;
     } finally {
@@ -217,13 +324,17 @@ function useReviewController() {
     iteratingSectionRef.current = true;
     setIteratingSection(true);
     try {
-      const result = await withBusy("Iterating section…", () =>
-        api.proposeSection(threadId, anchor, instruction),
+      const result = await withBusy(
+        "Iterating section…",
+        () => api.proposeSection(threadId, anchor, instruction),
+        "subagent",
       );
       if (!result) return false;
-	  await refresh();
-		suppressRevisionDiff();
-      pushToast("success", "Proposal ready");
+      setSession((current) => current ? { ...current, operation: result } : current);
+      setStatus(operationStatus(result));
+      await refresh();
+      suppressRevisionDiff();
+      pushToast("info", "Iteration started — you can safely close this tab");
       return true;
     } finally {
       iteratingSectionRef.current = false;
@@ -296,14 +407,14 @@ function useReviewController() {
     if (operationInFlightRef.current) return false;
     operationInFlightRef.current = true;
     setBusy(true);
-    setStatus({ label: "Asking the agent (/btw)…", kind: "busy" });
+    setStatus({ label: "Asking the agent (/btw)…", kind: "busy", actor: "subagent" });
     setFocusedThreadId(thread.id);
     setThreadAgentActions((prev) => ({ ...prev, [thread.id]: "asking" }));
     try {
 	  await api.sideQuestion(thread.id, question, sideQuestionContext(sourceSession, thread));
 	  await refresh();
       pushToast("success", "/btw answer received (stays here unless you opt in)");
-      setStatus({ label: "Review in progress", kind: "idle" });
+      setStatus({ label: "Review in progress", kind: "idle", actor: "planmaxx" });
       return true;
     } catch (e) {
       if (isAgentIntegrationFailure(e)) {
@@ -311,7 +422,7 @@ function useReviewController() {
       }
       const msg = e instanceof Error ? e.message : "Side questions unavailable";
       pushToast("error", msg);
-      setStatus({ label: msg, kind: "error" });
+      setStatus({ label: msg, kind: "error", actor: "subagent" });
       return false;
     } finally {
       setThreadAgentActions((prev) => {
@@ -390,7 +501,7 @@ function useReviewController() {
     const ok = await withBusy("Finalizing…", () => api.finalize(digest));
     if (ok) {
       setCompletion("finalized");
-      setStatus({ label: "Finalized — handoff sent", kind: "success" });
+      setStatus({ label: "Finalized — handoff sent", kind: "success", actor: "planmaxx" });
     }
   }
 
@@ -401,11 +512,13 @@ function useReviewController() {
     iteratingSectionRef.current = true;
     setIteratingSection(true);
     try {
-      const result = await withBusy("Iterating complete plan…", () => api.proposeReview(digest));
+      const result = await withBusy("Iterating complete plan…", () => api.proposeReview(digest), "subagent");
       if (!result) return;
-	  await refresh();
-	  suppressRevisionDiff();
-      pushToast("success", "Whole-plan proposal ready — apply it to create a new revision");
+      setSession((current) => current ? { ...current, operation: result } : current);
+      setStatus(operationStatus(result));
+      await refresh();
+      suppressRevisionDiff();
+      pushToast("info", "Iteration started — you can safely close this tab");
     } finally {
       iteratingSectionRef.current = false;
       setIteratingSection(false);
@@ -417,8 +530,18 @@ function useReviewController() {
     const ok = await withBusy("Canceling…", () => api.cancel());
     if (ok) {
       setCompletion("canceled");
-      setStatus({ label: "Canceled", kind: "idle" });
+      setStatus({ label: "Canceled", kind: "idle", actor: "planmaxx" });
     }
+  }
+
+  async function handleCancelIteration() {
+    const operation = session?.operation;
+    if (!operation || !iterationIsActive(operation)) return;
+    const result = await withBusy("Stopping iteration…", () => api.cancelOperation(operation.id), "subagent");
+    if (!result) return;
+    setSession((current) => current ? { ...current, operation: result } : current);
+    setStatus(operationStatus(result));
+    await refresh();
   }
 
   return {
@@ -434,6 +557,7 @@ function useReviewController() {
     handleApplyProposal,
     handleAsk,
     handleCancel,
+    handleCancelIteration,
     handleCompareRevision,
     handleClearRevisionDiff,
     handleRestoreRevision,
@@ -461,6 +585,7 @@ function useReviewController() {
     revisionDiffError,
     revisionDiffLoading,
     iteratingSection,
+    iterationRunning,
     session,
     setDialog,
     setEditingThreadId,
@@ -538,6 +663,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     handleApplyProposal,
     handleAsk,
     handleCancel,
+    handleCancelIteration,
     handleCompareRevision,
     handleClearRevisionDiff,
     handleRestoreRevision,
@@ -565,6 +691,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
     revisionDiffError,
     revisionDiffLoading,
     iteratingSection,
+    iterationRunning,
     session,
     setDialog,
     setEditingThreadId,
@@ -624,6 +751,7 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
       <TopBar
         statusLabel={status.label}
         statusKind={status.kind}
+        statusActor={status.actor}
 		forIterationCount={counts.activeInstructions + counts.includedAnswers}
 		privateCount={counts.activePrivateNotes + counts.privateAnswers}
 		attentionCount={counts.detachedFeedback}
@@ -636,9 +764,11 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
         agentUnavailableReason={session.agent.unavailableReason}
         onOpenRevisions={() => setDialog({ kind: "revisions" })}
         onCancel={() => setDialog({ kind: "confirmCancel" })}
+        onCancelIteration={handleCancelIteration}
 		onIterate={openIterate}
         onFinalize={openFinalize}
         disabled={busy}
+        iterationRunning={iterationRunning}
 		iterateDisabled={!session.capabilities.canIterate}
 		finalizeDisabled={!session.capabilities.canFinalize}
       />
@@ -666,13 +796,13 @@ function ReviewScreen({ controller }: { controller: ReviewController }) {
           onUpdateComment={handleUpdateThread}
           onAskSideFromDraft={handleCreateThreadAndAsk}
 		  onIterateDraft={handleIterateDraft}
-          disabled={busy || Boolean(session.pendingProposal)}
+          disabled={busy || iterationRunning || !session.capabilities.canEditFeedback}
 		  proposalDisabled={busy || !session.capabilities.canApplyProposal}
-          proposalRefineDisabled={busy || !session.agent.available}
+          proposalRefineDisabled={busy || iterationRunning || !session.agent.available}
           proposalIterating={iteratingSection}
           onApplyProposal={handleApplyProposal}
           onDiscardProposal={handleDiscardProposal}
-          onIterateProposal={(anchor, instruction) => handleIterateSection(anchor, instruction)}
+          onIterateProposal={(anchor, instruction, threadId) => handleIterateSection(anchor, instruction, threadId)}
           onEditDone={clearEditingThread}
           onFocusThread={focusThreadTemporarily}
           onHoverThread={setHoveredThreadId}

@@ -115,6 +115,33 @@ func TestReviewStopsAreNonNilAndEmptyForUnchangedDocuments(t *testing.T) {
 	}
 }
 
+func TestProposalTargetThreadsUseAfterCoordinates(t *testing.T) {
+	sourceThread := session.Thread{ID: "source", RevisionID: "rev-1", Anchor: session.Anchor{StartLine: 1, EndLine: 1}}
+	proposalThread := session.Thread{ID: "proposal", RevisionID: "proposal-1", Anchor: session.Anchor{StartLine: 3, EndLine: 3}}
+	view := Build(BuildInput{
+		Mode: ModeProposal, BaseID: "rev-1", TargetID: "proposal-1",
+		Before: "old\nkeep\nend", After: "new\nkeep\nextra\nend",
+		Threads: []session.Thread{sourceThread, proposalThread},
+	})
+	placements := map[string]int{}
+	for _, placement := range view.ThreadPlacements {
+		placements[placement.ThreadID] = placement.RowIndex
+	}
+	sourceRow := view.Rows[placements["source"]]
+	sourceClusterStart := 0
+	for _, cluster := range view.Clusters {
+		if cluster.ID == sourceRow.ClusterID {
+			sourceClusterStart = cluster.BeforeStart
+		}
+	}
+	if sourceClusterStart != 1 {
+		t.Fatalf("source comment did not use before coordinates: row=%+v clusters=%+v", sourceRow, view.Clusters)
+	}
+	if row := view.Rows[placements["proposal"]]; row.After != 3 {
+		t.Fatalf("proposal comment did not use after coordinates: %+v", row)
+	}
+}
+
 func reconstruct(rows []ChangeRow, after bool) string {
 	parts := []string{}
 	for _, row := range rows {

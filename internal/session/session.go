@@ -58,6 +58,7 @@ func hasCharacterRange(anchor Anchor) bool {
 
 type Thread struct {
 	ID           string    `json:"id"`
+	RevisionID   string    `json:"revisionId,omitempty"`
 	Anchor       Anchor    `json:"anchor"`
 	SelectedText string    `json:"selectedText,omitempty"`
 	Kind         string    `json:"kind"`
@@ -135,6 +136,7 @@ type SectionProposalInput struct {
 	IncludedThreadIDs     []string
 	ConsumedSideAnswerIDs []string
 	ReviewDigest          *Digest
+	AgentReply            string
 }
 
 type Position struct {
@@ -179,12 +181,13 @@ func (s *Session) AddThread(anchor Anchor, body string) Thread {
 }
 
 func (s *Session) AddThreadWithSelectedText(anchor Anchor, body string, selectedText string) Thread {
-	return s.addThread(anchor, body, selectedText, ThreadKindDecision)
+	return s.addThread(s.CurrentRevisionID, anchor, body, selectedText, ThreadKindDecision)
 }
 
-func (s *Session) addThread(anchor Anchor, body string, selectedText string, kind string) Thread {
+func (s *Session) addThread(revisionID string, anchor Anchor, body string, selectedText string, kind string) Thread {
 	thread := Thread{
 		ID:           fmt.Sprintf("thread-%d", s.NextThreadID+1),
+		RevisionID:   revisionID,
 		Anchor:       anchor,
 		SelectedText: selectedText,
 		Kind:         kind,
@@ -198,6 +201,37 @@ func (s *Session) addThread(anchor Anchor, body string, selectedText string, kin
 	s.NextThreadID++
 	s.Threads = append(s.Threads, thread)
 	return thread
+}
+
+func (s *Session) RetargetProposalThreads(previousProposalID, nextProposalID, previousPlan, nextPlan string) {
+	for i := range s.Threads {
+		thread := &s.Threads[i]
+		if thread.RevisionID != previousProposalID {
+			continue
+		}
+		if anchor, ok := reanchorThreadInPlan(*thread, previousPlan, nextPlan); ok {
+			thread.Anchor = anchor
+		} else {
+			thread.Anchor = clampedLineAnchor(thread.Anchor, nextPlan)
+			thread.SelectedText = ""
+		}
+		thread.RevisionID = nextProposalID
+		if thread.Lifecycle() == ThreadLifecycleActive && thread.Intent() == ThreadIntentInstruction {
+			resolveThreadAfterProposal(thread, thread.Anchor)
+		}
+	}
+}
+
+func (s *Session) DeleteThreadsForRevision(revisionID string) {
+	kept := s.Threads[:0]
+	for _, thread := range s.Threads {
+		if thread.RevisionID == revisionID {
+			s.deleteSideAnswersForThread(thread.ID)
+			continue
+		}
+		kept = append(kept, thread)
+	}
+	s.Threads = kept
 }
 
 func (s *Session) AddReply(threadID string, body string) bool {
@@ -314,6 +348,9 @@ func (s *Session) ReconcileExternalPlan(previousSource string, nextSource string
 func (s *Session) reconcileActiveThreadAnchors(previousSource string, nextSource string) {
 	for i := range s.Threads {
 		thread := &s.Threads[i]
+		if thread.RevisionID != "" && thread.RevisionID != s.CurrentRevisionID {
+			continue
+		}
 		if thread.Lifecycle() != ThreadLifecycleActive {
 			continue
 		}
@@ -418,6 +455,11 @@ func (s *Session) ApplyProposalChecked(proposalID string) (Revision, error) {
 	}
 	s.consumeIncludedAnswers(proposal.ConsumedSideAnswerIDs)
 	s.normalizeAnswerDelivery()
+	for i := range s.Threads {
+		if s.Threads[i].RevisionID == proposal.ID {
+			s.Threads[i].RevisionID = revision.ID
+		}
+	}
 	s.PendingProposal = nil
 	if err := s.Validate(); err != nil {
 		*s = before
@@ -464,6 +506,7 @@ func (s *Session) DiscardProposalChecked(proposalID string) error {
 	if s.PendingProposal.ID != proposalID {
 		return &TransitionError{Kind: TransitionStale, Message: "proposal is no longer pending"}
 	}
+	s.DeleteThreadsForRevision(proposalID)
 	s.PendingProposal = nil
 	return nil
 }
@@ -632,6 +675,9 @@ func (s *Session) adjustThreadsForReviewProposal(proposal SectionProposal, previ
 	}
 	for i := range s.Threads {
 		thread := &s.Threads[i]
+		if thread.RevisionID == proposal.ID {
+			continue
+		}
 		if thread.Lifecycle() != ThreadLifecycleActive {
 			continue
 		}
@@ -690,6 +736,9 @@ func (s *Session) adjustThreadsForAppliedProposal(proposal SectionProposal, delt
 	}
 	for i := range s.Threads {
 		thread := &s.Threads[i]
+		if thread.RevisionID == proposal.ID {
+			continue
+		}
 		if thread.Lifecycle() != ThreadLifecycleActive {
 			continue
 		}
@@ -743,6 +792,9 @@ func (s *Session) adjustThreadsForAppliedHunks(proposal SectionProposal) {
 	}
 	for i := range s.Threads {
 		thread := &s.Threads[i]
+		if thread.RevisionID == proposal.ID {
+			continue
+		}
 		if thread.Lifecycle() != ThreadLifecycleActive {
 			continue
 		}

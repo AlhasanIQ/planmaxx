@@ -139,6 +139,24 @@ func TestSectionIterationRendersTemplate(t *testing.T) {
 	}
 }
 
+func TestThreadScopedIterationOffersReplyOrProposalWithoutHeuristics(t *testing.T) {
+	prompt := SectionIteration(SectionIterationInput{
+		Protocol:         `<planmaxx_iteration version="1" revision="rev-2"/>`,
+		AllowThreadReply: true,
+	})
+	for _, want := range []string{
+		"planmaxx_proposal",
+		"planmaxx_thread_reply",
+		"Use judgment from the complete instruction and context",
+		"do not classify by\nkeywords",
+		"Return exactly one result type",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected thread-scoped iteration prompt to contain %q\n%s", want, prompt)
+		}
+	}
+}
+
 func TestHTMLSectionIterationKeepsHTMLSource(t *testing.T) {
 	prompt := SectionIteration(SectionIterationInput{
 		Format:   planformat.HTML,

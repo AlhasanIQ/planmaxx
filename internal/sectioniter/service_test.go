@@ -120,6 +120,40 @@ func TestServiceBuildsProposalInputFromAgentResponse(t *testing.T) {
 	}
 }
 
+func TestServiceBuildsThreadReplyForExplicitComment(t *testing.T) {
+	client := &fakePromptClient{answer: `<planmaxx_thread_reply version="1" revision="rev-1"><message>It is inherited from the deployment defaults.</message></planmaxx_thread_reply>`}
+	got, err := NewService("thread-1", client).Propose(context.Background(), Request{
+		RevisionID: "rev-1", ThreadID: "review-thread", Plan: "# Plan\n\n- Timeout: default",
+		Anchor: session.Anchor{StartLine: 3, EndLine: 3}, ReviewerInstruction: "What does default mean?",
+		Protocol: `<planmaxx_iteration version="1" revision="rev-1"/>`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ThreadID != "review-thread" || got.AgentReply != "It is inherited from the deployment defaults." || got.ProposedPlan != "" {
+		t.Fatalf("unexpected reply result %+v", got)
+	}
+	for _, want := range []string{"planmaxx_thread_reply", "do not classify by", "Return exactly one result type"} {
+		if !strings.Contains(client.prompt, want) {
+			t.Fatalf("expected reply contract %q in prompt\n%s", want, client.prompt)
+		}
+	}
+}
+
+func TestServiceRejectsThreadReplyWithoutExplicitComment(t *testing.T) {
+	client := &fakePromptClient{answer: `<planmaxx_thread_reply version="1" revision="rev-1"><message>Answer</message></planmaxx_thread_reply>`}
+	_, err := NewService("thread-1", client).Propose(context.Background(), Request{
+		RevisionID: "rev-1", Plan: "# Plan", Anchor: session.Anchor{StartLine: 1, EndLine: 1},
+		ReviewerInstruction: "Review this",
+	})
+	if err == nil || !strings.Contains(err.Error(), "without a target thread") {
+		t.Fatalf("expected unscoped reply rejection, got %v", err)
+	}
+	if strings.Contains(client.prompt, "planmaxx_thread_reply") {
+		t.Fatalf("unscoped iteration advertised thread replies\n%s", client.prompt)
+	}
+}
+
 func TestServiceAppliesHTMLSourceReplacement(t *testing.T) {
 	client := &fakePromptClient{answer: `<planmaxx_proposal version="1" revision="rev-1"><summary>Clarified heading.</summary><replacement target="lines"><expected>&lt;h1&gt;Old&lt;/h1&gt;</expected><content>&lt;h1&gt;New&lt;/h1&gt;</content></replacement></planmaxx_proposal>`}
 	got, err := NewService("thread-1", client).Propose(context.Background(), Request{

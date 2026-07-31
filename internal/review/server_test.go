@@ -2105,6 +2105,222 @@ func TestProposeSectionRouteCreatesPendingProposal(t *testing.T) {
 	}
 }
 
+func TestBackgroundThreadIterationCanAnswerWithoutProposal(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Timeout: default")
+	thread := s.AddThread(session.Anchor{StartLine: 3, EndLine: 3}, "What does default mean?")
+	client := &fakeSectionPromptClient{answer: `<planmaxx_thread_reply version="1" revision="rev-1"><message>It inherits the deployment default.</message></planmaxx_thread_reply>`}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", client))
+
+	res := serveStartSectionIteration(server, `{"threadId":"`+thread.ID+`","anchor":{"startLine":3,"endLine":3},"instruction":"What does default mean?"}`)
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted iteration, got %d: %s", res.Code, res.Body.String())
+	}
+	operation := waitForIterationOperation(t, server, iterationOperationSucceeded)
+	if operation.ResultKind != "thread_reply" || operation.ThreadID != thread.ID || operation.ProposalID != "" {
+		t.Fatalf("unexpected reply operation %+v", operation)
+	}
+	if s.PendingProposal != nil {
+		t.Fatalf("thread reply created a proposal: %+v", s.PendingProposal)
+	}
+	if len(s.Threads[0].Messages) != 2 || s.Threads[0].Messages[1].Author != "assistant" || s.Threads[0].Messages[1].Body != "It inherits the deployment default." {
+		t.Fatalf("agent answer was not stored in its thread: %+v", s.Threads[0].Messages)
+	}
+	if !strings.Contains(client.prompt, "planmaxx_thread_reply") {
+		t.Fatalf("thread reply schema missing from prompt\n%s", client.prompt)
+	}
+}
+
+func TestBackgroundIterationSurvivesSubmittingRequestCancellation(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Old")
+	client := blockingSectionPromptClient{
+		started: make(chan struct{}),
+		unblock: make(chan string, 1),
+	}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", client))
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/iterations/section",
+		strings.NewReader(`{"anchor":{"startLine":3,"endLine":3},"instruction":"Clarify"}`),
+	).WithContext(ctx)
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted background iteration, got %d: %s", res.Code, res.Body.String())
+	}
+	cancel()
+
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("iteration did not continue after the submitting request was canceled")
+	}
+	client.unblock <- sectionProposalResponse("rev-1", "lines", "- Old", "Clarified.", "- New")
+	operation := waitForIterationOperation(t, server, iterationOperationSucceeded)
+	if operation.ProposalID == "" || s.PendingProposal == nil || s.PendingProposal.ID != operation.ProposalID {
+		t.Fatalf("expected completed proposal after disconnect, operation=%+v proposal=%+v", operation, s.PendingProposal)
+	}
+	if applied := serveApplyProposal(server, operation.ProposalID); applied.Code != http.StatusOK {
+		t.Fatalf("apply background proposal: %d %s", applied.Code, applied.Body.String())
+	}
+	stateResponse := serveState(server)
+	var state clientState
+	if err := json.Unmarshal(stateResponse.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Operation != nil {
+		t.Fatalf("completed operation remained after its proposal was consumed: %+v", state.Operation)
+	}
+}
+
+func TestBackgroundIterationReturnsExistingOperationForDuplicateSubmission(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Old")
+	client := blockingSectionPromptClient{
+		started: make(chan struct{}),
+		unblock: make(chan string, 1),
+	}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", client))
+	body := `{"anchor":{"startLine":3,"endLine":3},"instruction":"Clarify"}`
+
+	first := serveStartSectionIteration(server, body)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first iteration was not accepted: %d %s", first.Code, first.Body.String())
+	}
+	var firstOperation iterationOperationView
+	if err := json.Unmarshal(first.Body.Bytes(), &firstOperation); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for iteration")
+	}
+
+	duplicate := serveStartSectionIteration(server, body)
+	if duplicate.Code != http.StatusAccepted {
+		t.Fatalf("duplicate iteration was not idempotent: %d %s", duplicate.Code, duplicate.Body.String())
+	}
+	var duplicateOperation iterationOperationView
+	if err := json.Unmarshal(duplicate.Body.Bytes(), &duplicateOperation); err != nil {
+		t.Fatal(err)
+	}
+	if duplicateOperation.ID != firstOperation.ID {
+		t.Fatalf("duplicate created a second operation: first=%q duplicate=%q", firstOperation.ID, duplicateOperation.ID)
+	}
+
+	conflict := serveStartSectionIteration(server, `{"anchor":{"startLine":3,"endLine":3},"instruction":"Use different wording"}`)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("different concurrent iteration should conflict, got %d: %s", conflict.Code, conflict.Body.String())
+	}
+
+	client.unblock <- sectionProposalResponse("rev-1", "lines", "- Old", "Clarified.", "- New")
+	waitForIterationOperation(t, server, iterationOperationSucceeded)
+}
+
+func TestBackgroundIterationAppearsInStateAndLocksReview(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Old")
+	thread := s.AddThread(session.Anchor{StartLine: 3, EndLine: 3}, "Clarify")
+	client := blockingSectionPromptClient{
+		started: make(chan struct{}),
+		unblock: make(chan string, 1),
+	}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", client))
+	res := serveStartSectionIteration(server, `{"threadId":"`+thread.ID+`","anchor":{"startLine":3,"endLine":3},"instruction":"Clarify"}`)
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted iteration, got %d: %s", res.Code, res.Body.String())
+	}
+	var startedOperation iterationOperationView
+	if err := json.Unmarshal(res.Body.Bytes(), &startedOperation); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for iteration")
+	}
+
+	stateResponse := serveState(server)
+	var state clientState
+	if err := json.Unmarshal(stateResponse.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Operation == nil {
+		t.Fatalf("expected operation in state with iteration disabled, got %+v", state)
+	}
+	operationResponse := serveGetOperation(server, startedOperation.ID)
+	if operationResponse.Code != http.StatusOK || !strings.Contains(operationResponse.Body.String(), startedOperation.ID) {
+		t.Fatalf("operation polling endpoint did not restore the active operation: %d %s", operationResponse.Code, operationResponse.Body.String())
+	}
+	if state.Capabilities.CanIterate || state.Capabilities.CanFinalize || state.Capabilities.CanEditFeedback {
+		t.Fatalf("active iteration did not lock review capabilities: %+v", state.Capabilities)
+	}
+	if len(state.Threads) != 1 || state.Threads[0].Capabilities.CanEdit || state.Threads[0].Capabilities.CanIterate {
+		t.Fatalf("active iteration did not lock thread capabilities: %+v", state.Threads)
+	}
+	if mutation := serveReplyThread(server, thread.ID, `{"body":"Concurrent reply"}`); mutation.Code != http.StatusConflict {
+		t.Fatalf("active iteration should reject feedback mutation, got %d: %s", mutation.Code, mutation.Body.String())
+	}
+
+	client.unblock <- sectionProposalResponse("rev-1", "lines", "- Old", "Clarified.", "- New")
+	waitForIterationOperation(t, server, iterationOperationSucceeded)
+}
+
+func TestBackgroundIterationCanBeCanceledExplicitly(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Old")
+	client := blockingSectionPromptClient{
+		started: make(chan struct{}),
+		unblock: make(chan string),
+	}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", client))
+	start := serveStartSectionIteration(server, `{"anchor":{"startLine":3,"endLine":3},"instruction":"Clarify"}`)
+	var operation iterationOperationView
+	if err := json.Unmarshal(start.Body.Bytes(), &operation); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for iteration")
+	}
+
+	cancel := serveCancelOperation(server, operation.ID)
+	if cancel.Code != http.StatusOK {
+		t.Fatalf("cancel operation failed: %d %s", cancel.Code, cancel.Body.String())
+	}
+	canceled := waitForIterationOperation(t, server, iterationOperationCanceled)
+	if canceled.ID != operation.ID || s.PendingProposal != nil {
+		t.Fatalf("canceled iteration mutated review: operation=%+v proposal=%+v", canceled, s.PendingProposal)
+	}
+}
+
+func TestBackgroundIterationFailureIsVisibleAndUnlocksReview(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Old")
+	client := &fakeSectionPromptClient{err: errors.New("model unavailable")}
+	server := NewServer(s).
+		WithSectionIterations(sectioniter.NewService("current-thread", client)).
+		WithAgent(AgentInfo{ID: "test", DisplayName: "Test agent", Available: true})
+	start := serveStartSectionIteration(server, `{"anchor":{"startLine":3,"endLine":3},"instruction":"Clarify"}`)
+	if start.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted iteration, got %d: %s", start.Code, start.Body.String())
+	}
+	failed := waitForIterationOperation(t, server, iterationOperationFailed)
+	if !strings.Contains(failed.Error, "model unavailable") {
+		t.Fatalf("expected operation error to be retained, got %+v", failed)
+	}
+
+	stateResponse := serveState(server)
+	var state clientState
+	if err := json.Unmarshal(stateResponse.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Operation == nil || state.Operation.Status != iterationOperationFailed {
+		t.Fatalf("failed operation was not restored in state: %+v", state.Operation)
+	}
+	if !state.Capabilities.CanIterate || !state.Capabilities.CanFinalize || !state.Capabilities.CanEditFeedback {
+		t.Fatalf("failed operation left review locked: %+v", state.Capabilities)
+	}
+}
+
 func TestFinalReviewIterationPersistsLifecycleAcrossRefinementAndApply(t *testing.T) {
 	s := session.New("plan-1", "one\nold two\nkeep\nold four")
 	decision := s.AddThread(session.Anchor{StartLine: 2, EndLine: 2}, "Update two")
@@ -2279,6 +2495,89 @@ func TestProposeSectionRouteRefinesPendingProposalWhenAnchorMatches(t *testing.T
 	}
 	if !strings.Contains(client.prompt, "<selected_text>- New&#xA;- Extra</selected_text>") {
 		t.Fatalf("expected prompt to use pending proposal section, got %q", client.prompt)
+	}
+}
+
+func TestPendingProposalCommentsBatchIntoOneRefinement(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Old\n- Keep")
+	pending := s.CreateSectionProposal(session.SectionProposalInput{
+		Anchor:            session.Anchor{StartLine: 3, EndLine: 3},
+		ReplacementAnchor: session.Anchor{StartLine: 3, EndLine: 4},
+		OriginalSection:   "- Old",
+		ProposedSection:   "- New\n- Extra",
+		ProposedPlan:      "# Plan\n\n- New\n- Extra\n- Keep",
+		Summary:           "Clarified wording.",
+		Instruction:       "Clarify this step",
+	})
+	client := &fakeSectionPromptClient{answer: sectionProposalResponse("rev-1", "lines", "- New\n- Extra", "Refined both comments.", "- Final")}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", client))
+
+	first := serveCreateThread(server, `{"anchor":{"startLine":3,"endLine":3},"body":"Make this more direct","selectedText":"- New","intent":"instruction"}`)
+	second := serveCreateThread(server, `{"anchor":{"startLine":4,"endLine":4},"body":"Remove the extra line","selectedText":"- Extra","intent":"instruction"}`)
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("expected proposal comments to save without refinement, got %d and %d", first.Code, second.Code)
+	}
+	if s.PendingProposal == nil || s.PendingProposal.ID != pending.ID || len(s.Threads) != 2 {
+		t.Fatalf("saving comments mutated the proposal: proposal=%+v threads=%+v", s.PendingProposal, s.Threads)
+	}
+	for _, thread := range s.Threads {
+		if thread.RevisionID != pending.ID {
+			t.Fatalf("proposal comment targets %q, want %q", thread.RevisionID, pending.ID)
+		}
+	}
+
+	res := serveProposeSection(server, `{"anchor":{"startLine":3,"endLine":3},"instruction":"Address all active reviewer feedback on the pending proposal."}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected batched refinement 200, got %d: %s", res.Code, res.Body.String())
+	}
+	if !strings.Contains(client.prompt, "Make this more direct") || !strings.Contains(client.prompt, "Remove the extra line") {
+		t.Fatalf("refinement prompt omitted proposal feedback:\n%s", client.prompt)
+	}
+	if s.PendingProposal == nil || s.PendingProposal.ID == pending.ID {
+		t.Fatalf("expected a replacement proposal, got %+v", s.PendingProposal)
+	}
+	for _, thread := range s.Threads {
+		if thread.RevisionID != s.PendingProposal.ID || thread.Lifecycle() != session.ThreadLifecycleAddressed {
+			t.Fatalf("consumed proposal comment was not retained as addressed history: %+v", thread)
+		}
+	}
+}
+
+func TestSinglePendingProposalQuestionCanAnswerInThread(t *testing.T) {
+	s := session.New("plan-1", "# Plan\n\n- Timeout: deployment default")
+	pending := s.CreateSectionProposal(session.SectionProposalInput{
+		Anchor:            session.Anchor{StartLine: 1, EndLine: 3},
+		ReplacementAnchor: session.Anchor{StartLine: 1, EndLine: 3},
+		OriginalSection:   s.Plan,
+		ProposedSection:   s.Plan,
+		ProposedPlan:      s.Plan,
+		Summary:           "Pending review.",
+	})
+	thread, err := s.AddThreadWithIntentForRevision(
+		pending.ID,
+		session.Anchor{StartLine: 3, EndLine: 3},
+		"What does deployment default mean?",
+		"- Timeout: deployment default",
+		session.ThreadIntentInstruction,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeSectionPromptClient{answer: `<planmaxx_thread_reply version="1" revision="rev-1"><message>It is inherited from the deployment configuration.</message></planmaxx_thread_reply>`}
+	server := NewServer(s).WithSectionIterations(sectioniter.NewService("current-thread", client))
+
+	res := serveProposeSection(server, `{"threadId":"`+thread.ID+`","anchor":{"startLine":1,"endLine":3},"instruction":"Address all active reviewer feedback on the pending proposal."}`)
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected thread answer 200, got %d: %s", res.Code, res.Body.String())
+	}
+	if s.PendingProposal == nil || s.PendingProposal.ID != pending.ID || len(s.Revisions) != 1 {
+		t.Fatalf("thread answer replaced or applied the proposal: proposal=%+v revisions=%+v", s.PendingProposal, s.Revisions)
+	}
+	if len(s.Threads[0].Messages) != 2 || s.Threads[0].Messages[1].Author != "assistant" {
+		t.Fatalf("agent answer was not appended to the proposal thread: %+v", s.Threads[0].Messages)
+	}
+	if !strings.Contains(client.prompt, "planmaxx_thread_reply") || !strings.Contains(client.prompt, "What does deployment default mean?") {
+		t.Fatalf("proposal question was not offered a thread reply:\n%s", client.prompt)
 	}
 }
 
@@ -2753,6 +3052,54 @@ func serveProposeSection(server *Server, body string) *httptest.ResponseRecorder
 	res := httptest.NewRecorder()
 	server.Handler().ServeHTTP(res, req)
 	return res
+}
+
+func serveStartSectionIteration(server *Server, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/iterations/section", strings.NewReader(body))
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+	return res
+}
+
+func serveCancelOperation(server *Server, operationID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/operations/"+operationID+"/cancel", strings.NewReader("{}"))
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+	return res
+}
+
+func serveGetOperation(server *Server, operationID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/api/operations/"+operationID, nil)
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+	return res
+}
+
+func serveState(server *Server) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	res := httptest.NewRecorder()
+	server.Handler().ServeHTTP(res, req)
+	return res
+}
+
+func waitForIterationOperation(t *testing.T, server *Server, status string) iterationOperationView {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		operation := snapshotIterationOperation(server.iterationOperation)
+		server.mu.Unlock()
+		if operation != nil && operation.Status == status {
+			return *operation
+		}
+		if operation != nil &&
+			(operation.Status == iterationOperationSucceeded || operation.Status == iterationOperationFailed || operation.Status == iterationOperationCanceled) {
+			t.Fatalf("iteration reached %q while waiting for %q: %+v", operation.Status, status, operation)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for iteration status %q", status)
+	return iterationOperationView{}
 }
 
 func serveProposeReview(server *Server, body string) *httptest.ResponseRecorder {
