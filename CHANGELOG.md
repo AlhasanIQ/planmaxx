@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.8.0 - 2026-07-31
+
+- Added browser-presence cleanup for orphaned reviews. After the last connected
+  review tab has been gone for one hour, PlanMaxx preserves the active bundle,
+  stops the blocking review command, and returns an agent-facing explanation
+  with instructions for `--orphan-timeout`; reconnecting cancels the countdown,
+  and zero disables cleanup.
+
 ## v0.7.0 - 2026-07-30
 
 - Added Grok Build assisted review through exact invocation-time `${SESSION_ID}`

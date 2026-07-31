@@ -41,6 +41,7 @@ type reviewOptions struct {
 	host                string
 	port                int
 	noBrowser           bool
+	orphanTimeout       time.Duration
 	sideQuestionTimeout time.Duration
 	agent               string
 	claudeSessionID     string
@@ -67,6 +68,7 @@ var checkClaudeCapabilities = validateClaudeCapabilities
 var checkGrokCapabilities = validateGrokCapabilities
 
 const defaultAppServerRequestTimeout = 30 * time.Minute
+const defaultOrphanTimeout = time.Hour
 const claudeCapabilityCheckTimeout = 5 * time.Second
 const grokCapabilityCheckTimeout = 5 * time.Second
 const agentAttachmentProbeTimeout = 5 * time.Second
@@ -88,7 +90,12 @@ const (
 )
 
 func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
-	opts := reviewOptions{host: "127.0.0.1", sideQuestionTimeout: defaultAppServerRequestTimeout, agent: agentAuto}
+	opts := reviewOptions{
+		host:                "127.0.0.1",
+		orphanTimeout:       defaultOrphanTimeout,
+		sideQuestionTimeout: defaultAppServerRequestTimeout,
+		agent:               agentAuto,
+	}
 
 	cmd := &cobra.Command{
 		Use:   "review <plan-file>",
@@ -110,6 +117,9 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 
 			if opts.localBundle && opts.bundleOut != "" {
 				return errors.New("--local-bundle cannot be combined with --bundle-out or --autosave-out")
+			}
+			if opts.orphanTimeout < 0 {
+				return errors.New("--orphan-timeout cannot be negative")
 			}
 
 			var bundlePath string
@@ -232,6 +242,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			}
 			reviewSession.PlanPath = planPath
 			reviewServer := review.NewServer(reviewSession).
+				WithOrphanTimeout(opts.orphanTimeout).
 				WithSideQuestionTimeout(opts.sideQuestionTimeout).
 				WithAutosaveDocument(document)
 			if err := reviewServer.EnableBundle(bundle); err != nil {
@@ -254,6 +265,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 
 			httpServer := &http.Server{Handler: reviewServer.Handler()}
 			defer func() {
+				reviewServer.Close()
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
 				if err := httpServer.Shutdown(shutdownCtx); err != nil {
@@ -279,6 +291,13 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			}
 			if result.Canceled {
 				return fmt.Errorf("review canceled")
+			}
+			if result.Abandoned {
+				return fmt.Errorf(
+					"orphan cleanup stopped the review automatically after %s with no browser tabs connected; progress remains saved in %s; rerun with --orphan-timeout <duration> to wait longer, or --orphan-timeout 0 to disable automatic cleanup",
+					opts.orphanTimeout,
+					bundlePath,
+				)
 			}
 			savePath := planPath
 			if opts.saveToFile != "" {
@@ -306,6 +325,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&opts.host, "host", opts.host, "host interface for the local review server")
 	cmd.Flags().IntVar(&opts.port, "port", opts.port, "port for the local review server; 0 chooses a random port")
 	cmd.Flags().BoolVar(&opts.noBrowser, "no-browser", opts.noBrowser, "print the review URL without opening a browser")
+	cmd.Flags().DurationVar(&opts.orphanTimeout, "orphan-timeout", opts.orphanTimeout, "stop after this long with no browser tabs connected; 0 disables automatic cleanup")
 	cmd.Flags().StringVar(&opts.agent, "agent", opts.agent, "agent integration to use: auto, codex, claude, grok, or none")
 	cmd.Flags().StringVar(&opts.claudeSessionID, "claude-session-id", "", "Claude Code session identifier supplied by the invoked PlanMaxx skill")
 	cmd.Flags().StringVar(&opts.grokSessionID, "grok-session-id", "", "Grok Build session identifier supplied by the invoked PlanMaxx skill")

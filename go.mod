@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/creativeprojects/go-selfupdate v1.4.1
 	github.com/go-git/go-git/v5 v5.13.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/mod v0.17.0

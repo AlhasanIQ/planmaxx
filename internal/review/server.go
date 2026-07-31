@@ -38,6 +38,7 @@ type Server struct {
 	session            *session.Session
 	done               chan Result
 	finished           bool
+	presence           *browserPresence
 	autosavePath       string
 	autosaveStatus     string
 	autosaveGeneration uint64
@@ -55,12 +56,13 @@ type Server struct {
 }
 
 type Result struct {
-	Session  session.Session
-	Canceled bool
+	Session   session.Session
+	Canceled  bool
+	Abandoned bool
 }
 
 func NewServer(s *session.Session) *Server {
-	return &Server{
+	server := &Server{
 		session: s,
 		done:    make(chan Result, 1),
 		agent: AgentInfo{
@@ -70,11 +72,14 @@ func NewServer(s *session.Session) *Server {
 			UnavailableReason: "No supported active agent session was detected.",
 		},
 	}
+	server.presence = newBrowserPresence(server.abandonOrphanedReview)
+	return server
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/presence", s.handlePresence)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/api/threads", s.handleCreateThread)
 	mux.HandleFunc("/api/threads/", s.handleThreadAction)
@@ -90,6 +95,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/cancel", s.handleCancel)
 	mux.Handle("/", http.FileServer(http.FS(staticSubFS())))
 	return mux
+}
+
+// WithOrphanTimeout stops an active review after its last browser connection
+// has been gone for timeout. A zero timeout disables automatic cleanup.
+func (s *Server) WithOrphanTimeout(timeout time.Duration) *Server {
+	s.presence.SetTimeout(timeout)
+	return s
+}
+
+// Close releases long-lived browser connections. net/http cannot close
+// hijacked WebSocket connections during Server.Shutdown, so the CLI calls this
+// before shutting down its HTTP server.
+func (s *Server) Close() {
+	s.presence.Close()
 }
 
 func (s *Server) WithSideQuestions(service sidequestions.Service) *Server {
@@ -1330,6 +1349,19 @@ func (s *Server) cancel() (Result, error) {
 		}
 	}
 	return Result{Session: *s.session, Canceled: true}, nil
+}
+
+func (s *Server) abandonOrphanedReview() {
+	s.mu.Lock()
+	if s.finished {
+		s.mu.Unlock()
+		return
+	}
+	s.finished = true
+	result := Result{Session: *s.session, Abandoned: true}
+	s.mu.Unlock()
+
+	s.done <- result
 }
 
 // RecordSourceSave updates the persisted source baseline after PlanMaxx writes

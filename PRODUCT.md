@@ -4,6 +4,19 @@ PlanMaxx is a local, blocking review boundary between an agent-written plan and
 implementation. The plan file and the local review bundle remain authoritative;
 an agent provider is optional.
 
+## Review lifetime
+
+- A review remains alive while at least one browser tab is connected.
+- Starting a review with no browser connected, or later losing every connected
+  tab, starts a one-hour orphan timeout. Connecting during that hour keeps the
+  review alive.
+- Orphan cleanup preserves the active review bundle, does not write the plan or
+  emit an approval handoff, and tells the caller why the process stopped.
+- `--orphan-timeout <duration>` changes the delay and
+  `--orphan-timeout 0` disables automatic cleanup.
+- Manual `--no-browser` workflows have the same one-hour connection window and
+  can opt out when an indefinite wait is required.
+
 ## Support tiers
 
 1. **Review and handoff:** Any caller that can run `planmaxx review` can pause,

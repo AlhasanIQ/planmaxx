@@ -114,12 +114,17 @@ PlanMaxx opens a local browser and waits for one outcome:
 - **Finalize** approves the current plan and emits its handoff.
 - **Iterate** creates a proposal to review before it becomes a revision.
 - **Cancel** exits without a handoff.
+- **Orphan cleanup** stops the process after no review tab has been connected
+  for one hour.
 
 The approved handoff is always printed to stdout. On finalization, PlanMaxx
 writes the finalized plan back to its source file by default. Pass
 `--save-to-file <path>` to write only the finalized plan content to a different
 file instead; the handoff prompt is never written there. No plan file is
-written on cancel.
+written on cancel or orphan cleanup. Orphaned progress remains in the active
+review bundle and is restored on the next run. Use
+`--orphan-timeout <duration>` to change the one-hour delay, or
+`--orphan-timeout 0` to disable automatic cleanup.
 
 ## Screenshots
 
@@ -149,6 +154,9 @@ handoff preview makes the final agent context inspectable before approval.
   sections, and navigates the rendered HTML Preview without leaving it.
 - `/btw` answers remain private unless explicitly included.
 - Applying a proposal creates a revision; creating or refining one does not.
+- Starting with no browser, or closing the last connected review tab, starts
+  the orphan timeout. Opening or restoring a tab before it expires cancels
+  cleanup.
 - The complete review workspace is one private `.planmaxx` Git bundle in the
   platform's user-state directory. It includes revision commits, a pending
   proposal ref, feedback notes, finalization tags, and versioned domain state;

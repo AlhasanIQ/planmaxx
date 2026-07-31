@@ -15,6 +15,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
+
+	reviewstore "github.com/AlhasanIQ/planmaxx/internal/review"
 )
 
 type lockedBuffer struct {
@@ -120,6 +124,60 @@ func TestCancelReviewExitsNonZeroWithoutHandoff(t *testing.T) {
 	}
 	if strings.Contains(review.stdout.String(), "Continue the user's approved plan work.") {
 		t.Fatalf("expected no handoff on cancel, got %q", review.stdout.String())
+	}
+}
+
+func TestBrowserPresenceKeepsReviewAliveThenOrphanCleanupStopsIt(t *testing.T) {
+	const timeout = time.Second
+	plan := realisticPlan("Browser presence")
+	review := startReviewWithArgs(t, plan, []string{
+		"--agent", "none",
+		"--no-browser",
+		"--local-bundle",
+		"--orphan-timeout", timeout.String(),
+	}, nil)
+
+	wsURL := "ws" + strings.TrimPrefix(review.url, "http") + "/api/presence"
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, http.Header{
+		"Origin": []string{review.url},
+	})
+	if err != nil {
+		if response != nil {
+			t.Fatalf("connect browser presence: %v (status %d)", err, response.StatusCode)
+		}
+		t.Fatalf("connect browser presence: %v", err)
+	}
+
+	select {
+	case err := <-review.done:
+		_ = conn.Close()
+		t.Fatalf("review exited while browser was connected: %v\nstderr:\n%s", err, review.stderr.String())
+	case <-time.After(timeout + 250*time.Millisecond):
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close browser presence: %v", err)
+	}
+	err = waitDone(t, review)
+	if err == nil || !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("expected non-zero orphan exit, got %v", err)
+	}
+	assertContains(t, review.stderr.String(), "orphan cleanup stopped the review automatically after 1s with no browser tabs connected")
+	assertContains(t, review.stderr.String(), "--orphan-timeout 0")
+	if got, err := os.ReadFile(review.planPath); err != nil || string(got) != plan {
+		t.Fatalf("orphan cleanup changed source plan: %q, %v", got, err)
+	}
+	bundle, err := reviewstore.OpenBundleStore(review.planPath + ".planmaxx")
+	if err != nil {
+		t.Fatalf("open preserved review bundle: %v", err)
+	}
+	defer bundle.Close()
+	saved, ok := bundle.Load()
+	if !ok || saved.Status != "active" {
+		t.Fatalf("expected resumable active bundle, got ok=%v status=%q", ok, saved.Status)
+	}
+	if strings.Contains(review.stdout.String(), "Continue the user's approved plan work.") {
+		t.Fatalf("orphan cleanup printed an approval handoff: %q", review.stdout.String())
 	}
 }
 

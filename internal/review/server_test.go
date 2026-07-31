@@ -22,6 +22,7 @@ import (
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 	"github.com/AlhasanIQ/planmaxx/internal/sidequestions"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/gorilla/websocket"
 )
 
 type fakeSideQuestionClient struct {
@@ -109,6 +110,105 @@ func TestStateRouteReturnsSession(t *testing.T) {
 	}
 	if got.SchemaVersion != clientSchemaVersion || got.Phase != "active" || !got.Capabilities.CanFinalize {
 		t.Fatalf("expected versioned active client projection, got %+v", got)
+	}
+}
+
+func TestPresenceAbandonsOnlyAfterLastBrowserStaysDisconnected(t *testing.T) {
+	server := NewServer(session.New("plan-1", "# Plan")).WithOrphanTimeout(150 * time.Millisecond)
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(func() {
+		server.Close()
+		httpServer.Close()
+	})
+
+	first := dialPresence(t, httpServer.URL)
+	second := dialPresence(t, httpServer.URL)
+	waitForPresenceCount(t, server, 2)
+
+	_ = first.Close()
+	waitForPresenceCount(t, server, 1)
+	assertReviewStillWaiting(t, server, 200*time.Millisecond)
+
+	_ = second.Close()
+	waitForPresenceCount(t, server, 0)
+	time.Sleep(40 * time.Millisecond)
+	reconnected := dialPresence(t, httpServer.URL)
+	waitForPresenceCount(t, server, 1)
+	assertReviewStillWaiting(t, server, 200*time.Millisecond)
+
+	_ = reconnected.Close()
+	waitForPresenceCount(t, server, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := server.Wait(ctx)
+	if err != nil {
+		t.Fatalf("wait for orphan cleanup: %v", err)
+	}
+	if !result.Abandoned || result.Canceled {
+		t.Fatalf("expected abandoned result, got %+v", result)
+	}
+}
+
+func TestPresenceCleanupCanBeDisabled(t *testing.T) {
+	server := NewServer(session.New("plan-1", "# Plan")).WithOrphanTimeout(0)
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(func() {
+		server.Close()
+		httpServer.Close()
+	})
+
+	conn := dialPresence(t, httpServer.URL)
+	_ = conn.Close()
+	waitForPresenceCount(t, server, 0)
+	assertReviewStillWaiting(t, server, 100*time.Millisecond)
+}
+
+func TestPresenceAbandonsWhenNoBrowserConnects(t *testing.T) {
+	server := NewServer(session.New("plan-1", "# Plan")).WithOrphanTimeout(20 * time.Millisecond)
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := server.Wait(ctx)
+	if err != nil || !result.Abandoned {
+		t.Fatalf("expected never-opened review to be abandoned, result=%+v err=%v", result, err)
+	}
+}
+
+func dialPresence(t *testing.T, serverURL string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + "/api/presence"
+	headers := http.Header{"Origin": []string{serverURL}}
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial presence: %v (status %d)", err, response.StatusCode)
+		}
+		t.Fatalf("dial presence: %v", err)
+	}
+	return conn
+}
+
+func waitForPresenceCount(t *testing.T, server *Server, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		server.presence.mu.Lock()
+		got := len(server.presence.conns)
+		server.presence.mu.Unlock()
+		if got == want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("presence count did not reach %d", want)
+}
+
+func assertReviewStillWaiting(t *testing.T, server *Server, duration time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
+	if result, err := server.Wait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("review stopped unexpectedly: result=%+v err=%v", result, err)
 	}
 }
 

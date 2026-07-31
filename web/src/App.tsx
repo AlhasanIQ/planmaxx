@@ -490,8 +490,38 @@ function isAgentIntegrationFailure(error: unknown): error is ApiError {
 type ReviewController = ReturnType<typeof useReviewController>;
 
 export default function App() {
+  useBackendPresence();
   const controller = useReviewController();
   return <ReviewScreen controller={controller} />;
+}
+
+function useBackendPresence() {
+  useEffect(() => {
+    let stopped = false;
+    let socket: WebSocket | null = null;
+    let retryTimer: number | null = null;
+    let retryDelay = 500;
+
+    const connect = () => {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(`${protocol}//${window.location.host}/api/presence`);
+      socket.addEventListener("open", () => {
+        retryDelay = 500;
+      });
+      socket.addEventListener("close", () => {
+        if (stopped) return;
+        retryTimer = window.setTimeout(connect, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 5000);
+      });
+    };
+
+    connect();
+    return () => {
+      stopped = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      socket?.close(1000, "page closed");
+    };
+  }, []);
 }
 
 function ReviewScreen({ controller }: { controller: ReviewController }) {

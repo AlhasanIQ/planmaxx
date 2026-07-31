@@ -22,6 +22,7 @@ import (
 	"github.com/AlhasanIQ/planmaxx/internal/revisions"
 	"github.com/AlhasanIQ/planmaxx/internal/session"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/gorilla/websocket"
 )
 
 func TestMain(m *testing.M) {
@@ -93,7 +94,7 @@ func TestReviewHelpKeepsOnlyCommonFlagsVisible(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("review help: %v", err)
 	}
-	for _, want := range []string{"--no-browser", "--save-to-file", "--local-bundle"} {
+	for _, want := range []string{"--no-browser", "--orphan-timeout", "--save-to-file", "--local-bundle"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("expected review help to contain %q, got %q", want, stdout.String())
 		}
@@ -102,6 +103,23 @@ func TestReviewHelpKeepsOnlyCommonFlagsVisible(t *testing.T) {
 		if strings.Contains(stdout.String(), hidden) {
 			t.Fatalf("expected review help to hide %q, got %q", hidden, stdout.String())
 		}
+	}
+}
+
+func TestReviewRejectsNegativeOrphanTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(path, []byte("# Test plan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--orphan-timeout", "-1s", path})
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--orphan-timeout cannot be negative") {
+		t.Fatalf("expected negative timeout error, got %v", err)
 	}
 }
 
@@ -119,6 +137,63 @@ func TestReviewRejectsLocalBundleWithExplicitBundlePath(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "--local-bundle cannot be combined") {
 		t.Fatalf("expected conflicting bundle flags error, got %v", err)
+	}
+}
+
+func TestReviewStopsOrphanedBrowserAndPreservesActiveBundle(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+	path := filepath.Join(t.TempDir(), "plan.md")
+	const original = "# Test plan\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewRootCommand(&stdout, &stderr)
+	cmd.SetArgs([]string{"review", "--no-browser", "--orphan-timeout", "500ms", path})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- cmd.ExecuteContext(ctx) }()
+
+	url := waitForReviewURL(t, &stderr)
+	conn := dialReviewPresence(t, url)
+	_ = conn.Close()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected orphaned review to return an error")
+		}
+		for _, want := range []string{
+			"orphan cleanup stopped the review automatically after 500ms with no browser tabs connected",
+			"progress remains saved",
+			"--orphan-timeout <duration>",
+			"--orphan-timeout 0",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("orphan error missing %q: %v", want, err)
+			}
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for orphan cleanup")
+	}
+
+	if got, err := os.ReadFile(path); err != nil || string(got) != original {
+		t.Fatalf("orphan cleanup changed source plan: %q, %v", got, err)
+	}
+	bundle, err := review.OpenBundleStore(reviewBundlePath(t, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	saved, ok := bundle.Load()
+	if !ok || saved.Status != "active" {
+		t.Fatalf("expected resumable active bundle, got ok=%v status=%q", ok, saved.Status)
+	}
+	if stdout.String() != "" {
+		t.Fatalf("orphaned review printed an approval handoff: %q", stdout.String())
 	}
 }
 
@@ -1625,6 +1700,20 @@ func waitForReviewURL(t *testing.T, stderr *lockedBuffer) string {
 			}
 		}
 	}
+}
+
+func dialReviewPresence(t *testing.T, reviewURL string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(reviewURL, "http") + "/api/presence"
+	headers := http.Header{"Origin": []string{reviewURL}}
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial review presence: %v (status %d)", err, response.StatusCode)
+		}
+		t.Fatalf("dial review presence: %v", err)
+	}
+	return conn
 }
 
 func freeTCPPort(t *testing.T) int {
