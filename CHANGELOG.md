@@ -12,6 +12,8 @@
 - Added a checksum-verifying PowerShell installer that maintains the Windows
   user `PATH`, skill discoverability warnings, native process inspection, and
   native Windows CI and release gates with an executable app-server E2E test.
+- Updated `go-git` and its cryptography and networking dependencies to patched
+  releases; source builds now require Go 1.25 or newer.
 
 ## v0.9.0 - 2026-07-31
 

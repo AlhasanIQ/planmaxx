@@ -244,7 +244,7 @@ public GitHub Releases API at review startup; set
 
 ## Development
 
-Requires Go 1.22+ and Bun.
+Requires Go 1.25+ and Bun.
 
 ```bash
 cd web && bun install
