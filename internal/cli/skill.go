@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -106,6 +107,8 @@ var (
 	}
 	skillUserHomeDir   = os.UserHomeDir
 	skillUserConfigDir = os.UserConfigDir
+	skillLookPath      = exec.LookPath
+	skillExecutable    = os.Executable
 )
 
 // SetEmbeddedSkillTemplate replaces the embedded skill template.
@@ -305,7 +308,25 @@ func runSkillInstall(opts skillInstallOptions, stderr io.Writer) error {
 			fmt.Fprintf(stderr, "PlanMaxx reminder already present in %s\n", reminderFile)
 		}
 	}
+	reportSkillBinaryDiscoverability(stderr, target)
 	return nil
+}
+
+func reportSkillBinaryDiscoverability(stderr io.Writer, target string) {
+	path, err := skillLookPath("planmaxx")
+	if err != nil {
+		executable, executableErr := skillExecutable()
+		if executableErr == nil && executable != "" {
+			fmt.Fprintf(stderr, "Warning: %s skill installed, but a fresh process cannot resolve planmaxx on PATH. Add %s to PATH before using the skill.\n", skillTargetDisplayName(target), filepath.Dir(executable))
+		} else {
+			fmt.Fprintf(stderr, "Warning: %s skill installed, but a fresh process cannot resolve planmaxx on PATH.\n", skillTargetDisplayName(target))
+		}
+	} else {
+		fmt.Fprintf(stderr, "Verified planmaxx is discoverable on PATH at %s\n", path)
+	}
+	if runtime.GOOS == "windows" && target == skillTargetCodex {
+		fmt.Fprintln(stderr, "Restart Codex Desktop if PlanMaxx or PATH changed after Codex was opened.")
+	}
 }
 
 func runSkillRemove(opts skillRemoveOptions, stderr io.Writer) error {

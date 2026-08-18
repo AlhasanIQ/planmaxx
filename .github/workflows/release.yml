@@ -69,9 +69,62 @@ jobs:
       - name: Validate installer
         run: bash -n install.sh
 
+  test-windows:
+    name: Test Before Release (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install web dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Build web UI
+        shell: bash
+        run: ./scripts/build-web.sh
+
+      - name: Go tests for Windows-supported packages
+        shell: pwsh
+        run: |
+          $packages = go list ./... | Where-Object { $_ -notmatch '/internal/(e2e|grokbuild)$' }
+          if ($LASTEXITCODE -ne 0) { throw 'go list failed' }
+          go test $packages
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Go tests failed' }
+
+      - name: Windows review and Codex app-server lifecycle
+        run: go test ./internal/e2e -run TestWindowsCodexExecutableOverrideEndToEnd -count=1 -v
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build and run native executable
+        run: |
+          go build -o planmaxx.exe ./cmd/planmaxx
+          .\planmaxx.exe version
+
+      - name: Validate installers
+        shell: pwsh
+        run: |
+          $null = [scriptblock]::Create((Get-Content -Raw install.ps1))
+          bash -n install.sh
+          if ($LASTEXITCODE -ne 0) { throw 'shell installer validation failed' }
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
-    needs: test
+    needs: [test, test-windows]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -175,8 +228,9 @@ jobs:
           set -euo pipefail
           cd dist
           cp ../install.sh ./install.sh
+          cp ../install.ps1 ./install.ps1
           cp ../SKILL.md ./SKILL.md
-          sha256sum planmaxx_*.tar.gz SKILL.md install.sh > checksums.txt
+          sha256sum planmaxx_*.tar.gz SKILL.md install.sh install.ps1 > checksums.txt
           for archive in planmaxx_*.tar.gz; do
             case "$archive" in
               *windows*) executable='./planmaxx.exe' ;;

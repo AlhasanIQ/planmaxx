@@ -31,11 +31,16 @@ each operation.
 ### Codex
 
 - Starts `codex app-server --listen stdio://`.
+- Uses `PLANMAXX_CODEX_BIN` or `--codex-bin` when supplied. Otherwise it tries
+  `codex` on `PATH`; on Windows, a user-owned Codex Desktop runtime is also
+  tried when a protected WindowsApps alias cannot be launched.
 - Reads and forks `CODEX_THREAD_ID` with `ephemeral`, `excludeTurns`, and
   approval policy `never`, plus a read-only sandbox with network access off.
 - Rejects any response that does not prove a distinct ephemeral fork and the
   requested approval and sandbox policy.
 - Starts one turn in the fork and serializes app-server operations.
+- `planmaxx doctor <plan>` checks the resolved CLI version, initializes the
+  stdio app-server, and reads `CODEX_THREAD_ID` when that marker is available.
 - On cancellation after a turn starts, interrupts the turn and drains both the
   interrupt response and terminal turn notification before reusing the
   protocol stream. A cleanup failure permanently disables the attachment and

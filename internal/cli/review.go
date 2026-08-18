@@ -46,6 +46,7 @@ type reviewOptions struct {
 	agent               string
 	claudeSessionID     string
 	grokSessionID       string
+	codexBin            string
 	saveToFile          string
 	bundleOut           string
 	localBundle         bool
@@ -95,6 +96,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 		orphanTimeout:       defaultOrphanTimeout,
 		sideQuestionTimeout: defaultAppServerRequestTimeout,
 		agent:               agentAuto,
+		codexBin:            strings.TrimSpace(os.Getenv(codexBinaryEnvironment)),
 	}
 
 	cmd := &cobra.Command{
@@ -242,13 +244,12 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			}
 			reviewSession.PlanPath = planPath
 			reviewServer := review.NewServer(reviewSession).
-				WithOrphanTimeout(opts.orphanTimeout).
 				WithSideQuestionTimeout(opts.sideQuestionTimeout).
 				WithAutosaveDocument(document)
 			if err := reviewServer.EnableBundle(bundle); err != nil {
 				return fmt.Errorf("persist review bundle: %w", err)
 			}
-			cleanup, err := tryAttachAgentServices(cmd.Context(), stderr, reviewServer, opts.agent, opts.claudeSessionID, opts.grokSessionID)
+			cleanup, err := tryAttachAgentServices(cmd.Context(), stderr, reviewServer, opts.agent, opts.claudeSessionID, opts.grokSessionID, opts.codexBin)
 			if err != nil {
 				return err
 			}
@@ -275,6 +276,10 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 			go func() {
 				_ = httpServer.Serve(listener)
 			}()
+			// Start the never-opened-browser timeout only after the review is
+			// reachable. Bundle persistence and agent probing can be noticeably
+			// slower on Windows and must not consume the user's review window.
+			reviewServer.WithOrphanTimeout(opts.orphanTimeout)
 
 			reviewURL := "http://" + listener.Addr().String()
 			fmt.Fprintf(stderr, "PlanMaxx review URL: %s\n", reviewURL)
@@ -327,6 +332,7 @@ func newReviewCommand(stdout io.Writer, stderr io.Writer) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.noBrowser, "no-browser", opts.noBrowser, "print the review URL without opening a browser")
 	cmd.Flags().DurationVar(&opts.orphanTimeout, "orphan-timeout", opts.orphanTimeout, "stop after this long with no browser tabs connected; 0 disables automatic cleanup")
 	cmd.Flags().StringVar(&opts.agent, "agent", opts.agent, "agent integration to use: auto, codex, claude, grok, or none")
+	cmd.Flags().StringVar(&opts.codexBin, "codex-bin", opts.codexBin, "path to the Codex CLI executable (default: PLANMAXX_CODEX_BIN or PATH)")
 	cmd.Flags().StringVar(&opts.claudeSessionID, "claude-session-id", "", "Claude Code session identifier supplied by the invoked PlanMaxx skill")
 	cmd.Flags().StringVar(&opts.grokSessionID, "grok-session-id", "", "Grok Build session identifier supplied by the invoked PlanMaxx skill")
 	cmd.Flags().DurationVar(&opts.sideQuestionTimeout, "side-question-timeout", opts.sideQuestionTimeout, "maximum duration for one agent request")
@@ -584,6 +590,7 @@ func tryAttachAgentServices(
 	requestedAgent string,
 	invokedClaudeSessionID string,
 	invokedGrokSessionID string,
+	codexBin string,
 ) (func(), error) {
 	selection, err := resolveAgentSelection(requestedAgent, invokedClaudeSessionID, invokedGrokSessionID)
 	if err != nil {
@@ -673,7 +680,7 @@ func tryAttachAgentServices(
 			WithSectionIterations(sectioniter.NewService(selection.sessionID, client))
 		return nil, nil
 	case agentCodex:
-		return attachCodexAppServer(ctx, stderr, reviewServer, selection, cwd), nil
+		return attachCodexAppServer(ctx, stderr, reviewServer, selection, cwd, codexBin), nil
 	default:
 		return nil, fmt.Errorf("unsupported resolved agent %q", selection.id)
 	}
@@ -848,50 +855,40 @@ func requireMinimumClaudeVersion(output string) error {
 	return nil
 }
 
-func attachCodexAppServer(ctx context.Context, stderr io.Writer, reviewServer *review.Server, selection agentSelection, cwd string) func() {
+func attachCodexAppServer(ctx context.Context, stderr io.Writer, reviewServer *review.Server, selection agentSelection, cwd string, codexBin string) func() {
 	currentThreadID := selection.sessionID
 	var primary sidequestions.AskClient
 	var promptClient sectioniter.PromptClient
 	var cleanup func()
 	unavailableReason := "PlanMaxx could not start the Codex app-server integration."
-	appCmd := execCommandContext(ctx, "codex", "app-server", "--listen", "stdio://")
-	appStdout, err := appCmd.StdoutPipe()
+	process, err := startCodexAppServer(ctx, cwd, codexBin, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "PlanMaxx side questions unavailable: open app-server stdout: %v\n", err)
+		unavailableReason = "PlanMaxx could not start Codex app-server: " + err.Error()
+		fmt.Fprintf(stderr, "PlanMaxx side questions unavailable: start app-server: %v\n", err)
 	} else {
-		appStdin, err := appCmd.StdinPipe()
-		if err != nil {
-			fmt.Fprintf(stderr, "PlanMaxx side questions unavailable: open app-server stdin: %v\n", err)
+		client := appserver.NewClient(bufio.NewReader(process.stdout), process.stdin)
+		asker := &appserver.SideQuestionAsker{Client: client, CWD: cwd, CurrentThreadID: currentThreadID}
+		var stopOnce sync.Once
+		stop := func() {
+			stopOnce.Do(func() {
+				stopAppServerProcess(process.cmd, process.stdin)
+			})
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, agentAttachmentProbeTimeout)
+		probeErr := asker.ValidateAttachment(probeCtx)
+		cancel()
+		if probeErr != nil {
+			fmt.Fprintf(stderr, "PlanMaxx assisted actions unavailable: validate Codex attachment: %v\n", probeErr)
+			unavailableReason = "PlanMaxx could not validate the active Codex thread: " + probeErr.Error()
+			stop()
 		} else {
-			appCmd.Stderr = stderr
-			if err := appCmd.Start(); err != nil {
-				fmt.Fprintf(stderr, "PlanMaxx side questions unavailable: start app-server: %v\n", err)
-			} else {
-				client := appserver.NewClient(bufio.NewReader(appStdout), appStdin)
-				asker := &appserver.SideQuestionAsker{Client: client, CWD: cwd, CurrentThreadID: currentThreadID}
-				var stopOnce sync.Once
-				stop := func() {
-					stopOnce.Do(func() {
-						stopAppServerProcess(appCmd, appStdin)
-					})
-				}
-				probeCtx, cancel := context.WithTimeout(ctx, agentAttachmentProbeTimeout)
-				probeErr := asker.ValidateAttachment(probeCtx)
-				cancel()
-				if probeErr != nil {
-					fmt.Fprintf(stderr, "PlanMaxx assisted actions unavailable: validate Codex attachment: %v\n", probeErr)
-					unavailableReason = "PlanMaxx could not validate the active Codex thread."
-					stop()
-				} else {
-					cleanup = stop
-					monitored := monitorAgentClient(asker, reviewServer, selection.displayName, cleanup)
-					primary = monitored
-					promptClient = monitored
-					reviewServer.WithAgent(review.AgentInfo{
-						ID: agentCodex, DisplayName: selection.displayName, ContextMode: "current-session-fork", Available: true,
-					})
-				}
-			}
+			cleanup = stop
+			monitored := monitorAgentClient(asker, reviewServer, selection.displayName, cleanup)
+			primary = monitored
+			promptClient = monitored
+			reviewServer.WithAgent(review.AgentInfo{
+				ID: agentCodex, DisplayName: selection.displayName, ContextMode: "current-session-fork", Available: true,
+			})
 		}
 	}
 

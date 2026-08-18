@@ -72,3 +72,61 @@ jobs:
             fi
             CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -ldflags='-s -w -buildid=' -o "$out" ./cmd/planmaxx
           done
+
+  windows-test:
+    name: Windows Native Test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install web dependencies
+        working-directory: web
+        run: bun install --frozen-lockfile
+
+      - name: Build web UI
+        shell: bash
+        run: ./scripts/build-web.sh
+
+      - name: Web tests
+        working-directory: web
+        run: |
+          bun test
+          bunx tsc --noEmit
+
+      - name: Go tests for Windows-supported packages
+        shell: pwsh
+        run: |
+          $packages = go list ./... | Where-Object { $_ -notmatch '/internal/(e2e|grokbuild)$' }
+          if ($LASTEXITCODE -ne 0) { throw 'go list failed' }
+          go test $packages
+          if ($LASTEXITCODE -ne 0) { throw 'Windows Go tests failed' }
+
+      - name: Windows review and Codex app-server lifecycle
+        run: go test ./internal/e2e -run TestWindowsCodexExecutableOverrideEndToEnd -count=1 -v
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build and run native executable
+        run: |
+          go build -o planmaxx.exe ./cmd/planmaxx
+          .\planmaxx.exe version
+
+      - name: Validate PowerShell installer
+        shell: pwsh
+        run: $null = [scriptblock]::Create((Get-Content -Raw install.ps1))
+
+      - name: Validate shell installer
+        shell: bash
+        run: bash -n install.sh

@@ -2,7 +2,8 @@
 
 Tags matching `v*` trigger GitHub Actions to build and publish self-contained
 archives for Linux, macOS, and Windows on amd64 and arm64. Releases also include
-`SKILL.md`, checksums, and GitHub's tagged source archive.
+`SKILL.md`, `install.sh`, `install.ps1`, checksums, and GitHub's tagged source
+archive.
 
 Before tagging, move the completed changelog entries out of `Unreleased`, keep
 the working tree clean, and run the same release gates used by GitHub Actions:
@@ -17,6 +18,9 @@ go vet ./...
 ./scripts/e2e-smoke.sh
 ./scripts/e2e-browser.sh
 bash -n install.sh
+# On Windows PowerShell:
+$null = [scriptblock]::Create((Get-Content -Raw install.ps1))
+go test ./internal/e2e -run TestWindowsCodexExecutableOverrideEndToEnd -count=1
 ```
 
 Create an annotated semantic-version tag on the verified commit, then push the

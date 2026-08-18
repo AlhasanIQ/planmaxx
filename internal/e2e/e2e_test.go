@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1028,11 +1029,16 @@ func installNoOpenPath(t *testing.T) fakeCommand {
 
 func installGitOnlyPath(t *testing.T) fakeCommand {
 	t.Helper()
-	dir := t.TempDir()
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("find git for review storage: %v", err)
 	}
+	if runtime.GOOS == "windows" {
+		// Git for Windows locates its support files relative to the installed
+		// executable. Copying git.exe into an isolated test PATH breaks git init.
+		return fakeCommand{dir: filepath.Dir(gitPath), pathEnv: filepath.Dir(gitPath)}
+	}
+	dir := t.TempDir()
 	target := filepath.Join(dir, filepath.Base(gitPath))
 	if err := os.Symlink(gitPath, target); err != nil {
 		source, openErr := os.Open(gitPath)

@@ -264,6 +264,11 @@ require_cmd uname
 
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
+if [[ "$OS" == "linux" ]] && { [[ -n "${WSL_INTEROP:-}" ]] || grep -qi microsoft /proc/version 2>/dev/null; }; then
+  log "WSL detected. This installs the Linux binary inside WSL; it is not visible to native Windows apps such as Codex Desktop. Use install.ps1 from PowerShell for native Windows integration."
+elif [[ "$OS" == "windows" ]]; then
+  log "Windows bash detected. The native PowerShell installer (install.ps1) can add PlanMaxx to the Windows user PATH automatically."
+fi
 TAG="$(resolve_version)"
 VERSION_NO_V="${TAG#v}"
 ASSET="planmaxx_${VERSION_NO_V}_${OS}_${ARCH}.tar.gz"
@@ -298,6 +303,12 @@ case "$INSTALL_CODEX_SKILL" in
   1|true|TRUE|yes|YES)
     log "Installing optional user-level Codex skill..."
     install_codex_skill
+    if ! command -v planmaxx >/dev/null 2>&1; then
+      log "The Codex skill is installed, but planmaxx is not on this process PATH. Add ${INSTALL_DIR} to PATH before using the skill."
+    fi
+    if [[ "$OS" == "windows" ]]; then
+      log "Restart Codex Desktop after changing PATH or installing the skill."
+    fi
     ;;
   0|false|FALSE|no|NO|"")
     log "Optional Codex skill not installed. To enable automatic plan review later, run: ${BIN_PATH} skill install"

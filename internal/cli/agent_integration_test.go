@@ -367,7 +367,7 @@ func TestAttachGrokServicesPublishesServerAuthoritativeCapabilities(t *testing.T
 	reviewSession := session.New("plan-1", "# Plan")
 	reviewSession.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "improve")
 	server := review.NewServer(reviewSession)
-	cleanup, err := tryAttachAgentServices(context.Background(), &bytes.Buffer{}, server, agentAuto, "", sessionID)
+	cleanup, err := tryAttachAgentServices(context.Background(), &bytes.Buffer{}, server, agentAuto, "", sessionID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestAttachGrokUnavailableCases(t *testing.T) {
 		t.Setenv("GROK_SESSION_ID", "")
 		t.Setenv("PLANMAXX_AGENT", "")
 		server := review.NewServer(session.New("plan-1", "# Plan"))
-		if cleanup, err := tryAttachAgentServices(context.Background(), &bytes.Buffer{}, server, agentGrok, "", ""); err != nil || cleanup != nil {
+		if cleanup, err := tryAttachAgentServices(context.Background(), &bytes.Buffer{}, server, agentGrok, "", "", ""); err != nil || cleanup != nil {
 			t.Fatalf("attach result hasCleanup=%t err=%v", cleanup != nil, err)
 		}
 		state := readAgentState(t, server)
@@ -424,7 +424,7 @@ func TestAttachGrokUnavailableCases(t *testing.T) {
 
 		server := review.NewServer(session.New("plan-1", "# Plan"))
 		var stderr bytes.Buffer
-		if cleanup, err := tryAttachAgentServices(context.Background(), &stderr, server, agentGrok, "", "019c0f29-e4f8-7c7b-bb88-b3f7a68e605d"); err != nil || cleanup != nil {
+		if cleanup, err := tryAttachAgentServices(context.Background(), &stderr, server, agentGrok, "", "019c0f29-e4f8-7c7b-bb88-b3f7a68e605d", ""); err != nil || cleanup != nil {
 			t.Fatalf("attach result hasCleanup=%t err=%v", cleanup != nil, err)
 		}
 		state := readAgentState(t, server)
@@ -447,7 +447,7 @@ func TestAttachGrokUnavailableCases(t *testing.T) {
 
 		server := review.NewServer(session.New("plan-1", "# Plan"))
 		var stderr bytes.Buffer
-		if cleanup, err := tryAttachAgentServices(context.Background(), &stderr, server, agentGrok, "", "019c0f29-e4f8-7c7b-bb88-b3f7a68e605d"); err != nil || cleanup != nil {
+		if cleanup, err := tryAttachAgentServices(context.Background(), &stderr, server, agentGrok, "", "019c0f29-e4f8-7c7b-bb88-b3f7a68e605d", ""); err != nil || cleanup != nil {
 			t.Fatalf("attach result hasCleanup=%t err=%v", cleanup != nil, err)
 		}
 		state := readAgentState(t, server)
@@ -499,7 +499,7 @@ func TestAttachClaudeServicesPublishesServerAuthoritativeCapabilities(t *testing
 	reviewSession := session.New("plan-1", "# Plan")
 	reviewSession.AddThread(session.Anchor{StartLine: 1, EndLine: 1}, "improve")
 	server := review.NewServer(reviewSession)
-	cleanup, err := tryAttachAgentServices(context.Background(), &bytes.Buffer{}, server, agentAuto, sessionID, "")
+	cleanup, err := tryAttachAgentServices(context.Background(), &bytes.Buffer{}, server, agentAuto, sessionID, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,7 +554,7 @@ func TestAttachClaudeWithoutRequiredIsolationFlagsStaysUnavailable(t *testing.T)
 
 	server := review.NewServer(session.New("plan-1", "# Plan"))
 	var stderr bytes.Buffer
-	if cleanup, err := tryAttachAgentServices(context.Background(), &stderr, server, agentClaude, "", ""); err != nil || cleanup != nil {
+	if cleanup, err := tryAttachAgentServices(context.Background(), &stderr, server, agentClaude, "", "", ""); err != nil || cleanup != nil {
 		t.Fatalf("attach result hasCleanup=%t err=%v", cleanup != nil, err)
 	}
 
@@ -581,7 +581,7 @@ func TestAttachExplicitClaudeWithoutSessionMarkerStaysUnavailable(t *testing.T) 
 	t.Setenv("PLANMAXX_AGENT", "")
 
 	server := review.NewServer(session.New("plan-1", "# Plan"))
-	if cleanup, err := tryAttachAgentServices(context.Background(), &bytes.Buffer{}, server, agentClaude, "", ""); err != nil || cleanup != nil {
+	if cleanup, err := tryAttachAgentServices(context.Background(), &bytes.Buffer{}, server, agentClaude, "", "", ""); err != nil || cleanup != nil {
 		t.Fatalf("attach result hasCleanup=%t err=%v", cleanup != nil, err)
 	}
 
@@ -609,7 +609,7 @@ func TestAttachClaudeWithMissingBinaryStaysUnavailable(t *testing.T) {
 
 	server := review.NewServer(session.New("plan-1", "# Plan"))
 	var stderr bytes.Buffer
-	if cleanup, err := tryAttachAgentServices(context.Background(), &stderr, server, agentClaude, "", ""); err != nil || cleanup != nil {
+	if cleanup, err := tryAttachAgentServices(context.Background(), &stderr, server, agentClaude, "", "", ""); err != nil || cleanup != nil {
 		t.Fatalf("attach result hasCleanup=%t err=%v", cleanup != nil, err)
 	}
 

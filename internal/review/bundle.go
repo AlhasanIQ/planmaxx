@@ -585,26 +585,13 @@ func writeBundleAtomic(repo, path string) error {
 	if err := os.Chmod(tmpPath, 0o600); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(tmpPath, os.O_RDONLY, 0)
-	if err != nil {
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
-	if err := file.Close(); err != nil {
+	if err := syncRegularFile(tmpPath); err != nil {
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	directory, err := os.Open(dir)
-	if err != nil {
-		return autosaveCommittedError{fmt.Errorf("open bundle directory after replace: %w", err)}
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
+	if err := syncDirectory(dir); err != nil {
 		return autosaveCommittedError{fmt.Errorf("sync bundle directory after replace: %w", err)}
 	}
 	return nil

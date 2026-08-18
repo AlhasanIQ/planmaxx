@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## v0.9.1 - 2026-08-18
+
+- Fixed Windows review persistence by flushing bundle files through writable
+  handles and avoiding unsupported directory flushes after atomic replacement.
+- Added resilient Codex CLI discovery on Windows, explicit executable
+  overrides, actionable app-server errors, and `doctor` checks for the CLI,
+  stdio initialization, and active thread attachment.
+- Added a checksum-verifying PowerShell installer that maintains the Windows
+  user `PATH`, skill discoverability warnings, native process inspection, and
+  native Windows CI and release gates with an executable app-server E2E test.
+
 ## v0.9.0 - 2026-07-31
 
 - Made assisted iterations durable, idempotent, cancellable background

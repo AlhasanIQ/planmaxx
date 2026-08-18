@@ -6,8 +6,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/AlhasanIQ/planmaxx/internal/planfile"
@@ -16,9 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var processList = func() ([]byte, error) {
-	return exec.Command("ps", "-axo", "pid=,command=").Output()
-}
+var processList = platformProcessList
 
 type planStoragePaths struct {
 	plan          string
@@ -58,9 +56,10 @@ func resolvePlanStoragePaths(planArg string) (planStoragePaths, error) {
 
 func newDoctorCommand(stdout io.Writer) *cobra.Command {
 	var bundleOverride string
+	var codexBin string
 	cmd := &cobra.Command{
 		Use:   "doctor <plan-file>",
-		Short: "Inspect review storage, migration, and lock state",
+		Short: "Inspect review storage and agent integration health",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, err := resolvePlanStoragePaths(args[0])
@@ -111,6 +110,13 @@ func newDoctorCommand(stdout io.Writer) *cobra.Command {
 				}
 			}
 
+			cwd, cwdErr := os.Getwd()
+			if cwdErr != nil {
+				fmt.Fprintf(stdout, "Codex CLI: unavailable (read current directory: %v)\n", cwdErr)
+			} else {
+				printCodexIntegrationReport(stdout, inspectCodexIntegration(cmd.Context(), cwd, codexBin, os.Getenv("CODEX_THREAD_ID")))
+			}
+
 			legacy := inspectLegacyStorage(paths)
 			if len(legacy.items) == 0 {
 				fmt.Fprintln(stdout, "Legacy storage: none")
@@ -136,7 +142,37 @@ func newDoctorCommand(stdout io.Writer) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&bundleOverride, "bundle", "", "inspect this bundle instead of the default plan bundle")
+	cmd.Flags().StringVar(&codexBin, "codex-bin", strings.TrimSpace(os.Getenv(codexBinaryEnvironment)), "path to the Codex CLI executable (default: PLANMAXX_CODEX_BIN or PATH)")
 	return cmd
+}
+
+func printCodexIntegrationReport(stdout io.Writer, report codexIntegrationReport) {
+	if report.CLIError != nil {
+		fmt.Fprintf(stdout, "Codex CLI: unavailable (%v)\n", report.CLIError)
+		fmt.Fprintln(stdout, "Codex app-server: skipped (Codex CLI is unavailable)")
+		return
+	}
+	version := report.Version
+	if version == "" {
+		version = "version not reported"
+	}
+	fmt.Fprintf(stdout, "Codex CLI: available (%s; %s)\n", report.Executable, version)
+	if report.AppServerError != nil {
+		fmt.Fprintf(stdout, "Codex app-server: unavailable (%v)\n", report.AppServerError)
+		return
+	}
+	if !report.AppServerInitialized {
+		fmt.Fprintln(stdout, "Codex app-server: unavailable (initialization did not complete)")
+		return
+	}
+	fmt.Fprintln(stdout, "Codex app-server: available (stdio initialized)")
+	if report.ThreadID == "" {
+		fmt.Fprintln(stdout, "Codex thread attachment: skipped (CODEX_THREAD_ID is not set)")
+	} else if report.ThreadError != nil {
+		fmt.Fprintf(stdout, "Codex thread attachment: unavailable (%v)\n", report.ThreadError)
+	} else if report.ThreadReadable {
+		fmt.Fprintf(stdout, "Codex thread attachment: available (%s)\n", report.ThreadID)
+	}
 }
 
 func newSnapshotCommand(stdout io.Writer) *cobra.Command {
@@ -180,7 +216,16 @@ func matchingReviewProcesses(planPath string) ([]string, error) {
 	var matches []string
 	for _, line := range strings.Split(string(out), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "planmaxx review") && (strings.Contains(trimmed, planPath) || strings.Contains(trimmed, filepath.Base(planPath))) {
+		comparison := trimmed
+		comparedPlanPath := planPath
+		comparedPlanBase := filepath.Base(planPath)
+		if runtime.GOOS == "windows" {
+			comparison = strings.ToLower(comparison)
+			comparedPlanPath = strings.ToLower(comparedPlanPath)
+			comparedPlanBase = strings.ToLower(comparedPlanBase)
+		}
+		isReview := strings.Contains(comparison, "planmaxx") && strings.Contains(comparison, " review ")
+		if isReview && (strings.Contains(comparison, comparedPlanPath) || strings.Contains(comparison, comparedPlanBase)) {
 			matches = append(matches, trimmed)
 		}
 	}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1230,6 +1231,43 @@ func TestInstallerDocumentsOptionalSkillInstall(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected installer to mention %q", want)
 		}
+	}
+}
+
+func TestPowerShellInstallerSupportsNativeWindowsPathAndSkills(t *testing.T) {
+	installer, err := os.ReadFile(filepath.Join(repoRootForSkillTest(t), "install.ps1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(installer)
+	for _, want := range []string{
+		"PlanMaxx\\bin",
+		"SetEnvironmentVariable('Path'",
+		"PLANMAXX_INSTALL_CODEX_SKILL",
+		"skill install",
+		"Get-FileHash",
+		"Restart Codex Desktop",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected PowerShell installer to mention %q", want)
+		}
+	}
+}
+
+func TestSkillInstallReportsMissingBinaryOnPath(t *testing.T) {
+	oldLookPath := skillLookPath
+	oldExecutable := skillExecutable
+	skillLookPath = func(string) (string, error) { return "", errors.New("not found") }
+	skillExecutable = func() (string, error) { return filepath.Join(t.TempDir(), "planmaxx.exe"), nil }
+	t.Cleanup(func() {
+		skillLookPath = oldLookPath
+		skillExecutable = oldExecutable
+	})
+
+	var stderr bytes.Buffer
+	reportSkillBinaryDiscoverability(&stderr, skillTargetCodex)
+	if !strings.Contains(stderr.String(), "cannot resolve planmaxx on PATH") {
+		t.Fatalf("missing PATH warning: %s", stderr.String())
 	}
 }
 

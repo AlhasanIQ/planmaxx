@@ -1806,7 +1806,16 @@ func TestFakeAppServerProcess(t *testing.T) {
 			break
 		}
 	}
-	if separator == 0 || strings.Join(args[separator+1:], " ") != "codex app-server --listen stdio://" {
+	if separator == 0 {
+		fmt.Fprintf(os.Stderr, "unexpected args: %v\n", args)
+		os.Exit(2)
+	}
+	joined := strings.Join(args[separator+1:], " ")
+	if joined == "codex --version" {
+		fmt.Fprintln(os.Stdout, "codex-cli test")
+		return
+	}
+	if joined != "codex app-server --listen stdio://" {
 		fmt.Fprintf(os.Stderr, "unexpected args: %v\n", args)
 		os.Exit(2)
 	}

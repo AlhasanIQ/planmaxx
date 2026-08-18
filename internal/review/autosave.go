@@ -206,12 +206,7 @@ func writeAutosave(path string, status string, s session.Session, document Docum
 	if err := os.Rename(tmpPath, path); err != nil {
 		return expectedGeneration, fmt.Errorf("replace autosave file: %w", err)
 	}
-	directory, err := os.Open(dir)
-	if err != nil {
-		return payload.Generation, autosaveCommittedError{fmt.Errorf("open autosave directory after replace: %w", err)}
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
+	if err := syncDirectory(dir); err != nil {
 		return payload.Generation, autosaveCommittedError{fmt.Errorf("sync autosave directory after replace: %w", err)}
 	}
 	return payload.Generation, nil

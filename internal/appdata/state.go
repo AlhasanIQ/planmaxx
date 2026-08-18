@@ -3,6 +3,7 @@ package appdata
 import (
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 )
@@ -40,7 +41,7 @@ func stateDir(goos string, getenv lookupEnv, homeDir, configDir, cacheDir dirFun
 		return filepath.Join(root, "PlanMaxx"), nil
 	default:
 		if value, ok := getenv("XDG_STATE_HOME"); ok && value != "" {
-			if !filepath.IsAbs(value) {
+			if !isAbsoluteForOS(goos, value) {
 				return "", errors.New("XDG_STATE_HOME must be an absolute path")
 			}
 			return filepath.Join(value, "planmaxx"), nil
@@ -51,6 +52,13 @@ func stateDir(goos string, getenv lookupEnv, homeDir, configDir, cacheDir dirFun
 		}
 		return filepath.Join(home, ".local", "state", "planmaxx"), nil
 	}
+}
+
+func isAbsoluteForOS(goos string, value string) bool {
+	if goos == "windows" {
+		return filepath.IsAbs(value)
+	}
+	return path.IsAbs(value)
 }
 
 func requiredDir(resolve dirFunc) (string, error) {

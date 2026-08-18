@@ -12,12 +12,36 @@ approved handoff back to the agent.
 
 ## Install
 
+### Windows (PowerShell)
+
+```powershell
+irm https://github.com/AlhasanIQ/planmaxx/releases/latest/download/install.ps1 | iex
+planmaxx version
+```
+
+The PowerShell installer puts `planmaxx.exe` in
+`%LOCALAPPDATA%\PlanMaxx\bin` by default and adds that directory to the user
+`PATH`. Restart Codex Desktop after installation so the running app inherits
+the new `PATH`. To install the Codex skill at the same time:
+
+```powershell
+$env:PLANMAXX_INSTALL_CODEX_SKILL = '1'
+irm https://github.com/AlhasanIQ/planmaxx/releases/latest/download/install.ps1 | iex
+```
+
+Git Bash remains supported by `install.sh`, but PowerShell is recommended for
+native Windows and Codex Desktop. Running `install.sh` inside WSL installs the
+Linux binary inside WSL; it does not make PlanMaxx available to native Windows
+applications.
+
+### macOS and Linux
+
 ```bash
 bash -c 'set -o pipefail; curl -fsSL https://github.com/AlhasanIQ/planmaxx/releases/latest/download/install.sh | bash'
 planmaxx version
 ```
 
-The installer puts the PlanMaxx binary in `$HOME/.local/bin` by default.
+The shell installer puts the PlanMaxx binary in `$HOME/.local/bin` by default.
 Use `--install-dir` or `PLANMAXX_INSTALL_DIR` to change the location.
 Review storage uses native Git, so `git` must also be installed and available
 on `PATH`.
@@ -94,6 +118,13 @@ marker, then Codex's active thread marker. It deliberately ignores ambient
 installed. Use `--agent codex`, `--agent claude`, `--agent grok`, or
 `--agent none` to override detection. If attachment fails, assisted controls
 are disabled while core review remains available.
+
+PlanMaxx launches the documented `codex app-server` stdio integration. If
+Windows resolves a protected app alias, PlanMaxx automatically tries the
+user-owned Codex Desktop runtime. Set `PLANMAXX_CODEX_BIN` or pass
+`--codex-bin <path>` to select a specific CLI. `planmaxx doctor <plan>` checks
+the CLI version, app-server initialization, active thread attachment, review
+processes, and storage health.
 
 See the detailed [agent integration contract](docs/agent-integrations.md),
 [Claude Code skill documentation](https://code.claude.com/docs/en/slash-commands),
@@ -183,8 +214,8 @@ handoff preview makes the final agent context inspectable before approval.
 
 ## Storage tools
 
-Inspect the bundle, active write lock, matching review processes, and any
-legacy sidecars or revision stores:
+Inspect the bundle, active write lock, matching review processes, Codex CLI and
+app-server attachment, and any legacy sidecars or revision stores:
 
 ```bash
 planmaxx doctor path/to/plan.md

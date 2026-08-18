@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 )
 
 func TestDoctorReportsBundleLegacyStorageAndProcesses(t *testing.T) {
+	stubCodexDoctor(t)
 	planPath := filepath.Join(t.TempDir(), "plan.md")
 	if err := os.WriteFile(planPath, []byte("# Plan\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -31,7 +33,7 @@ func TestDoctorReportsBundleLegacyStorageAndProcesses(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Bundle kind: missing", "Bundle write lock: free", "123 planmaxx review", "legacy-json", "manual JSON snapshot", "run planmaxx review"} {
+	for _, want := range []string{"Bundle kind: missing", "Bundle write lock: free", "123 planmaxx review", "Codex CLI: available", "Codex app-server: available", "legacy-json", "manual JSON snapshot", "run planmaxx review"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, stdout.String())
 		}
@@ -39,6 +41,7 @@ func TestDoctorReportsBundleLegacyStorageAndProcesses(t *testing.T) {
 }
 
 func TestDoctorAndSnapshotReadCurrentBundle(t *testing.T) {
+	stubCodexDoctor(t)
 	planPath := filepath.Join(t.TempDir(), "plan.md")
 	if err := os.WriteFile(planPath, []byte("# Plan\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -79,4 +82,17 @@ func TestDoctorAndSnapshotReadCurrentBundle(t *testing.T) {
 	if info, err := review.InspectStorageFile(snapshotPath); err != nil || info.Kind != review.StorageFileBundle {
 		t.Fatalf("snapshot = %+v, %v", info, err)
 	}
+}
+
+func stubCodexDoctor(t *testing.T) {
+	t.Helper()
+	old := inspectCodexIntegration
+	inspectCodexIntegration = func(context.Context, string, string, string) codexIntegrationReport {
+		return codexIntegrationReport{
+			Executable:           "codex",
+			Version:              "codex-cli test",
+			AppServerInitialized: true,
+		}
+	}
+	t.Cleanup(func() { inspectCodexIntegration = old })
 }

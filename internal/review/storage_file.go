@@ -136,12 +136,7 @@ func SnapshotBundle(source, destination string, force bool) error {
 	if err := os.Rename(tmpPath, destination); err != nil {
 		return err
 	}
-	directory, err := os.Open(filepath.Dir(destination))
-	if err != nil {
-		return autosaveCommittedError{err}
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
+	if err := syncDirectory(filepath.Dir(destination)); err != nil {
 		return autosaveCommittedError{err}
 	}
 	return nil
