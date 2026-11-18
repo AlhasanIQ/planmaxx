@@ -850,6 +850,7 @@ func TestIsolatedEnvironmentScrubsHostConfiguration(t *testing.T) {
 }
 
 func TestValidateIsolatedInspectionRejectsExecutableConfiguration(t *testing.T) {
+	grokHome := t.TempDir()
 	clean := []byte(`{
 		"projectInstructions": [],
 		"hooks": [],
@@ -862,26 +863,26 @@ func TestValidateIsolatedInspectionRejectsExecutableConfiguration(t *testing.T) 
 		"permissions": {"managedSettingsActive":false},
 		"configSources": {"layers":[]}
 	}`)
-	if err := validateIsolatedInspection(clean); err != nil {
+	if err := validateIsolatedInspection(clean, grokHome); err != nil {
 		t.Fatalf("clean isolated inspection rejected: %v", err)
 	}
 	for _, field := range []string{
 		"projectInstructions", "hooks", "skills", "plugins", "marketplaces", "mcpServers", "lspServers",
 	} {
 		hostile := bytes.Replace(clean, []byte(`"`+field+`": []`), []byte(`"`+field+`": [{}]`), 1)
-		if err := validateIsolatedInspection(hostile); err == nil {
+		if err := validateIsolatedInspection(hostile, grokHome); err == nil {
 			t.Fatalf("inspection with %s was accepted", field)
 		}
 	}
 	customAgent := bytes.Replace(clean, []byte(`"type":"builtin"`), []byte(`"type":"user"`), 1)
-	if err := validateIsolatedInspection(customAgent); err == nil {
+	if err := validateIsolatedInspection(customAgent, grokHome); err == nil {
 		t.Fatal("inspection with a custom agent was accepted")
 	}
 	managed := bytes.Replace(clean, []byte(`"managedSettingsActive":false`), []byte(`"managedSettingsActive":true`), 1)
-	if err := validateIsolatedInspection(managed); err == nil {
+	if err := validateIsolatedInspection(managed, grokHome); err == nil {
 		t.Fatal("inspection with managed settings was accepted")
 	}
-	if err := validateIsolatedInspection([]byte(`not-json`)); err == nil {
+	if err := validateIsolatedInspection([]byte(`not-json`), grokHome); err == nil {
 		t.Fatal("malformed inspection was accepted")
 	}
 	for _, incomplete := range []string{
@@ -891,9 +892,48 @@ func TestValidateIsolatedInspectionRejectsExecutableConfiguration(t *testing.T) 
 		`{"projectInstructions":[],"hooks":[],"skills":[],"plugins":[],"marketplaces":[],"mcpServers":[],"lspServers":[],"agents":[],"permissions":{},"configSources":{"layers":[]}}`,
 		`{"projectInstructions":[],"hooks":[],"skills":[],"plugins":[],"marketplaces":[],"mcpServers":[],"lspServers":[],"agents":[],"permissions":{"managedSettingsActive":false},"configSources":{}}`,
 	} {
-		if err := validateIsolatedInspection([]byte(incomplete)); err == nil {
+		if err := validateIsolatedInspection([]byte(incomplete), grokHome); err == nil {
 			t.Fatalf("incomplete inspection was accepted: %s", incomplete)
 		}
+	}
+	userConfig := filepath.Join(grokHome, "config.toml")
+	defaultLayers := fmt.Sprintf(`"layers":[{"role":"managed","path":%q,"note":"empty"},{"role":"user","path":%q},{"role":"requirements","path":%q,"note":"empty"}]`,
+		filepath.Join(grokHome, "managed_config.toml"), userConfig, filepath.Join(grokHome, "requirements.toml"))
+	withDefaults := bytes.Replace(clean, []byte(`"layers":[]`), []byte(defaultLayers), 1)
+	if err := validateIsolatedInspection(withDefaults, grokHome); err != nil {
+		t.Fatalf("empty default layer descriptors rejected: %v", err)
+	}
+	for _, hostile := range [][]byte{
+		bytes.Replace(withDefaults, []byte(`"role":"user"`), []byte(`"role":"external"`), 1),
+		bytes.Replace(withDefaults, []byte(strconv.Quote(userConfig)), []byte(strconv.Quote(filepath.Join(grokHome, "elsewhere.toml"))), 1),
+		bytes.Replace(withDefaults, []byte(`"managedSettingsActive":false`), []byte(`"managedSettingsActive":false,"sources":[{}]`), 1),
+	} {
+		if err := validateIsolatedInspection(hostile, grokHome); err == nil {
+			t.Fatal("inspection with external configuration was accepted")
+		}
+	}
+	for _, name := range []string{"managed_config.toml", "config.toml", "requirements.toml"} {
+		if err := os.WriteFile(filepath.Join(grokHome, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := validateIsolatedInspection(withDefaults, grokHome); err != nil {
+		t.Fatalf("inspection with empty configuration placeholders rejected: %v", err)
+	}
+	if err := os.WriteFile(userConfig, []byte("# configuration"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateIsolatedInspection(withDefaults, grokHome); err == nil {
+		t.Fatal("inspection with a nonempty configuration file was accepted")
+	}
+	if err := os.Remove(userConfig); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(grokHome, "missing"), userConfig); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if err := validateIsolatedInspection(withDefaults, grokHome); err == nil {
+		t.Fatal("inspection with a dangling configuration symlink was accepted")
 	}
 }
 

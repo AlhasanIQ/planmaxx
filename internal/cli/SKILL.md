@@ -18,13 +18,23 @@ description: Use when an agent-written plan, design, or spec needs user review b
    this agent from changing the plan while the user is still reviewing it.
 4. Treat stderr as status output and stdout as the user's next instruction.
 
+The review command needs to write its review bundle and listen for the browser
+on loopback HTTP. Use `--local-bundle` if the default user state directory is
+unwritable and the plan directory is writable. If the sandbox blocks the
+listener, a required write, or app-server startup, request only the required
+access for this foreground command through the current approval flow. If the
+user runs the review in a host terminal instead, use `--agent codex` with
+`CODEX_THREAD_ID` set to the exact existing thread ID. Use only a known ID.
+The assisted Codex fork stays read-only with network access disabled.
+
 Applying proposals updates PlanMaxx's review state. No plan file is written on
 cancel; finalization is the only action that saves the finalized plan.
 
-If the review command is interrupted or fails, do not read comments from the
-bundle and apply them yourself, do not edit or commit the source plan, and do
-not infer approval. Relaunch `planmaxx review` in the foreground so PlanMaxx
-restores the review state, then keep waiting for an explicit final handoff.
+If PlanMaxx reports `review canceled`, stop even though the command exits
+with a nonzero status. If the review is interrupted or fails before an outcome,
+do not read comments from the bundle and apply them yourself, edit or commit
+the source plan, or infer approval. Relaunch the same review command in the
+foreground so PlanMaxx restores the review state and wait for the final handoff.
 
 Outcomes:
 

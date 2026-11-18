@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v0.9.2 - 2026-11-18
+
+- Improved Claude Code fork failure messages to include structured CLI and
+  provider diagnostics. The `/planmaxx [plan-file]` command uses the exact
+  active session ID.
+- Restored Grok Build review attachment when `--no-memory` is omitted from CLI
+  help or the isolation report lists absent or empty default configuration files.
+  PlanMaxx probes the flag directly and verifies that any default files are empty
+  regular files in the isolated home.
+- Updated the Codex, Claude Code, and Grok Build skills to stop when the user
+  explicitly cancels a review.
+- Documented the permissions the Codex skill needs to host a foreground review
+  from a restricted sandbox.
+
 ## v0.9.1 - 2026-08-18
 
 - Fixed Windows review persistence by flushing bundle files through writable

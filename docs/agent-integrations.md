@@ -54,7 +54,9 @@ each operation.
   `.claude/skills/planmaxx/SKILL.md`.
 - This is a plain Claude Code skill, not a plugin. It has no hooks or
   `SessionStart` setup. Claude can load it automatically when its description
-  matches the task, and users can invoke it directly with `/planmaxx`.
+  matches the task, and users can invoke it directly with `/planmaxx [plan-file]`.
+  Claude Code applies its normal permission checks when the skill launches the
+  PlanMaxx review command.
 - Claude Code substitutes its exact current session ID into the skill content,
   which launches
   `planmaxx review --claude-session-id ${CLAUDE_SESSION_ID} <plan-file>`.
@@ -76,8 +78,10 @@ each operation.
   --safe-mode --no-session-persistence --output-format json --tools ""
   --permission-mode dontAsk`.
 - Calls are serialized, use the review process working directory, honor the
-  request context, and require a successful nonempty result envelope with a
-  new session ID distinct from the source session.
+  request context, and inherit Claude Code's configuration and provider
+  environment. Claude Code handles model selection when resuming the source
+  session. PlanMaxx requires a successful nonempty result envelope with a new
+  session ID distinct from the source session.
 - Attachment requires Claude Code 2.1.214 or newer and checks that the
   installed CLI advertises every required isolation flag. Safe mode disables
   user/project instructions, skills, plugins, hooks, MCP servers, and other

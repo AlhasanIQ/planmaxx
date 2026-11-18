@@ -1206,12 +1206,12 @@ import sys
 import urllib.parse
 
 args = sys.argv[1:]
-if "--version" in args:
-    print("grok 0.2.114 (test) [stable]")
+if args == ["--no-memory", "--version"]:
+    print("grok 1.0.89 (test) [alpha]")
     sys.exit(0)
 
 if "--help" in args:
-    print("--cwd --prompt-file --resume --fork-session --session-id --output-format --tools --allow --deny --permission-mode --sandbox --no-subagents --no-memory --disable-web-search --no-plan --max-turns --verbatim")
+    print("--cwd --prompt-file --resume --fork-session --session-id --output-format --tools --allow --deny --permission-mode --sandbox --no-subagents --disable-web-search --no-plan --max-turns --verbatim")
     sys.exit(0)
 
 if args == ["agent", "--no-leader", "stdio"]:

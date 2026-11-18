@@ -76,7 +76,7 @@ func (c *Client) Ask(ctx context.Context, req sidequestions.Request) (string, er
 		req.PlanExcerpt,
 		req.Format,
 	)
-	return c.askPromptInFork(ctx, c.sessionID, prompt)
+	return c.AskPrompt(ctx, prompt)
 }
 
 // AskPrompt implements sectioniter.PromptClient.
@@ -84,13 +84,7 @@ func (c *Client) AskPrompt(ctx context.Context, prompt string) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("Claude Code client is unavailable")
 	}
-	return c.askPromptInFork(ctx, c.sessionID, prompt)
-}
-
-func (c *Client) askPromptInFork(ctx context.Context, sessionID, prompt string) (string, error) {
-	if c == nil {
-		return "", fmt.Errorf("Claude Code client is unavailable")
-	}
+	sessionID := c.sessionID
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -132,49 +126,64 @@ func (c *Client) askPromptInFork(ctx context.Context, sessionID, prompt string) 
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			err = ctxErr
-		}
-		return "", withStderr(fmt.Errorf("run Claude Code: %w", err), stderr.String())
-	}
-
+	runErr := command.Run()
 	var response struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-		IsError bool   `json:"is_error"`
-		Result  string `json:"result"`
-		Session string `json:"session_id"`
+		Type    string   `json:"type"`
+		Subtype string   `json:"subtype"`
+		IsError bool     `json:"is_error"`
+		Result  string   `json:"result"`
+		Session string   `json:"session_id"`
+		Errors  []string `json:"errors"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
-		return "", withStderr(fmt.Errorf("decode Claude Code response: %w", err), stderr.String())
+	decodeErr := json.Unmarshal(stdout.Bytes(), &response)
+	if runErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", withDiagnostic(fmt.Errorf("run Claude Code: %w", ctxErr), stderr.String())
+		}
+		if decodeErr != nil || response.Type != "result" {
+			// Startup failures can print a plain diagnostic with no JSON envelope.
+			runErr = withDiagnostic(runErr, stdout.String())
+			return "", withDiagnostic(fmt.Errorf("run Claude Code: %w", runErr), stderr.String())
+		}
+	}
+	if decodeErr != nil {
+		return "", withDiagnostic(fmt.Errorf("decode Claude Code response: %w", decodeErr), stderr.String())
 	}
 	if response.Type != "result" {
-		return "", withStderr(fmt.Errorf("Claude Code returned response type %q, expected %q", response.Type, "result"), stderr.String())
+		return "", withDiagnostic(fmt.Errorf("Claude Code returned response type %q, expected %q", response.Type, "result"), stderr.String())
 	}
 	if response.IsError || response.Subtype != "success" {
 		subtype := response.Subtype
 		if subtype == "" {
 			subtype = "unknown"
 		}
-		return "", withStderr(fmt.Errorf("Claude Code operation did not succeed (subtype %q)", subtype), stderr.String())
+		resultErr := fmt.Errorf("Claude Code operation did not succeed (subtype %q)", subtype)
+		if runErr != nil {
+			resultErr = fmt.Errorf("%s: %w", resultErr, runErr)
+		}
+		resultErr = withDiagnostic(resultErr, response.Result)
+		resultErr = withDiagnostic(resultErr, strings.Join(response.Errors, "\n"))
+		return "", withDiagnostic(resultErr, stderr.String())
+	}
+	if runErr != nil {
+		return "", withDiagnostic(fmt.Errorf("run Claude Code: %w", runErr), stderr.String())
 	}
 	if strings.TrimSpace(response.Result) == "" {
-		return "", withStderr(errors.New("Claude Code returned an empty result"), stderr.String())
+		return "", withDiagnostic(errors.New("Claude Code returned an empty result"), stderr.String())
 	}
 	if strings.TrimSpace(response.Session) == "" {
-		return "", withStderr(errors.New("Claude Code did not report the disposable fork session id"), stderr.String())
+		return "", withDiagnostic(errors.New("Claude Code did not report the disposable fork session id"), stderr.String())
 	}
-	if response.Session == sessionID {
-		return "", withStderr(errors.New("Claude Code reused the source session instead of creating a disposable fork"), stderr.String())
+	if strings.EqualFold(strings.TrimSpace(response.Session), sessionID) {
+		return "", withDiagnostic(errors.New("Claude Code reused the source session instead of creating a disposable fork"), stderr.String())
 	}
 	return response.Result, nil
 }
 
-func withStderr(err error, stderr string) error {
-	stderr = strings.TrimSpace(stderr)
-	if stderr == "" {
+func withDiagnostic(err error, diagnostic string) error {
+	diagnostic = strings.TrimSpace(diagnostic)
+	if diagnostic == "" {
 		return err
 	}
-	return fmt.Errorf("%w: %s", err, stderr)
+	return fmt.Errorf("%w: %s", err, diagnostic)
 }

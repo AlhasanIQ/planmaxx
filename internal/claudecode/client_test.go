@@ -146,6 +146,24 @@ func TestClientRejectsUnsuccessfulOrInvalidResponses(t *testing.T) {
 			wantErr: "authentication required",
 		},
 		{
+			name:    "plain startup failure on stdout",
+			stdout:  "No conversation found with session ID: session",
+			exit:    1,
+			wantErr: "No conversation found with session ID: session",
+		},
+		{
+			name:    "structured process error",
+			stdout:  `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["Unable to connect to the configured provider"]}`,
+			exit:    1,
+			wantErr: "Unable to connect to the configured provider",
+		},
+		{
+			name:    "authentication failure with success subtype",
+			stdout:  `{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate. API Error: 401 PlanMaxx smoke rejection"}`,
+			exit:    1,
+			wantErr: "Failed to authenticate. API Error: 401 PlanMaxx smoke rejection",
+		},
+		{
 			name:    "malformed json",
 			stdout:  "{",
 			stderr:  "unexpected provider response",
@@ -174,7 +192,7 @@ func TestClientRejectsUnsuccessfulOrInvalidResponses(t *testing.T) {
 		},
 		{
 			name:    "source session reused",
-			stdout:  `{"type":"result","subtype":"success","is_error":false,"result":"answer","session_id":"session"}`,
+			stdout:  `{"type":"result","subtype":"success","is_error":false,"result":"answer","session_id":"SESSION"}`,
 			wantErr: "reused the source session",
 		},
 	}

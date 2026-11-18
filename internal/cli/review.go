@@ -693,12 +693,14 @@ func validateGrokCapabilities(parent context.Context, cwd string) error {
 	ctx, cancel := context.WithTimeout(parent, grokCapabilityCheckTimeout)
 	defer cancel()
 
-	versionCommand := execCommandContext(ctx, "grok", "--version")
+	// Recent builds accept --no-memory but omit it from help. Pass it before
+	// --version so the parser checks it without starting a session.
+	versionCommand := execCommandContext(ctx, "grok", "--no-memory", "--version")
 	versionCommand.Dir = cwd
 	versionCommand.Env = append(versionCommand.Environ(), "GROK_DISABLE_AUTOUPDATER=1")
 	versionOutput, err := versionCommand.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("run grok --version: %w", err)
+		return fmt.Errorf("probe required Grok Build flag --no-memory: %w: %s", err, strings.TrimSpace(string(versionOutput)))
 	}
 	if err := requireMinimumGrokVersion(strings.TrimSpace(string(versionOutput))); err != nil {
 		return err
@@ -725,7 +727,6 @@ func validateGrokCapabilities(parent context.Context, cwd string) error {
 		"--permission-mode",
 		"--sandbox",
 		"--no-subagents",
-		"--no-memory",
 		"--disable-web-search",
 		"--no-plan",
 		"--max-turns",

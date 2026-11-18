@@ -126,6 +126,16 @@ user-owned Codex Desktop runtime. Set `PLANMAXX_CODEX_BIN` or pass
 the CLI version, app-server initialization, active thread attachment, review
 processes, and storage health.
 
+When launching a review from sandboxed Codex, the PlanMaxx process needs a
+writable bundle directory and a loopback HTTP listener for the browser. If
+the default user state directory is unwritable, use `--local-bundle` with a
+plan in a writable directory. If the sandbox blocks a required write, the
+listener, or app-server startup, use the session's normal approval flow for
+the access needed by this foreground review command. You can also launch the
+review in a host terminal with `--agent codex` and `CODEX_THREAD_ID` set to
+the exact existing thread ID if you know it. Assisted Codex forks still run
+read-only with network access disabled.
+
 See the detailed [agent integration contract](docs/agent-integrations.md),
 [Claude Code skill documentation](https://code.claude.com/docs/en/slash-commands),
 and [Grok Build skill documentation](https://docs.x.ai/build/features/skills-plugins-marketplaces).

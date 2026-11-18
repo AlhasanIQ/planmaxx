@@ -79,6 +79,11 @@ func TestLiveGrokBuildForkRetainsContextAndDeletesChild(t *testing.T) {
 func TestLiveGrokNativeSkillSubstitutesExactSessionAtInvocation(t *testing.T) {
 	requireLiveGrok(t)
 	workspace := t.TempDir()
+	gitInit := exec.Command("git", "init", "--quiet")
+	gitInit.Dir = workspace
+	if output, err := gitInit.CombinedOutput(); err != nil {
+		t.Fatalf("initialize native Grok skill test repository: %v: %s", err, output)
+	}
 	binaryDir := t.TempDir()
 	realPlanMaxx := filepath.Join(binaryDir, "planmaxx-real")
 	build := exec.Command("go", "build", "-o", realPlanMaxx, "./cmd/planmaxx")
@@ -130,7 +135,8 @@ func TestLiveGrokNativeSkillSubstitutesExactSessionAtInvocation(t *testing.T) {
 
 	inspect := exec.Command("grok", "inspect", "--json")
 	inspect.Dir = workspace
-	inspect.Env = liveGrokEnvironment(os.Environ())
+	// Trust only the disposable repository for these noninteractive commands.
+	inspect.Env = append(liveGrokEnvironment(os.Environ()), "GROK_FOLDER_TRUST=0")
 	inspectOutput, err := inspect.CombinedOutput()
 	if err != nil {
 		t.Fatalf("inspect native skill discovery: %v: %s", err, inspectOutput)
@@ -173,7 +179,7 @@ func TestLiveGrokNativeSkillSubstitutesExactSessionAtInvocation(t *testing.T) {
 			"After PlanMaxx exits, reply only DONE and do not retry.",
 	}...)
 	command.Dir = workspace
-	command.Env = liveGrokEnvironmentWithoutSessionMarkers(os.Environ())
+	command.Env = append(liveGrokEnvironmentWithoutSessionMarkers(os.Environ()), "GROK_FOLDER_TRUST=0")
 	command.Stdout = outerStdout
 	command.Stderr = outerStderr
 	if err := command.Start(); err != nil {
@@ -186,12 +192,12 @@ func TestLiveGrokNativeSkillSubstitutesExactSessionAtInvocation(t *testing.T) {
 		_ = outerStderr.Close()
 		killLiveReviewProcess(reviewPIDPath)
 		cancel()
-		if command.ProcessState == nil && command.Process != nil {
+		if command.Process != nil {
 			_ = command.Process.Kill()
 		}
 	})
 
-	args := waitForLiveFile(t, transcriptPath, 45*time.Second)
+	args := waitForLiveFile(t, transcriptPath, outerStderrPath, done, 45*time.Second)
 	lines := strings.Fields(string(args))
 	wantPrefix := []string{"review", "--grok-session-id", sessionID}
 	if len(lines) != 4 {
@@ -285,14 +291,19 @@ func killLiveReviewProcess(pidPath string) {
 	}
 }
 
-func waitForLiveFile(t *testing.T, path string, timeout time.Duration) []byte {
+func waitForLiveFile(t *testing.T, path, stderrPath string, done <-chan error, timeout time.Duration) []byte {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if content, err := os.ReadFile(path); err == nil && len(content) != 0 {
 			return content
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case err := <-done:
+			stderr, _ := os.ReadFile(stderrPath)
+			t.Fatalf("parent Grok exited before invoking PlanMaxx: %v: %s", err, stderr)
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 	t.Fatalf("timed out waiting for %s", path)
 	return nil

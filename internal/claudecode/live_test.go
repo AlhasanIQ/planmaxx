@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AlhasanIQ/planmaxx/internal/sidequestions"
 )
 
 const liveClaudeTestEnvironment = "PLANMAXX_RUN_LIVE_CLAUDE"
@@ -74,15 +76,31 @@ func TestLiveClaudeSonnetForkRetainsExactContext(t *testing.T) {
 		t.Fatalf("live Claude source did not report Sonnet usage: %v", created.ModelUsage)
 	}
 
-	answer, err := NewClient(sessionID, workspace).AskPrompt(
-		ctx,
-		"Reply only with the verification token the user asked you to remember in the previous turn.",
-	)
+	client := NewClient(sessionID, workspace)
+	question := "Reply only with the verification token the user asked you to remember in the previous turn."
+	answer, err := client.Ask(ctx, sidequestions.Request{Question: question})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(answer, token) {
+		t.Fatalf("Claude side question lost source context: got %q, want it to contain %q", answer, token)
+	}
+
+	answer, err = client.AskPrompt(ctx, question)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.TrimSpace(answer) != token {
 		t.Fatalf("Claude fork lost source context: got %q want %q", answer, token)
+	}
+
+	missingSessionID, err := newLiveClaudeUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewClient(missingSessionID, workspace).AskPrompt(ctx, "Reply READY.")
+	if err == nil || !strings.Contains(err.Error(), "No conversation found") {
+		t.Fatalf("expected Claude to report the missing source session, got %v", err)
 	}
 }
 
@@ -107,14 +125,18 @@ func newLiveClaudeUUID() (string, error) {
 
 func removeLiveClaudeSession(t *testing.T, sessionID string) {
 	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Errorf("locate Claude home for live-session cleanup: %v", err)
-		return
+	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Errorf("locate Claude home for live-session cleanup: %v", err)
+			return
+		}
+		configDir = filepath.Join(home, ".claude")
 	}
-	projects := filepath.Join(home, ".claude", "projects")
+	projects := filepath.Join(configDir, "projects")
 	targetName := sessionID + ".jsonl"
-	err = filepath.WalkDir(projects, func(path string, entry os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(projects, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if os.IsNotExist(walkErr) {
 				return nil

@@ -25,10 +25,11 @@ description: Use when an agent-written plan, design, or spec needs user review b
 Applying proposals updates PlanMaxx's review state. No plan file is written on
 cancel; finalization is the only action that saves the finalized plan.
 
-If the review command is interrupted or fails, do not read comments from the
-bundle and apply them yourself, do not edit or commit the source plan, and do
-not infer approval. Relaunch `planmaxx review` in the foreground so PlanMaxx
-restores the review state, then keep waiting for an explicit final handoff.
+If PlanMaxx reports `review canceled`, stop even though the command exits
+with a nonzero status. If the review is interrupted or fails before an outcome,
+do not read comments from the bundle and apply them yourself, edit or commit
+the source plan, or infer approval. Relaunch the same review command in the
+foreground so PlanMaxx restores the review state and wait for the final handoff.
 
 Outcomes:
 

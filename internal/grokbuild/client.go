@@ -1155,10 +1155,10 @@ func validateIsolatedConfiguration(ctx context.Context, isolation *Isolation) er
 			strings.TrimSpace(string(append(output, stderr...))),
 		)
 	}
-	return validateIsolatedInspection(output)
+	return validateIsolatedInspection(output, isolation.GrokHome)
 }
 
-func validateIsolatedInspection(output []byte) error {
+func validateIsolatedInspection(output []byte, grokHome string) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(output, &fields); err != nil {
 		return fmt.Errorf("decode isolated grok inspect response: %w", err)
@@ -1200,12 +1200,26 @@ func validateIsolatedInspection(output []byte) error {
 	if !ok {
 		return errors.New(`isolated grok inspect permissions are missing "managedSettingsActive"`)
 	}
-	var managed bool
+	var managed *bool
 	if err := json.Unmarshal(managedRaw, &managed); err != nil {
 		return fmt.Errorf("isolated grok inspect managedSettingsActive has an unexpected shape: %w", err)
 	}
-	if managed {
+	if managed == nil || *managed {
 		return errors.New("isolated Grok Build environment loaded external instructions or executable configuration")
+	}
+	for _, name := range []string{"sources", "skipped", "mcpServerAllowlist", "mcpLockdownSources", "marketplaceAllowlist", "marketplaceLockdownSources", "managedMarketplaces"} {
+		if raw, exists := permissions[name]; exists {
+			var entries []json.RawMessage
+			if json.Unmarshal(raw, &entries) != nil || entries == nil || len(entries) != 0 {
+				return fmt.Errorf("isolated Grok Build environment reported external permission configuration in %q", name)
+			}
+		}
+	}
+	if raw, exists := permissions["loaded"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte("0")) {
+		return errors.New("isolated Grok Build environment loaded external permission configuration")
+	}
+	if raw, exists := permissions["mcpManagedServersOnly"]; exists && !bytes.Equal(bytes.TrimSpace(raw), []byte(`"off"`)) {
+		return errors.New("isolated Grok Build environment reported a managed MCP permission policy")
 	}
 
 	configRaw, ok := fields["configSources"]
@@ -1220,12 +1234,37 @@ func validateIsolatedInspection(output []byte) error {
 	if !ok || bytes.Equal(bytes.TrimSpace(layersRaw), []byte("null")) {
 		return errors.New(`isolated grok inspect configSources are missing "layers"`)
 	}
-	var layers []json.RawMessage
+	var layers []struct {
+		Role string `json:"role"`
+		Path string `json:"path"`
+		Note string `json:"note"`
+	}
 	if err := json.Unmarshal(layersRaw, &layers); err != nil {
 		return fmt.Errorf("isolated grok inspect configSources.layers has an unexpected shape: %w", err)
 	}
-	if len(layers) != 0 {
-		return errors.New("isolated Grok Build environment loaded external instructions or executable configuration")
+	// Grok can report absent defaults or create empty files for them during
+	// inspection. Only these exact locations are eligible for empty placeholders.
+	defaultLayers := map[string]string{
+		"managed":      "managed_config.toml",
+		"user":         "config.toml",
+		"requirements": "requirements.toml",
+	}
+	root, err := openRootDirectoryNoFollow(grokHome)
+	if err != nil {
+		return fmt.Errorf("securely open isolated Grok Build home: %w", err)
+	}
+	defer root.Close()
+	for _, name := range defaultLayers {
+		if _, err := readRegularFileBoundedAt(root, name, 0); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("verify isolated Grok Build configuration %q is empty: %w", name, err)
+		}
+	}
+	for _, layer := range layers {
+		name, expected := defaultLayers[layer.Role]
+		if !expected || layer.Path != filepath.Join(grokHome, name) || (layer.Note != "" && layer.Note != "empty") {
+			return errors.New("isolated Grok Build environment reported an unexpected configuration layer")
+		}
+		delete(defaultLayers, layer.Role)
 	}
 
 	var agents []struct {
